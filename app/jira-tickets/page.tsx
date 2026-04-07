@@ -75,10 +75,6 @@ const raw: Ticket[] = [
   { key: "TM-2513", summary: "[이구위크] 쿠폰 발급 프로세스 개선",                                        status: "개발중",         assignee: "윤정오",  eta: "2026-05-12", type: "Initiative", project: "TM" },
   { key: "TM-2726", summary: "[이구위크] 카테고리 첫구매 쿠폰 로직 고도화",                                status: "SUGGESTED",      assignee: "-",       eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2727", summary: "[이구위크] 브랜드 첫구매 쿠폰 기능 및 모듈화",                              status: "준비중",         assignee: "양유주",  eta: "-",          type: "Initiative", project: "TM" },
-  { key: "TM-2734", summary: "[이구위크]#7. 세일즈캠페인 고도화 - Highlight products",                     status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
-  { key: "TM-2735", summary: "[이구위크]#8. 세일즈캠페인 고도화 - Launching card",                         status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
-  { key: "TM-2736", summary: "[이구위크]#9. 세일즈캠페인 고도화 - 브랜드 룩북 컬렉션 모듈",               status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
-  { key: "TM-2737", summary: "[이구위크]#10. 세일즈캠페인 고도화 - 모듈 확장 어드민 기반 작업",            status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
   { key: "TM-2738", summary: "[이구위크 Eng] 이벤트 트래픽 증가 대비 성능 검증 및 병목/개선 체계 구축",    status: "SUGGESTED",      assignee: "이창현",  eta: "2026-05-30", type: "Initiative", project: "TM" },
   { key: "TM-2741", summary: "[티켓 내재화] 좌석 선점/해제 모듈 내재화",                                   status: "개발중",         assignee: "강행남",  eta: "2026-05-14", type: "Initiative", project: "TM" },
   { key: "TM-2742", summary: "[티켓 내재화] 대기열 내재화",                                                status: "준비중",         assignee: "강행남",  eta: "2026-05-29", type: "Initiative", project: "TM" },
@@ -185,8 +181,7 @@ const Q1Q2_KEYS = new Set([
 
 const Q2_KEYS = new Set([
   ...Q1Q2_KEYS,
-  "TM-2513", "TM-2726", "TM-2727", "TM-2734", "TM-2735",
-  "TM-2736", "TM-2737", "TM-2738", "TM-2741", "TM-2742",
+  "TM-2513", "TM-2726", "TM-2727", "TM-2738", "TM-2741", "TM-2742",
   "TM-2745", "TM-2746", "TM-2751", "TM-2753", "TM-2756",
   "TM-2758", "TM-2762", "TM-2770", "TM-2779", "TM-2814",
   "TM-2815", "TM-2817", "TM-2853", "TM-2878",
