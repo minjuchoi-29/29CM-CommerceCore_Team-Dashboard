@@ -55,14 +55,11 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-gray-50">
-      <header className="bg-white border-b border-gray-200 px-8 py-5">
-        <div className="max-w-7xl mx-auto">
-          <h1 className="text-xl font-bold text-gray-900">29CM Commerce Core</h1>
-          <p className="text-sm text-gray-500 mt-1">2026 Q2 Initiative Dashboard</p>
-        </div>
-      </header>
-
       <main className="max-w-7xl mx-auto px-8 py-8">
+        <div className="mb-6">
+          <h2 className="text-lg font-bold text-gray-900">Q2 Initiative Dashboard</h2>
+          <p className="text-sm text-gray-400 mt-0.5">2026 Q2</p>
+        </div>
         {/* 요약 카드 */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8">
           {[
