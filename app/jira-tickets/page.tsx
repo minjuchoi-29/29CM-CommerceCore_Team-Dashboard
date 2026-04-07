@@ -17,6 +17,9 @@ const STATUS_COLOR: Record<string, string> = {
   "HOLD": "bg-yellow-100 text-yellow-700",
   "Postponed": "bg-yellow-100 text-yellow-700",
   "철회/반려/취소": "bg-red-100 text-red-600",
+  "준비중": "bg-yellow-50 text-yellow-600",
+  "디자인중": "bg-purple-50 text-purple-400",
+  "Backlog": "bg-gray-100 text-gray-400",
 };
 
 type Ticket = {
@@ -68,6 +71,31 @@ const raw: Ticket[] = [
   { key: "TM-2216", summary: "[카탈로그] [OCMPx29CM] 매입 브랜드 공급업체 식별 체계 개선",                status: "론치완료",       assignee: "좌예슬",  eta: "2026-03-03", type: "Initiative", project: "TM" },
   { key: "TM-2234", summary: "[링펜스] [29CM] 상품 검수 운영 편의성 개선",                                status: "론치완료",       assignee: "정유민",  eta: "2026-02-25", type: "Initiative", project: "TM" },
   { key: "TM-2294", summary: "[리뷰] [29CM] 적립금 차등 지급 정책 개편 - HF",                            status: "론치완료",       assignee: "백수지",  eta: "2026-03-25", type: "Initiative", project: "TM" },
+  // TM (Q2 신규)
+  { key: "TM-2513", summary: "[이구위크] 쿠폰 발급 프로세스 개선",                                        status: "개발중",         assignee: "윤정오",  eta: "2026-05-12", type: "Initiative", project: "TM" },
+  { key: "TM-2726", summary: "[이구위크] 카테고리 첫구매 쿠폰 로직 고도화",                                status: "SUGGESTED",      assignee: "-",       eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2727", summary: "[이구위크] 브랜드 첫구매 쿠폰 기능 및 모듈화",                              status: "준비중",         assignee: "양유주",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2734", summary: "[이구위크]#7. 세일즈캠페인 고도화 - Highlight products",                     status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
+  { key: "TM-2735", summary: "[이구위크]#8. 세일즈캠페인 고도화 - Launching card",                         status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
+  { key: "TM-2736", summary: "[이구위크]#9. 세일즈캠페인 고도화 - 브랜드 룩북 컬렉션 모듈",               status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
+  { key: "TM-2737", summary: "[이구위크]#10. 세일즈캠페인 고도화 - 모듈 확장 어드민 기반 작업",            status: "디자인중",       assignee: "김태호",  eta: "2026-05-30", type: "Initiative", project: "TM" },
+  { key: "TM-2738", summary: "[이구위크 Eng] 이벤트 트래픽 증가 대비 성능 검증 및 병목/개선 체계 구축",    status: "SUGGESTED",      assignee: "이창현",  eta: "2026-05-30", type: "Initiative", project: "TM" },
+  { key: "TM-2741", summary: "[티켓 내재화] 좌석 선점/해제 모듈 내재화",                                   status: "개발중",         assignee: "강행남",  eta: "2026-05-14", type: "Initiative", project: "TM" },
+  { key: "TM-2742", summary: "[티켓 내재화] 대기열 내재화",                                                status: "준비중",         assignee: "강행남",  eta: "2026-05-29", type: "Initiative", project: "TM" },
+  { key: "TM-2745", summary: "[결제] 케이뱅크 할인혜택 넛징",                                             status: "준비중",         assignee: "정유민",  eta: "2026-07-20", type: "Initiative", project: "TM" },
+  { key: "TM-2746", summary: "[파트너] 큐레이터 상품 시딩 캠페인 - 무료주문 생성",                         status: "기획완료",        assignee: "정유민",  eta: "2026-05-29", type: "Initiative", project: "TM" },
+  { key: "TM-2751", summary: "[CS] AI Chat Agent 1:1문의 진입점 A/B 테스트",                               status: "SUGGESTED",      assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2753", summary: "[CS] CS 상담 Agent Workspace 도입",                                         status: "SUGGESTED",      assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2756", summary: "[OCMP] 통합 상품등록 어드민 요구사항 수집 설계 - 29CM",                      status: "기획중",          assignee: "정유민",  eta: "2026-07-31", type: "Initiative", project: "TM" },
+  { key: "TM-2758", summary: "[카탈로그] 표준카테고리 미매칭 상품 매핑",                                   status: "SUGGESTED",      assignee: "백수지",  eta: "2026-06-30", type: "Initiative", project: "TM" },
+  { key: "TM-2762", summary: "[채널] 네이버EP 매핑율 향상 Phase 2",                                        status: "준비중",         assignee: "백수지",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2770", summary: "[클레임] N회차 교환 로직 개선",                                              status: "SUGGESTED",      assignee: "-",       eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2779", summary: "[CS] CS 상담 CRM 도입 (w/ Salesforce)",                                     status: "SUGGESTED",      assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2814", summary: "SRP, PLP 퀵패싯(브랜드,컬러) 고객향 UI/UX 개선",                            status: "디자인완료",      assignee: "이현욱",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2815", summary: "[티켓 내재화] 좌석 배치도 사용성 개선",                                      status: "개발중",         assignee: "강행남",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2817", summary: "무신사트레이딩 합병 : 물류/ERP(SAP) 연동 마스터 정리",                       status: "개발중",         assignee: "윤정오",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2853", summary: "[카탈로그] O-SKU 전환 대응 29CM 상품등록 내부 API 신설",                     status: "개발중",         assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2878", summary: "29CM EP 송출 상품 중 카탈로그 자동맵핑 상품 비중 개선",                      status: "SUGGESTED",      assignee: "최민주",  eta: "-",          type: "Initiative", project: "TM" },
   // CMALL
   { key: "CMALL-507",  summary: "인터페이스 일관성 기준 위반을 자동 검수하는 플러그인 제작 PoC",            status: "배포완료",       assignee: "윤민희",  eta: "2025-12-30", type: "Initiative", project: "CMALL" },
   { key: "CMALL-519",  summary: "25'Q4 29CM KTLO",                                                        status: "론치완료",       assignee: "김영진",  eta: "2025-12-31", type: "Initiative", project: "CMALL" },
@@ -149,6 +177,18 @@ const raw: Ticket[] = [
   { key: "EF-908",   summary: "[보안] [29Connect] API 인증체계 개선 - Static Key V2 전환",                status: "완료",           assignee: "윤정오",  eta: "2026-02-27", type: "Epic", project: "EF" },
 ];
 
+const Q2_KEYS = new Set([
+  "TM-1241", "TM-1846", "TM-1869", "TM-1871", "TM-1886",
+  "TM-2048", "TM-2155", "TM-2174", "TM-2182", "TM-2185",
+  "TM-2186", "TM-2216", "TM-2234", "TM-2294",
+  "TM-2513", "TM-2726", "TM-2727", "TM-2734", "TM-2735",
+  "TM-2736", "TM-2737", "TM-2738", "TM-2741", "TM-2742",
+  "TM-2745", "TM-2746", "TM-2751", "TM-2753", "TM-2756",
+  "TM-2758", "TM-2762", "TM-2770", "TM-2779", "TM-2814",
+  "TM-2815", "TM-2817", "TM-2853", "TM-2878",
+]);
+
+const ALL_QUARTERS = ["전체", "Y26Q1", "Y26Q2"];
 const ALL_PROJECTS = ["전체", "TM", "CMALL", "M29CMCCF", "EF"];
 const ALL_STATUSES = ["전체", "론치완료/완료", "개발중", "QA중", "SUGGESTED", "HOLD/Postponed", "기타"];
 
@@ -157,25 +197,28 @@ function matchStatus(status: string, filter: string): boolean {
   if (filter === "론치완료/완료") return ["론치완료", "완료", "배포완료"].includes(status);
   if (filter === "개발중") return ["개발중", "In Progress"].includes(status);
   if (filter === "QA중") return status === "QA중";
-  if (filter === "SUGGESTED") return status === "SUGGESTED";
+  if (filter === "SUGGESTED") return ["SUGGESTED", "Backlog"].includes(status);
   if (filter === "HOLD/Postponed") return ["HOLD", "Postponed"].includes(status);
-  if (filter === "기타") return ["기획중", "기획완료", "디자인완료", "철회/반려/취소"].includes(status);
+  if (filter === "기타") return ["기획중", "기획완료", "디자인완료", "디자인중", "준비중", "철회/반려/취소"].includes(status);
   return true;
 }
 
 export default function JiraTicketsPage() {
+  const [quarterFilter, setQuarterFilter] = useState("전체");
   const [projectFilter, setProjectFilter] = useState("전체");
   const [statusFilter, setStatusFilter] = useState("전체");
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
     return raw.filter((t) => {
+      if (quarterFilter === "Y26Q1" && Q2_KEYS.has(t.key)) return false;
+      if (quarterFilter === "Y26Q2" && !Q2_KEYS.has(t.key)) return false;
       if (projectFilter !== "전체" && t.project !== projectFilter) return false;
       if (!matchStatus(t.status, statusFilter)) return false;
       if (search && !t.summary.toLowerCase().includes(search.toLowerCase()) && !t.key.toLowerCase().includes(search.toLowerCase()) && !t.assignee.includes(search)) return false;
       return true;
     });
-  }, [projectFilter, statusFilter, search]);
+  }, [quarterFilter, projectFilter, statusFilter, search]);
 
   const done = filtered.filter((t) => ["론치완료", "완료", "배포완료"].includes(t.status)).length;
   const inProgress = filtered.filter((t) => ["개발중", "In Progress", "QA중"].includes(t.status)).length;
@@ -186,7 +229,7 @@ export default function JiraTicketsPage() {
       <main className="max-w-7xl mx-auto px-8 py-8">
         <div className="mb-6">
           <h2 className="text-lg font-bold text-gray-900">레이블 티켓 현황</h2>
-          <p className="text-sm text-gray-400 mt-0.5">Labels: 29cm_CC · Y26Q1 · 29CM_OKR</p>
+          <p className="text-sm text-gray-400 mt-0.5">Labels: 29cm_CC · Y26Q1/Q2 · 29CM_OKR</p>
         </div>
 
         {/* 요약 카드 */}
@@ -213,6 +256,21 @@ export default function JiraTicketsPage() {
             onChange={(e) => setSearch(e.target.value)}
             className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 w-52"
           />
+          <div className="flex gap-1.5 flex-wrap">
+            {ALL_QUARTERS.map((q) => (
+              <button
+                key={q}
+                onClick={() => setQuarterFilter(q)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                  quarterFilter === q
+                    ? "bg-indigo-600 text-white"
+                    : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
+                }`}
+              >
+                {q}
+              </button>
+            ))}
+          </div>
           <div className="flex gap-1.5 flex-wrap">
             {ALL_PROJECTS.map((p) => (
               <button
