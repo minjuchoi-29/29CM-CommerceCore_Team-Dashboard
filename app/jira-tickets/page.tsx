@@ -255,7 +255,7 @@ export default function JiraTicketsPage() {
       }
       return true;
     });
-  }, [quarters, projects, statuses, search]);
+  }, [quarters, projects, statuses, domainFilter, search]);
 
   const done = filtered.filter((t) => ["론치완료", "완료", "배포완료"].includes(t.status)).length;
   const inProgress = filtered.filter((t) => ["개발중", "In Progress", "QA중"].includes(t.status)).length;
