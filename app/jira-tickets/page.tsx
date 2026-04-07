@@ -188,9 +188,9 @@ const Q2_KEYS = new Set([
   "TM-2815", "TM-2817", "TM-2853", "TM-2878",
 ]);
 
-const ALL_QUARTERS = ["전체", "Y26Q1", "Y26Q2"];
-const ALL_PROJECTS = ["전체", "TM", "CMALL", "M29CMCCF", "EF"];
-const ALL_STATUSES = ["전체", "론치완료/완료", "개발중", "QA중", "SUGGESTED", "HOLD/Postponed", "기타"];
+const ALL_QUARTERS = ["Y26Q1", "Y26Q2"];
+const ALL_PROJECTS = ["TM", "CMALL", "M29CMCCF", "EF"];
+const ALL_STATUSES = ["론치완료/완료", "개발중", "QA중", "SUGGESTED", "HOLD/Postponed", "기타"];
 
 function matchStatus(status: string, filter: string): boolean {
   if (filter === "전체") return true;
@@ -203,26 +203,40 @@ function matchStatus(status: string, filter: string): boolean {
   return true;
 }
 
+function toggle(prev: Set<string>, value: string): Set<string> {
+  const next = new Set(prev);
+  if (next.has(value)) next.delete(value); else next.add(value);
+  return next;
+}
+
 export default function JiraTicketsPage() {
-  const [quarterFilter, setQuarterFilter] = useState("전체");
-  const [projectFilter, setProjectFilter] = useState("전체");
-  const [statusFilter, setStatusFilter] = useState("전체");
+  const [quarters, setQuarters] = useState<Set<string>>(new Set());
+  const [projects, setProjects] = useState<Set<string>>(new Set());
+  const [statuses, setStatuses] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
 
   const filtered = useMemo(() => {
     return raw.filter((t) => {
-      if (quarterFilter === "Y26Q1" && Q2_KEYS.has(t.key)) return false;
-      if (quarterFilter === "Y26Q2" && !Q2_KEYS.has(t.key)) return false;
-      if (projectFilter !== "전체" && t.project !== projectFilter) return false;
-      if (!matchStatus(t.status, statusFilter)) return false;
-      if (search && !t.summary.toLowerCase().includes(search.toLowerCase()) && !t.key.toLowerCase().includes(search.toLowerCase()) && !t.assignee.includes(search)) return false;
+      if (quarters.size > 0) {
+        const isQ2 = Q2_KEYS.has(t.key);
+        const wantQ1 = quarters.has("Y26Q1");
+        const wantQ2 = quarters.has("Y26Q2");
+        if (wantQ1 && !wantQ2 && isQ2) return false;
+        if (wantQ2 && !wantQ1 && !isQ2) return false;
+      }
+      if (projects.size > 0 && !projects.has(t.project)) return false;
+      if (statuses.size > 0 && !Array.from(statuses).some((s) => matchStatus(t.status, s))) return false;
+      if (search) {
+        const q = search.toLowerCase();
+        if (!t.summary.toLowerCase().includes(q) && !t.key.toLowerCase().includes(q) && !t.assignee.includes(search)) return false;
+      }
       return true;
     });
-  }, [quarterFilter, projectFilter, statusFilter, search]);
+  }, [quarters, projects, statuses, search]);
 
   const done = filtered.filter((t) => ["론치완료", "완료", "배포완료"].includes(t.status)).length;
   const inProgress = filtered.filter((t) => ["개발중", "In Progress", "QA중"].includes(t.status)).length;
-  const planned = filtered.filter((t) => ["SUGGESTED", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료"].includes(t.status)).length;
+  const planned = filtered.filter((t) => ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"].includes(t.status)).length;
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -248,58 +262,52 @@ export default function JiraTicketsPage() {
         </div>
 
         {/* 필터 */}
-        <div className="flex flex-wrap gap-3 mb-5">
-          <input
-            type="text"
-            placeholder="검색..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 w-52"
-          />
-          <div className="flex gap-1.5 flex-wrap">
+        <div className="flex flex-col gap-2 mb-5">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-gray-400 w-12 shrink-0">분기</span>
+            <button
+              onClick={() => setQuarters(new Set())}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${quarters.size === 0 ? "bg-indigo-600 text-white" : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+            >전체</button>
             {ALL_QUARTERS.map((q) => (
-              <button
-                key={q}
-                onClick={() => setQuarterFilter(q)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  quarterFilter === q
-                    ? "bg-indigo-600 text-white"
-                    : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                {q}
-              </button>
+              <button key={q} onClick={() => setQuarters((p) => toggle(p, q))}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${quarters.has(q) ? "bg-indigo-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
+              >{q}</button>
             ))}
           </div>
-          <div className="flex gap-1.5 flex-wrap">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-gray-400 w-12 shrink-0">프로젝트</span>
+            <button
+              onClick={() => setProjects(new Set())}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${projects.size === 0 ? "bg-gray-800 text-white" : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+            >전체</button>
             {ALL_PROJECTS.map((p) => (
-              <button
-                key={p}
-                onClick={() => setProjectFilter(p)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  projectFilter === p
-                    ? "bg-gray-800 text-white"
-                    : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                {p}
-              </button>
+              <button key={p} onClick={() => setProjects((prev) => toggle(prev, p))}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${projects.has(p) ? "bg-gray-800 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
+              >{p}</button>
             ))}
           </div>
-          <div className="flex gap-1.5 flex-wrap">
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-gray-400 w-12 shrink-0">상태</span>
+            <button
+              onClick={() => setStatuses(new Set())}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${statuses.size === 0 ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+            >전체</button>
             {ALL_STATUSES.map((s) => (
-              <button
-                key={s}
-                onClick={() => setStatusFilter(s)}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                  statusFilter === s
-                    ? "bg-blue-600 text-white"
-                    : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
-                }`}
-              >
-                {s}
-              </button>
+              <button key={s} onClick={() => setStatuses((p) => toggle(p, s))}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${statuses.has(s) ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
+              >{s}</button>
             ))}
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-gray-400 w-12 shrink-0">검색</span>
+            <input
+              type="text"
+              placeholder="티켓 번호 · 제목 · 담당자"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="border border-gray-200 rounded-lg px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
+            />
           </div>
         </div>
 
