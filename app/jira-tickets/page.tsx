@@ -318,6 +318,7 @@ export default function JiraTicketsPage() {
               <tr className="border-b border-gray-100 bg-gray-50 text-gray-500 text-xs">
                 <th className="text-left px-4 py-3 font-medium w-28">티켓</th>
                 <th className="text-left px-4 py-3 font-medium">제목</th>
+                <th className="text-left px-4 py-3 font-medium w-20">분기</th>
                 <th className="text-left px-4 py-3 font-medium w-24">프로젝트</th>
                 <th className="text-left px-4 py-3 font-medium w-20">담당자</th>
                 <th className="text-left px-4 py-3 font-medium w-28">상태</th>
@@ -328,7 +329,7 @@ export default function JiraTicketsPage() {
             <tbody>
               {filtered.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="text-center py-12 text-gray-400 text-sm">
+                  <td colSpan={8} className="text-center py-12 text-gray-400 text-sm">
                     검색 결과가 없습니다.
                   </td>
                 </tr>
@@ -346,6 +347,13 @@ export default function JiraTicketsPage() {
                       </a>
                     </td>
                     <td className="px-4 py-3 text-gray-800">{t.summary}</td>
+                    <td className="px-4 py-3">
+                      {Q2_KEYS.has(t.key) ? (
+                        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-500 whitespace-nowrap">Q2</span>
+                      ) : (
+                        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-400 whitespace-nowrap">Q1</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="text-xs text-gray-500 font-medium">{t.project}</span>
                     </td>
