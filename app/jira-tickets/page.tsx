@@ -82,14 +82,14 @@ const raw: Ticket[] = [
   { key: "TM-2738", summary: "[이구위크 Eng] 이벤트 트래픽 증가 대비 성능 검증 및 병목/개선 체계 구축",    status: "SUGGESTED",      assignee: "이창현",  eta: "2026-05-30", type: "Initiative", project: "TM" },
   { key: "TM-2741", summary: "[티켓 내재화] 좌석 선점/해제 모듈 내재화",                                   status: "개발중",         assignee: "강행남",  eta: "2026-05-14", type: "Initiative", project: "TM" },
   { key: "TM-2742", summary: "[티켓 내재화] 대기열 내재화",                                                status: "준비중",         assignee: "강행남",  eta: "2026-05-29", type: "Initiative", project: "TM" },
-  { key: "TM-2745", summary: "[결제] 케이뱅크 할인혜택 넛징",                                             status: "준비중",         assignee: "정유민",  eta: "2026-07-20", type: "Initiative", project: "TM" },
-  { key: "TM-2746", summary: "[파트너] 큐레이터 상품 시딩 캠페인 - 무료주문 생성",                         status: "기획완료",        assignee: "정유민",  eta: "2026-05-29", type: "Initiative", project: "TM" },
+  { key: "TM-2745", summary: "[결제] 케이뱅크 할인혜택 넛징",                                             status: "SUGGESTED",      assignee: "정유민",  eta: "2026-07-20", type: "Initiative", project: "TM" },
+  { key: "TM-2746", summary: "[파트너] 큐레이터 상품 시딩 캠페인 - 무료주문 생성",                         status: "개발중",          assignee: "정유민",  eta: "2026-05-29", type: "Initiative", project: "TM" },
   { key: "TM-2751", summary: "[CS] AI Chat Agent 1:1문의 진입점 A/B 테스트",                               status: "SUGGESTED",      assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2753", summary: "[CS] CS 상담 Agent Workspace 도입",                                         status: "SUGGESTED",      assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2756", summary: "[OCMP] 통합 상품등록 어드민 요구사항 수집 설계 - 29CM",                      status: "기획중",          assignee: "정유민",  eta: "2026-07-31", type: "Initiative", project: "TM" },
   { key: "TM-2758", summary: "[카탈로그] 표준카테고리 미매칭 상품 매핑",                                   status: "SUGGESTED",      assignee: "백수지",  eta: "2026-06-30", type: "Initiative", project: "TM" },
-  { key: "TM-2762", summary: "[채널] 네이버EP 매핑율 향상 Phase 2",                                        status: "준비중",         assignee: "백수지",  eta: "-",          type: "Initiative", project: "TM" },
-  { key: "TM-2770", summary: "[클레임] N회차 교환 로직 개선",                                              status: "SUGGESTED",      assignee: "-",       eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2762", summary: "[채널] 네이버EP 매핑율 향상 Phase 2",                                        status: "Backlog",        assignee: "백수지",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2770", summary: "[클레임] N회차 교환 로직 개선",                                              status: "Backlog",        assignee: "-",       eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2779", summary: "[CS] CS 상담 CRM 도입 (w/ Salesforce)",                                     status: "SUGGESTED",      assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2814", summary: "SRP, PLP 퀵패싯(브랜드,컬러) 고객향 UI/UX 개선",                            status: "디자인완료",      assignee: "이현욱",  eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2815", summary: "[티켓 내재화] 좌석 배치도 사용성 개선",                                      status: "개발중",         assignee: "강행남",  eta: "-",          type: "Initiative", project: "TM" },
@@ -146,7 +146,7 @@ const raw: Ticket[] = [
   { key: "M29CMCCF-967",  summary: "[장바구니] 할인 UX 고도화 phase2: 구매 Urgency 강화 CMFE",            status: "완료",           assignee: "백주은",  eta: "2025-12-17", type: "Epic", project: "M29CMCCF" },
   { key: "M29CMCCF-985",  summary: "[Y26Q1] 29커넥트 메뉴 권한 제어 - CMFE",                              status: "완료",           assignee: "방창배",  eta: "2026-01-27", type: "Epic", project: "M29CMCCF" },
   { key: "M29CMCCF-1031", summary: "[Y26Q1] CMFE KTLO",                                                   status: "완료",           assignee: "이현진",  eta: "2026-03-31", type: "Epic", project: "M29CMCCF" },
-  { key: "M29CMCCF-1032", summary: "[Y26Q1] CMFE BAU",                                                    status: "In Progress",    assignee: "이현진",  eta: "2026-03-31", type: "Epic", project: "M29CMCCF" },
+  { key: "M29CMCCF-1032", summary: "[Y26Q1] CMFE BAU",                                                    status: "완료",           assignee: "이현진",  eta: "2026-03-31", type: "Epic", project: "M29CMCCF" },
   { key: "M29CMCCF-1033", summary: "[Y26Q1] CMFE Urgent",                                                 status: "완료",           assignee: "이현진",  eta: "2026-03-31", type: "Epic", project: "M29CMCCF" },
   { key: "M29CMCCF-1038", summary: "[Y26Q1] (링펜스) PDP 내 어드민 입력 KC 인증번호 연동 - CMFE",         status: "완료",           assignee: "조창훈",  eta: "2026-01-14", type: "Epic", project: "M29CMCCF" },
   { key: "M29CMCCF-1044", summary: "[장고 좋아요 API 제거] LikeApiService.ts",                            status: "완료",           assignee: "방창배",  eta: "2026-01-13", type: "Dev",  project: "M29CMCCF" },
@@ -192,9 +192,14 @@ const Q2_KEYS = new Set([
   "TM-2815", "TM-2817", "TM-2853", "TM-2878",
 ]);
 
-const ALL_QUARTERS = ["Y26Q1", "Y26Q2"];
+const ALL_QUARTERS = ["Y26Q1", "Q1+Q2", "Y26Q2"];
 const ALL_PROJECTS = ["TM", "CMALL", "M29CMCCF", "EF"];
 const ALL_STATUSES = ["론치완료/완료", "개발중", "QA중", "SUGGESTED", "HOLD/Postponed", "기타"];
+
+function extractDomain(summary: string): string {
+  const m = summary.match(/^\[([^\]]+)\]/);
+  return m ? m[1] : "기타";
+}
 
 function matchStatus(status: string, filter: string): boolean {
   if (filter === "전체") return true;
@@ -217,19 +222,31 @@ export default function JiraTicketsPage() {
   const [quarters, setQuarters] = useState<Set<string>>(new Set());
   const [projects, setProjects] = useState<Set<string>>(new Set());
   const [statuses, setStatuses] = useState<Set<string>>(new Set());
+  const [domainFilter, setDomainFilter] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
+
+  const allDomains = useMemo(() => {
+    const set = new Set(raw.map((t) => extractDomain(t.summary)));
+    return [...set].sort((a, b) => a === "기타" ? 1 : b === "기타" ? -1 : a.localeCompare(b, "ko"));
+  }, []);
 
   const filtered = useMemo(() => {
     return raw.filter((t) => {
       if (quarters.size > 0) {
         const isQ2 = Q2_KEYS.has(t.key);
         const isQ1Q2 = Q1Q2_KEYS.has(t.key);
-        const isQ1 = !isQ2 || isQ1Q2;
+        const isQ1only = !isQ2;
+        const isQ2only = isQ2 && !isQ1Q2;
         const wantQ1 = quarters.has("Y26Q1");
         const wantQ2 = quarters.has("Y26Q2");
-        if (wantQ1 && !wantQ2 && !isQ1) return false;
-        if (wantQ2 && !wantQ1 && !isQ2) return false;
+        const wantQ1Q2 = quarters.has("Q1+Q2");
+        const matches =
+          (wantQ1 && (isQ1only || isQ1Q2)) ||
+          (wantQ2 && (isQ2only || isQ1Q2)) ||
+          (wantQ1Q2 && isQ1Q2);
+        if (!matches) return false;
       }
+      if (domainFilter.size > 0 && !domainFilter.has(extractDomain(t.summary))) return false;
       if (projects.size > 0 && !projects.has(t.project)) return false;
       if (statuses.size > 0 && !Array.from(statuses).some((s) => matchStatus(t.status, s))) return false;
       if (search) {
@@ -303,6 +320,18 @@ export default function JiraTicketsPage() {
               <button key={s} onClick={() => setStatuses((p) => toggle(p, s))}
                 className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${statuses.has(s) ? "bg-blue-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
               >{s}</button>
+            ))}
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <span className="text-xs text-gray-400 w-12 shrink-0">도메인</span>
+            <button
+              onClick={() => setDomainFilter(new Set())}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${domainFilter.size === 0 ? "bg-teal-600 text-white" : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+            >전체</button>
+            {allDomains.map((d) => (
+              <button key={d} onClick={() => setDomainFilter((p) => toggle(p, d))}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${domainFilter.has(d) ? "bg-teal-600 text-white" : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
+              >{d}</button>
             ))}
           </div>
           <div className="flex items-center gap-1.5">
