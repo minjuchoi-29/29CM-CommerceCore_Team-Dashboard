@@ -177,10 +177,14 @@ const raw: Ticket[] = [
   { key: "EF-908",   summary: "[보안] [29Connect] API 인증체계 개선 - Static Key V2 전환",                status: "완료",           assignee: "윤정오",  eta: "2026-02-27", type: "Epic", project: "EF" },
 ];
 
-const Q2_KEYS = new Set([
+const Q1Q2_KEYS = new Set([
   "TM-1241", "TM-1846", "TM-1869", "TM-1871", "TM-1886",
   "TM-2048", "TM-2155", "TM-2174", "TM-2182", "TM-2185",
   "TM-2186", "TM-2216", "TM-2234", "TM-2294",
+]);
+
+const Q2_KEYS = new Set([
+  ...Q1Q2_KEYS,
   "TM-2513", "TM-2726", "TM-2727", "TM-2734", "TM-2735",
   "TM-2736", "TM-2737", "TM-2738", "TM-2741", "TM-2742",
   "TM-2745", "TM-2746", "TM-2751", "TM-2753", "TM-2756",
@@ -219,9 +223,11 @@ export default function JiraTicketsPage() {
     return raw.filter((t) => {
       if (quarters.size > 0) {
         const isQ2 = Q2_KEYS.has(t.key);
+        const isQ1Q2 = Q1Q2_KEYS.has(t.key);
+        const isQ1 = !isQ2 || isQ1Q2;
         const wantQ1 = quarters.has("Y26Q1");
         const wantQ2 = quarters.has("Y26Q2");
-        if (wantQ1 && !wantQ2 && isQ2) return false;
+        if (wantQ1 && !wantQ2 && !isQ1) return false;
         if (wantQ2 && !wantQ1 && !isQ2) return false;
       }
       if (projects.size > 0 && !projects.has(t.project)) return false;
@@ -348,7 +354,9 @@ export default function JiraTicketsPage() {
                     </td>
                     <td className="px-4 py-3 text-gray-800">{t.summary}</td>
                     <td className="px-4 py-3">
-                      {Q2_KEYS.has(t.key) ? (
+                      {Q1Q2_KEYS.has(t.key) ? (
+                        <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-violet-100 text-violet-600 whitespace-nowrap">Q1+Q2</span>
+                      ) : Q2_KEYS.has(t.key) ? (
                         <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-indigo-50 text-indigo-500 whitespace-nowrap">Q2</span>
                       ) : (
                         <span className="inline-block px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-400 whitespace-nowrap">Q1</span>
