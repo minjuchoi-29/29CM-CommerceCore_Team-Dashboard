@@ -1,5 +1,7 @@
 import TicketBoard, { type Ticket } from "./TicketBoard";
 
+export const dynamic = "force-dynamic";
+
 const JIRA_HOST = "https://jira.team.musinsa.com";
 const JQL =
   '"sub group[select list (multiple choices)]" = "29CM-P Commerce Core" ORDER BY created DESC';
