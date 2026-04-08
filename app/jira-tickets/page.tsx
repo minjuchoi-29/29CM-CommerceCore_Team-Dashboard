@@ -270,12 +270,6 @@ const Q2_KEYS = new Set([
   "TM-2854", "TM-2878",
 ]);
 
-// Sub Group = "29CM-P Commerce Core" 티켓만 대시보드에 표시
-const SUBGROUP_CC_KEYS = new Set([
-  "TM-2762", "TM-2763", "TM-2770", "TM-2771",
-  "TM-2779", "TM-2815", "TM-2817", "TM-2853",
-  "TM-2854", "TM-2878",
-]);
 
 const ALL_QUARTERS = ["Y26Q1", "Q1+Q2", "Y26Q2"];
 const ALL_PROJECTS = ["TM", "CMALL", "M29CMCCF", "EF"];
@@ -416,13 +410,12 @@ export default function JiraTicketsPage() {
   }
 
   const allDomains = useMemo(() => {
-    const set = new Set(raw.filter((t) => SUBGROUP_CC_KEYS.has(t.key)).map((t) => extractDomain(t.summary)));
+    const set = new Set(raw.map((t) => extractDomain(t.summary)));
     return [...set].sort((a, b) => a === "기타" ? 1 : b === "기타" ? -1 : a.localeCompare(b, "ko"));
   }, []);
 
   const filtered = useMemo(() => {
     return raw.filter((t) => {
-      if (!SUBGROUP_CC_KEYS.has(t.key)) return false;
       if (quarters.size > 0) {
         const isQ2   = Q2_KEYS.has(t.key);
         const isQ1Q2 = Q1Q2_KEYS.has(t.key);
