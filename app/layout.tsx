@@ -46,7 +46,7 @@ export default function RootLayout({
               href="/jira-tickets"
               className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
             >
-              레이블 티켓
+              전체 과제 보기
             </Link>
           </nav>
         </aside>
