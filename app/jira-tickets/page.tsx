@@ -1,17 +1,15 @@
 import TicketBoard, { type Ticket } from "./TicketBoard";
 
-const CLOUD_ID = "23c14e7d-74ed-40b6-a0bb-fbc1f6351b84";
+const JIRA_HOST = "https://jira.team.musinsa.com";
 const JQL =
   '"sub group[select list (multiple choices)]" = "29CM-P Commerce Core" ORDER BY created DESC';
-const JIRA_API =
-  `https://api.atlassian.com/ex/jira/${CLOUD_ID}/rest/api/3/search`;
+const JIRA_API = `${JIRA_HOST}/rest/api/3/search`;
 
-async function fetchJiraTickets(): Promise<Ticket[]> {
+async function fetchJiraTickets(): Promise<{ tickets: Ticket[]; error?: string }> {
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
   if (!email || !token) {
-    console.error("[jira-tickets] JIRA_EMAIL or JIRA_API_TOKEN is not set");
-    return [];
+    return { tickets: [], error: "JIRA_EMAIL 또는 JIRA_API_TOKEN 환경변수가 없습니다." };
   }
 
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
@@ -39,10 +37,8 @@ async function fetchJiraTickets(): Promise<Ticket[]> {
     });
 
     if (!res.ok) {
-      console.error(
-        `[jira-tickets] Jira API error ${res.status}: ${await res.text()}`
-      );
-      break;
+      const body = await res.text();
+      return { tickets: [], error: `Jira API ${res.status}: ${body.slice(0, 300)}` };
     }
 
     const data = await res.json();
@@ -64,7 +60,7 @@ async function fetchJiraTickets(): Promise<Ticket[]> {
     startAt += data.issues.length;
   }
 
-  return tickets;
+  return { tickets };
 }
 
 export default async function JiraTicketsPage() {
@@ -87,6 +83,18 @@ export default async function JiraTicketsPage() {
     );
   }
 
-  const tickets = await fetchJiraTickets();
+  const { tickets, error } = await fetchJiraTickets();
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="bg-white border border-red-200 rounded-xl px-8 py-6 max-w-lg text-center">
+          <p className="text-sm font-semibold text-red-600 mb-2">Jira API 오류</p>
+          <p className="text-xs text-gray-500 font-mono break-all leading-relaxed">{error}</p>
+        </div>
+      </div>
+    );
+  }
+
   return <TicketBoard tickets={tickets} />;
 }
