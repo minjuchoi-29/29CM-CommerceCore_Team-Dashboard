@@ -170,7 +170,10 @@ const raw: Ticket[] = [
   { key: "TM-2815", summary: "[티켓 내재화] 좌석 배치도 사용성 개선",                                      status: "개발중",         assignee: "강행남",  eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2817", summary: "무신사트레이딩 합병 : 물류/ERP(SAP) 연동 마스터 정리",                       status: "개발중",         assignee: "윤정오",  eta: "-",          type: "Initiative", project: "TM" },
   { key: "TM-2853", summary: "[카탈로그] O-SKU 전환 대응 29CM 상품등록 내부 API 신설",                     status: "개발중",         assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
-  { key: "TM-2878", summary: "29CM EP 송출 상품 중 카탈로그 자동맵핑 상품 비중 개선",                      status: "SUGGESTED",      assignee: "최민주",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2763", summary: "쿠폰 전시가격 미노출 브랜드 설정 기능(블랙리스트) 개선",                       status: "디자인중",        assignee: "정유민",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2771", summary: "[OCMP] AI Chat agent 상담사 채팅 기능 도입",                                    status: "SUGGESTED",      assignee: "-",       eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2854", summary: "[파트너] [29Connect] 매입 상품 수기 재고 차감 기능 도입 - 나이키 반출 대응",    status: "SUGGESTED",      assignee: "좌예슬",  eta: "-",          type: "Initiative", project: "TM" },
+  { key: "TM-2878", summary: "29CM EP 송출 상품 중 카탈로그 자동맵핑 상품 비중 개선",                        status: "SUGGESTED",      assignee: "최민주",  eta: "-",          type: "Initiative", project: "TM" },
   // CMALL
   { key: "CMALL-507",  summary: "인터페이스 일관성 기준 위반을 자동 검수하는 플러그인 제작 PoC",            status: "배포완료",       assignee: "윤민희",  eta: "2025-12-30", type: "Initiative", project: "CMALL" },
   { key: "CMALL-519",  summary: "25'Q4 29CM KTLO",                                                        status: "론치완료",       assignee: "김영진",  eta: "2025-12-31", type: "Initiative", project: "CMALL" },
@@ -262,8 +265,16 @@ const Q2_KEYS = new Set([
   ...Q1Q2_KEYS,
   "TM-2513", "TM-2726", "TM-2727", "TM-2741", "TM-2742",
   "TM-2745", "TM-2746", "TM-2751", "TM-2753", "TM-2756",
-  "TM-2758", "TM-2762", "TM-2770", "TM-2779", "TM-2814",
-  "TM-2815", "TM-2817", "TM-2853", "TM-2878",
+  "TM-2758", "TM-2762", "TM-2763", "TM-2770", "TM-2771",
+  "TM-2779", "TM-2814", "TM-2815", "TM-2817", "TM-2853",
+  "TM-2854", "TM-2878",
+]);
+
+// Sub Group = "29CM-P Commerce Core" 티켓만 대시보드에 표시
+const SUBGROUP_CC_KEYS = new Set([
+  "TM-2762", "TM-2763", "TM-2770", "TM-2771",
+  "TM-2779", "TM-2815", "TM-2817", "TM-2853",
+  "TM-2854", "TM-2878",
 ]);
 
 const ALL_QUARTERS = ["Y26Q1", "Q1+Q2", "Y26Q2"];
@@ -405,12 +416,13 @@ export default function JiraTicketsPage() {
   }
 
   const allDomains = useMemo(() => {
-    const set = new Set(raw.map((t) => extractDomain(t.summary)));
+    const set = new Set(raw.filter((t) => SUBGROUP_CC_KEYS.has(t.key)).map((t) => extractDomain(t.summary)));
     return [...set].sort((a, b) => a === "기타" ? 1 : b === "기타" ? -1 : a.localeCompare(b, "ko"));
   }, []);
 
   const filtered = useMemo(() => {
     return raw.filter((t) => {
+      if (!SUBGROUP_CC_KEYS.has(t.key)) return false;
       if (quarters.size > 0) {
         const isQ2   = Q2_KEYS.has(t.key);
         const isQ1Q2 = Q1Q2_KEYS.has(t.key);
@@ -449,7 +461,7 @@ export default function JiraTicketsPage() {
       <div className="flex-1 min-w-0 px-6 py-8">
         <div className="mb-5">
           <h2 className="text-lg font-bold text-gray-900">전체 과제 현황</h2>
-          <p className="text-sm text-gray-400 mt-0.5">Labels: 29cm_CC · Y26Q1/Q2 · 29CM_OKR</p>
+          <p className="text-sm text-gray-400 mt-0.5">Sub Group: 29CM-P Commerce Core</p>
         </div>
 
         {/* 요약 카드 */}
