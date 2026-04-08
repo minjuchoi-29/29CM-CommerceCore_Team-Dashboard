@@ -28,29 +28,33 @@ export default function RootLayout({
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
-      <body className="min-h-full flex flex-col">
-        <header className="bg-white border-b border-gray-200 px-8 py-4">
-          <div className="max-w-7xl mx-auto flex items-center justify-between">
-            <div>
-              <h1 className="text-lg font-bold text-gray-900">29CM Commerce Core</h1>
-            </div>
-            <nav className="flex gap-1">
-              <Link
-                href="/"
-                className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
-              >
-                Q2 Initiative
-              </Link>
-              <Link
-                href="/jira-tickets"
-                className="px-4 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
-              >
-                레이블 티켓
-              </Link>
-            </nav>
+      <body className="min-h-full flex">
+        {/* 좌측 사이드바 */}
+        <aside className="w-52 min-h-screen bg-white border-r border-gray-200 flex flex-col shrink-0">
+          <div className="px-5 py-5 border-b border-gray-100">
+            <h1 className="text-sm font-bold text-gray-900">29CM</h1>
+            <p className="text-xs text-gray-400 mt-0.5">Commerce Core</p>
           </div>
-        </header>
-        {children}
+          <nav className="flex flex-col gap-1 p-3 mt-1">
+            <Link
+              href="/"
+              className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              담당자별 확인하기
+            </Link>
+            <Link
+              href="/jira-tickets"
+              className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+            >
+              레이블 티켓
+            </Link>
+          </nav>
+        </aside>
+
+        {/* 메인 콘텐츠 */}
+        <div className="flex-1 min-w-0">
+          {children}
+        </div>
       </body>
     </html>
   );
