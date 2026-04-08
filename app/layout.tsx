@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import Link from "next/link";
+import { auth, signOut } from "@/auth";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -18,11 +19,13 @@ export const metadata: Metadata = {
   description: "29CM Commerce Core Team Dashboard",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const session = await auth();
+
   return (
     <html
       lang="en"
@@ -49,6 +52,25 @@ export default function RootLayout({
               전체 과제 보기
             </Link>
           </nav>
+
+          {/* 하단: 로그인 유저 + 로그아웃 */}
+          {session?.user && (
+            <div className="mt-auto px-4 py-4 border-t border-gray-100">
+              <p className="text-xs text-gray-500 truncate">{session.user.name}</p>
+              <p className="text-[11px] text-gray-400 truncate mb-2">{session.user.email}</p>
+              <form action={async () => {
+                "use server";
+                await signOut({ redirectTo: "/api/auth/signin" });
+              }}>
+                <button
+                  type="submit"
+                  className="w-full text-xs text-gray-400 hover:text-gray-600 text-left py-1 transition-colors"
+                >
+                  로그아웃
+                </button>
+              </form>
+            </div>
+          )}
         </aside>
 
         {/* 메인 콘텐츠 */}

@@ -1,5 +1,6 @@
 "use client";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { STATIC_TICKETS } from "./tickets-data";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -184,7 +185,12 @@ function newRow(): RoleSchedule {
   return { role: "기획", person: "", start: "", end: "", status: "예정" };
 }
 
-export default function TicketBoard({ tickets }: { tickets: Ticket[] }) {
+export default function TicketBoard() {
+  const [tickets, setTickets]       = useState<Ticket[]>(STATIC_TICKETS);
+  const [fetching, setFetching]     = useState(false);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
   const [selected, setSelected]     = useState<Ticket | null>(null);
   const [quarters, setQuarters]     = useState<Set<string>>(new Set());
   const [projects, setProjects]     = useState<Set<string>>(new Set());
@@ -196,6 +202,28 @@ export default function TicketBoard({ tickets }: { tickets: Ticket[] }) {
   const [schedules, setSchedules]   = useState<Record<string, RoleSchedule[]>>({});
   const [editMode, setEditMode]     = useState(false);
   const [editRows, setEditRows]     = useState<RoleSchedule[]>([]);
+
+  const fetchTickets = useCallback(async () => {
+    setFetching(true);
+    setFetchError(null);
+    try {
+      const res = await fetch("/api/jira-tickets");
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setFetchError(data.error ?? "알 수 없는 오류");
+      } else {
+        setTickets(data.tickets);
+        setLastUpdated(new Date());
+      }
+    } catch {
+      setFetchError("네트워크 오류가 발생했습니다.");
+    } finally {
+      setFetching(false);
+    }
+  }, []);
+
+  // 자동 fetch 비활성화 — 새로고침 버튼으로만 호출
+  // useEffect(() => { fetchTickets(); }, [fetchTickets]);
 
   useEffect(() => {
     try {
@@ -276,10 +304,34 @@ export default function TicketBoard({ tickets }: { tickets: Ticket[] }) {
     <div className="flex bg-gray-50 min-h-screen">
       {/* ── 리스트 패널 ── */}
       <div className="flex-1 min-w-0 px-6 py-8">
-        <div className="mb-5">
-          <h2 className="text-lg font-bold text-gray-900">전체 과제 현황</h2>
-          <p className="text-sm text-gray-400 mt-0.5">Sub Group: 29CM-P Commerce Core</p>
+        <div className="mb-5 flex items-start justify-between">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900">전체 과제 현황</h2>
+            <p className="text-sm text-gray-400 mt-0.5">Sub Group: 29CM-P Commerce Core</p>
+          </div>
+          <div className="flex items-center gap-3 mt-1">
+            {lastUpdated && (
+              <span className="text-xs text-gray-400">
+                {lastUpdated.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 기준
+              </span>
+            )}
+            <button
+              onClick={fetchTickets}
+              disabled={fetching}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+            >
+              <svg className={`w-3 h-3 ${fetching ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              {fetching ? "불러오는 중…" : "새로고침"}
+            </button>
+          </div>
         </div>
+        {fetchError && (
+          <div className="mb-4 px-4 py-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600 font-mono break-all">
+            {fetchError}
+          </div>
+        )}
 
         {/* 요약 카드 */}
         <div className="grid grid-cols-4 gap-3 mb-5">
