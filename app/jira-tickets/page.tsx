@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import TicketBoard, { type Ticket } from "./TicketBoard";
 
 export const dynamic = "force-dynamic";
@@ -85,7 +86,10 @@ export default async function JiraTicketsPage() {
     );
   }
 
-  const { tickets, error } = await fetchJiraTickets();
+  const getCached = unstable_cache(fetchJiraTickets, ["jira-cc-tickets"], {
+    revalidate: 300,
+  });
+  const { tickets, error } = await getCached();
 
   if (error) {
     return (
