@@ -122,6 +122,19 @@ function toggle(prev: Set<string>, value: string): Set<string> {
   return next;
 }
 
+const DOW = ["일", "월", "화", "수", "목", "금", "토"];
+
+function formatDateWithDay(dateStr: string): string {
+  if (!dateStr) return "-";
+  const d = new Date(dateStr + "T00:00:00");
+  return `${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
+}
+
+function calcDuration(start: string, end: string): number {
+  if (!start || !end) return 0;
+  return Math.round((new Date(end).getTime() - new Date(start).getTime()) / 86400000) + 1;
+}
+
 function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
   return (
     <div className="mt-3">
@@ -140,28 +153,40 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           ))}
         </div>
       </div>
-      {/* Today line + role rows */}
+      {/* Role rows */}
       <div className="relative">
         {roles && roles.length > 0 ? roles.map((r) => (
-          <div key={`${r.role}-${r.person}`} className="flex items-center mb-1.5">
-            <div className="w-36 shrink-0 flex items-center gap-1.5">
-              <span className="text-[11px] font-medium text-gray-600 w-14 shrink-0">{r.role}</span>
-              <span className="text-[11px] text-gray-400 truncate">{r.person}</span>
+          <div key={`${r.role}-${r.person}`} className="mb-2">
+            <div className="flex items-center mb-0.5">
+              <div className="w-36 shrink-0 flex items-center gap-1.5">
+                <span className="text-[11px] font-medium text-gray-600 w-14 shrink-0">{r.role}</span>
+                <span className="text-[11px] text-gray-400 truncate">{r.person}</span>
+              </div>
+              <div className="flex-1 relative h-5 bg-gray-100 rounded-sm">
+                {/* Today marker */}
+                <div
+                  className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10"
+                  style={{ left: `${TODAY_PCT}%` }}
+                />
+                <div
+                  className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : ""}`}
+                  style={{ left: `${toPct(r.start)}%`, width: `${spanPct(r.start, r.end)}%` }}
+                />
+              </div>
+              <span className={`ml-2 text-[10px] w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : "text-gray-400"}`}>
+                {r.status}
+              </span>
             </div>
-            <div className="flex-1 relative h-5 bg-gray-100 rounded-sm">
-              {/* Today marker */}
-              <div
-                className="absolute top-0 bottom-0 w-px bg-red-400 z-10"
-                style={{ left: `${TODAY_PCT}%` }}
-              />
-              <div
-                className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : ""}`}
-                style={{ left: `${toPct(r.start)}%`, width: `${spanPct(r.start, r.end)}%` }}
-              />
-            </div>
-            <span className={`ml-2 text-[10px] w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : "text-gray-400"}`}>
-              {r.status}
-            </span>
+            {/* 날짜 + 소요기간 */}
+            {r.start && r.end && (
+              <div className="flex items-center">
+                <div className="w-36 shrink-0" />
+                <span className="text-[10px] text-gray-400">
+                  {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
+                  <span className="ml-1.5 text-gray-300">({calcDuration(r.start, r.end)}일)</span>
+                </span>
+              </div>
+            )}
           </div>
         )) : (
           <div className="flex items-center">
@@ -177,7 +202,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
 const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "FE-CFE", "FE-DFE", "Mobile", "QA"];
 
 function isCustomRole(role: string) {
-  return role !== "" && !PRESET_ROLES.includes(role);
+  return !PRESET_ROLES.includes(role);
 }
 const STATUS_OPTIONS: RoleSchedule["status"][] = ["예정", "진행중", "완료"];
 
@@ -502,6 +527,10 @@ export default function TicketBoard() {
                 <div className="space-y-2">
                   {editRows.map((row, i) => {
                     const custom = isCustomRole(row.role);
+                    const dashIdx = row.role.indexOf("-");
+                    const customD1 = custom ? (dashIdx === -1 ? "" : row.role.slice(0, dashIdx)) : "";
+                    const customD2 = custom ? (dashIdx === -1 ? row.role : row.role.slice(dashIdx + 1)) : "";
+                    const combineRole = (d1: string, d2: string) => d1 && d2 ? `${d1}-${d2}` : d1 || d2;
                     return (
                       <div key={i} className="bg-gray-50 rounded-lg p-2.5 space-y-1.5">
                         <div className="flex items-center gap-1.5">
@@ -517,14 +546,22 @@ export default function TicketBoard() {
                             {PRESET_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                             <option value="직접입력">직접입력</option>
                           </select>
-                          {/* 직접입력 시 작업명 텍스트 */}
+                          {/* 직접입력 시: depth1 + depth2 입력 */}
                           {custom && (
-                            <input
-                              value={row.role}
-                              onChange={(e) => updateRow(i, "role", e.target.value)}
-                              placeholder="작업명 입력"
-                              className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 w-24 shrink-0"
-                            />
+                            <>
+                              <input
+                                value={customD1}
+                                onChange={(e) => updateRow(i, "role", combineRole(e.target.value, customD2))}
+                                placeholder="분류"
+                                className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 w-14 shrink-0"
+                              />
+                              <input
+                                value={customD2}
+                                onChange={(e) => updateRow(i, "role", combineRole(customD1, e.target.value))}
+                                placeholder="작업명"
+                                className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 w-16 shrink-0"
+                              />
+                            </>
                           )}
                           {/* 담당자 */}
                           <input
@@ -557,6 +594,7 @@ export default function TicketBoard() {
                           <input
                             type="date"
                             value={row.end}
+                            min={row.start || undefined}
                             onChange={(e) => updateRow(i, "end", e.target.value)}
                             className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 flex-1"
                           />
@@ -567,22 +605,11 @@ export default function TicketBoard() {
                   <button
                     onClick={() => setEditRows(prev => [...prev, newRow()])}
                     className="w-full text-xs text-gray-400 hover:text-gray-600 border border-dashed border-gray-200 rounded-lg py-1.5 hover:border-gray-300 transition-colors"
-                  >+ 직무 추가</button>
+                  >+ 작업 추가</button>
                 </div>
               ) : (
                 /* 뷰 모드: Gantt */
                 <>
-                  <div className="flex flex-wrap gap-2 mb-2">
-                    {Object.entries(ROLE_COLOR).map(([role, color]) => (
-                      <span key={role} className="flex items-center gap-1 text-[10px] text-gray-500">
-                        <span className={`inline-block w-2.5 h-2.5 rounded-sm ${color}`} />
-                        {role}
-                      </span>
-                    ))}
-                    <span className="flex items-center gap-1 text-[10px] text-gray-400">
-                      <span className="inline-block w-px h-3 bg-red-400" />오늘
-                    </span>
-                  </div>
                   <GanttChart roles={getRoles(selected)} />
                 </>
               )}
