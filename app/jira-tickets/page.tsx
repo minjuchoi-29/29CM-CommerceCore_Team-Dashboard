@@ -3,7 +3,7 @@ import TicketBoard, { type Ticket } from "./TicketBoard";
 const JIRA_HOST = "https://jira.team.musinsa.com";
 const JQL =
   '"sub group[select list (multiple choices)]" = "29CM-P Commerce Core" ORDER BY created DESC';
-const JIRA_API = `${JIRA_HOST}/rest/api/3/search`;
+const JIRA_API = `${JIRA_HOST}/rest/api/3/search/jql`;
 
 async function fetchJiraTickets(): Promise<{ tickets: Ticket[]; error?: string }> {
   const email = process.env.JIRA_EMAIL;
