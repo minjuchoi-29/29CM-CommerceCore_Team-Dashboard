@@ -68,6 +68,25 @@ async function fetchJiraTickets(): Promise<Ticket[]> {
 }
 
 export default async function JiraTicketsPage() {
+  const email = process.env.JIRA_EMAIL;
+  const token = process.env.JIRA_API_TOKEN;
+
+  if (!email || !token) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="bg-white border border-red-200 rounded-xl px-8 py-6 max-w-md text-center">
+          <p className="text-sm font-semibold text-red-600 mb-2">환경변수 미설정</p>
+          <p className="text-xs text-gray-500 leading-relaxed">
+            Vercel 대시보드 → Settings → Environment Variables 에서
+            <br />
+            <code className="bg-gray-100 px-1 rounded">JIRA_EMAIL</code> 과{" "}
+            <code className="bg-gray-100 px-1 rounded">JIRA_API_TOKEN</code> 을 등록해주세요.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const tickets = await fetchJiraTickets();
   return <TicketBoard tickets={tickets} />;
 }
