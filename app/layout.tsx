@@ -43,13 +43,13 @@ export default async function RootLayout({
               href="/"
               className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
             >
-              담당자별 확인하기
+              전체 과제 보기
             </Link>
             <Link
-              href="/jira-tickets"
+              href="/q2-initiative"
               className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
             >
-              전체 과제 보기
+              담당자별 확인하기
             </Link>
           </nav>
 

@@ -46,16 +46,31 @@ type RoleSchedule = {
   status: "완료" | "진행중" | "예정";
 };
 
+const TYPE_COLOR: Record<string, string> = {
+  "Initiative": "bg-indigo-100 text-indigo-700",
+  "Epic":       "bg-violet-100 text-violet-600",
+  "Dev":        "bg-gray-100 text-gray-500",
+};
+
 export type Ticket = {
   key: string;
   summary: string;
   status: string;
   assignee: string;
+  startDate?: string;
   eta: string;
   type: string;
   project: string;
   roles?: RoleSchedule[];
   description?: string;
+  // 추가 메타 필드
+  requestDept?: string;
+  requestPriority?: string;
+  twoPagerUrl?: string;
+  prdUrl?: string;
+  parent?: string;
+  healthCheck?: string;
+  storyPoints?: number;
 };
 
 // Gantt: 2026-01-01 ~ 2026-06-30
@@ -124,6 +139,11 @@ function toggle(prev: Set<string>, value: string): Set<string> {
 
 const DOW = ["일", "월", "화", "수", "목", "금", "토"];
 
+const TODAY_LABEL = (() => {
+  const d = new Date();
+  return `${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
+})();
+
 function formatDateWithDay(dateStr: string): string {
   if (!dateStr) return "-";
   const d = new Date(dateStr + "T00:00:00");
@@ -138,19 +158,28 @@ function calcDuration(start: string, end: string): number {
 function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
   return (
     <div className="mt-3">
-      {/* Month header */}
+      {/* Month header + today label */}
       <div className="flex mb-1">
         <div className="w-36 shrink-0" />
-        <div className="flex-1 relative h-4">
+        <div className="flex-1 relative h-7">
           {GANTT_MONTHS.map((m) => (
             <span
               key={m.label}
-              className="absolute text-[10px] text-gray-400 -translate-x-1/2"
+              className="absolute text-[10px] text-gray-400 -translate-x-1/2 top-3"
               style={{ left: `${m.pct}%` }}
             >
               {m.label}
             </span>
           ))}
+          {/* 오늘 날짜 레이블 */}
+          <span
+            className="absolute top-0 -translate-x-1/2 flex flex-col items-center"
+            style={{ left: `${TODAY_PCT}%` }}
+          >
+            <span className="text-[10px] font-semibold text-red-500 whitespace-nowrap bg-red-50 px-1 rounded">
+              {TODAY_LABEL}
+            </span>
+          </span>
         </div>
       </div>
       {/* Role rows */}
@@ -228,6 +257,11 @@ export default function TicketBoard() {
   const [editMode, setEditMode]     = useState(false);
   const [editRows, setEditRows]     = useState<RoleSchedule[]>([]);
 
+  // localStorage 기반 주요 내용 요약
+  const [memos, setMemos]           = useState<Record<string, string>>({});
+  const [memoEditMode, setMemoEditMode] = useState(false);
+  const [memoText, setMemoText]     = useState("");
+
   const fetchTickets = useCallback(async () => {
     setFetching(true);
     setFetchError(null);
@@ -254,6 +288,8 @@ export default function TicketBoard() {
     try {
       const saved = localStorage.getItem("cc-schedules");
       if (saved) setSchedules(JSON.parse(saved));
+      const savedMemos = localStorage.getItem("cc-memos");
+      if (savedMemos) setMemos(JSON.parse(savedMemos));
     } catch {}
   }, []);
 
@@ -320,9 +356,18 @@ export default function TicketBoard() {
   const inProgress = filtered.filter((t) => ["개발중", "In Progress", "QA중"].includes(t.status)).length;
   const planned    = filtered.filter((t) => ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"].includes(t.status)).length;
 
+  function saveMemo(key: string, text: string) {
+    const updated = { ...memos, [key]: text };
+    setMemos(updated);
+    localStorage.setItem("cc-memos", JSON.stringify(updated));
+  }
+
   function handleSelect(t: Ticket) {
-    setSelected((prev) => prev?.key === t.key ? null : t);
+    const isSame = selected?.key === t.key;
+    setSelected(isSame ? null : t);
     setEditMode(false);
+    setMemoEditMode(false);
+    if (!isSame) setMemoText(memos[t.key] ?? "");
   }
 
   return (
@@ -410,18 +455,21 @@ export default function TicketBoard() {
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           {/* 헤더 */}
           <div className="flex items-center px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-xs text-gray-500 font-medium">
+            <span className="w-8 shrink-0 text-center">#</span>
             <span className="w-32 shrink-0">티켓</span>
             <span className="flex-1 min-w-0">제목</span>
+            <span className="w-20 shrink-0 text-center">레벨</span>
             <span className="w-16 shrink-0 text-center">프로젝트</span>
             <span className="w-16 shrink-0 text-center">담당자</span>
             <span className="w-24 shrink-0 text-center">상태</span>
+            <span className="w-24 shrink-0 text-center">시작일</span>
             <span className="w-24 shrink-0 text-center">ETA</span>
           </div>
 
           {filtered.length === 0 ? (
             <div className="py-12 text-center text-sm text-gray-400">검색 결과가 없습니다.</div>
           ) : (
-            filtered.map((t) => {
+            filtered.map((t, idx) => {
               const isSelected = selected?.key === t.key;
               return (
                 <div
@@ -433,6 +481,7 @@ export default function TicketBoard() {
                     className="flex items-center px-4 py-3 cursor-pointer"
                     onClick={() => handleSelect(t)}
                   >
+                    <span className="w-8 shrink-0 text-center text-xs text-gray-300 font-mono">{idx + 1}</span>
                     <a
                       href={`${JIRA_BASE}${t.key}`}
                       target="_blank"
@@ -443,6 +492,11 @@ export default function TicketBoard() {
                       {t.key}
                     </a>
                     <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
+                    <span className="w-20 shrink-0 flex justify-center">
+                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
+                        {t.type}
+                      </span>
+                    </span>
                     <span className="w-16 shrink-0 text-xs text-gray-400 text-center">{t.project}</span>
                     <span className="w-16 shrink-0 text-xs text-gray-500 text-center truncate">{t.assignee}</span>
                     <span className="w-24 shrink-0 flex justify-center">
@@ -450,7 +504,12 @@ export default function TicketBoard() {
                         {t.status}
                       </span>
                     </span>
-                    <span className="w-24 shrink-0 text-xs text-gray-400 text-center">{t.eta}</span>
+                    <span className={`w-24 shrink-0 text-xs text-center ${t.startDate ? "text-gray-600" : "text-gray-300"}`}>
+                      {t.startDate ?? "미정"}
+                    </span>
+                    <span className={`w-24 shrink-0 text-xs text-center ${!t.eta || t.eta === "-" ? "text-gray-300" : "text-gray-600"}`}>
+                      {!t.eta || t.eta === "-" ? "미정" : t.eta}
+                    </span>
                   </div>
 
                   {/* 펼침: Gantt */}
@@ -480,20 +539,23 @@ export default function TicketBoard() {
             </div>
 
             {/* 메타 정보 */}
-            <div className="space-y-2 mb-5">
+            <div className="space-y-2 mb-4">
               <div className="flex items-center gap-2">
                 <a href={`${JIRA_BASE}${selected.key}`} target="_blank" rel="noopener noreferrer"
                   className="font-mono text-xs text-blue-500 hover:underline">{selected.key}</a>
                 <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[selected.status] ?? "bg-gray-100 text-gray-500"}`}>
                   {selected.status}
                 </span>
+                <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${TYPE_COLOR[selected.type] ?? "bg-gray-100 text-gray-500"}`}>
+                  {selected.type}
+                </span>
               </div>
               <div className="grid grid-cols-2 gap-y-1.5 text-xs">
                 {[
-                  { label: "담당자", value: selected.assignee },
-                  { label: "ETA",    value: selected.eta },
+                  { label: "담당자",  value: selected.assignee },
                   { label: "프로젝트", value: selected.project },
-                  { label: "유형",   value: selected.type },
+                  { label: "시작일",  value: selected.startDate ?? "미정" },
+                  { label: "ETA",     value: (!selected.eta || selected.eta === "-") ? "미정" : selected.eta },
                 ].map(({ label, value }) => (
                   <div key={label}>
                     <span className="text-gray-400">{label} </span>
@@ -503,7 +565,87 @@ export default function TicketBoard() {
               </div>
             </div>
 
+            {/* 추가 메타 정보 */}
+            <div className="bg-gray-50 rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-xs">
+              {[
+                { label: "요청부문",        value: selected.requestDept },
+                { label: "요청 우선순위",   value: selected.requestPriority },
+                { label: "상위 항목",       value: selected.parent },
+                { label: "Health Check",    value: selected.healthCheck },
+                { label: "Story Points",    value: selected.storyPoints?.toString() },
+              ].map(({ label, value }) => (
+                <div key={label} className="flex items-center gap-1">
+                  <span className="text-gray-400 w-28 shrink-0">{label}</span>
+                  <span className="text-gray-700 font-medium">{value || <span className="text-gray-300">-</span>}</span>
+                </div>
+              ))}
+              {selected.twoPagerUrl && (
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-400 w-28 shrink-0">2-Pager</span>
+                  <a href={selected.twoPagerUrl} target="_blank" rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline truncate">링크 열기</a>
+                </div>
+              )}
+              {!selected.twoPagerUrl && (
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-400 w-28 shrink-0">2-Pager</span>
+                  <span className="text-gray-300">-</span>
+                </div>
+              )}
+              {selected.prdUrl && (
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-400 w-28 shrink-0">PRD Link</span>
+                  <a href={selected.prdUrl} target="_blank" rel="noopener noreferrer"
+                    className="text-blue-500 hover:underline truncate">링크 열기</a>
+                </div>
+              )}
+              {!selected.prdUrl && (
+                <div className="flex items-center gap-1">
+                  <span className="text-gray-400 w-28 shrink-0">PRD Link</span>
+                  <span className="text-gray-300">-</span>
+                </div>
+              )}
+            </div>
+
             <div className="border-t border-gray-100 pt-4">
+              {/* 주요 내용 요약 */}
+              <div className="mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">주요 내용 요약</p>
+                  {!memoEditMode ? (
+                    <button
+                      onClick={() => { setMemoText(memos[selected.key] ?? ""); setMemoEditMode(true); }}
+                      className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
+                    >{memos[selected.key] ? "편집" : "입력"}</button>
+                  ) : (
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => { saveMemo(selected.key, memoText); setMemoEditMode(false); }}
+                        className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium"
+                      >저장</button>
+                      <button onClick={() => setMemoEditMode(false)}
+                        className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
+                    </div>
+                  )}
+                </div>
+                {memoEditMode ? (
+                  <textarea
+                    value={memoText}
+                    onChange={(e) => setMemoText(e.target.value)}
+                    placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
+                    rows={4}
+                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                  />
+                ) : memos[selected.key] ? (
+                  <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2">
+                    {memos[selected.key]}
+                  </p>
+                ) : (
+                  <p className="text-xs text-gray-300 italic">입력된 내용이 없습니다</p>
+                )}
+              </div>
+
+              <div className="border-t border-gray-100 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
                 <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">작업별 일정 (2026 H1)</p>
@@ -613,6 +755,7 @@ export default function TicketBoard() {
                   <GanttChart roles={getRoles(selected)} />
                 </>
               )}
+            </div>
             </div>
           </div>
         </div>

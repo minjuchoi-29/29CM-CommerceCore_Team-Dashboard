@@ -1,5 +1,5 @@
-import TicketBoard from "./TicketBoard";
+import { redirect } from "next/navigation";
 
-export default function JiraTicketsPage() {
-  return <TicketBoard />;
+export default function JiraTicketsRedirect() {
+  redirect("/");
 }
