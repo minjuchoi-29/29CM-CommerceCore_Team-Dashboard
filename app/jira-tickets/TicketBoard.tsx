@@ -73,28 +73,28 @@ export type Ticket = {
   storyPoints?: number;
 };
 
-// Gantt: 2026-01-01 ~ 2026-06-30
-const G_START = new Date("2026-01-01").getTime();
-const G_SPAN  = new Date("2026-06-30").getTime() - G_START;
+// Gantt 전체 범위: 2026-01-01 ~ 2026-06-30
+const G_FULL_START = new Date("2026-01-01").getTime();
+const G_END        = new Date("2026-06-30").getTime();
 
-function toPct(d: string): number {
-  const t = new Date(d).getTime();
-  return Math.max(0, Math.min(100, ((t - G_START) / G_SPAN) * 100));
-}
-function spanPct(s: string, e: string): number {
-  return Math.max(0.5, ((new Date(e).getTime() - new Date(s).getTime()) / G_SPAN) * 100);
-}
-
-const GANTT_MONTHS = [
-  { label: "1월", pct: 0 },
-  { label: "2월", pct: 17.1 },
-  { label: "3월", pct: 32.6 },
-  { label: "4월", pct: 49.7 },
-  { label: "5월", pct: 66.3 },
-  { label: "6월", pct: 83.4 },
+const MONTH_DATES = [
+  { label: "1월", ms: new Date("2026-01-01").getTime() },
+  { label: "2월", ms: new Date("2026-02-01").getTime() },
+  { label: "3월", ms: new Date("2026-03-01").getTime() },
+  { label: "4월", ms: new Date("2026-04-01").getTime() },
+  { label: "5월", ms: new Date("2026-05-01").getTime() },
+  { label: "6월", ms: new Date("2026-06-01").getTime() },
 ];
 
-const TODAY_PCT = toPct(new Date().toISOString().slice(0, 10));
+// 오늘 자정 기준 ms
+const TODAY_MS = (() => {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+})();
+
+// 기본 뷰: 오늘 기준 2주 전부터
+const DEFAULT_VIEW_START = Math.max(G_FULL_START, TODAY_MS - 14 * 86400000);
 
 const Q1Q2_KEYS = new Set([
   "TM-1241", "TM-1846", "TM-1869", "TM-1871", "TM-1886",
@@ -144,6 +144,21 @@ const TODAY_LABEL = (() => {
   return `${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
 })();
 
+function makeViewFns(viewStart: number) {
+  const span = G_END - viewStart;
+  function pct(ms: number) {
+    return Math.max(0, Math.min(100, ((ms - viewStart) / span) * 100));
+  }
+  function datePct(d: string) { return pct(new Date(d).getTime()); }
+  function barLeft(s: string) { return pct(Math.max(viewStart, new Date(s).getTime())); }
+  function barWidth(s: string, e: string) {
+    const sMs = Math.max(viewStart, new Date(s).getTime());
+    const eMs = Math.min(G_END, new Date(e).getTime());
+    return eMs <= sMs ? 0 : Math.max(0.3, ((eMs - sMs) / span) * 100);
+  }
+  return { pct, datePct, barLeft, barWidth };
+}
+
 function formatDateWithDay(dateStr: string): string {
   if (!dateStr) return "-";
   const d = new Date(dateStr + "T00:00:00");
@@ -156,61 +171,80 @@ function calcDuration(start: string, end: string): number {
 }
 
 function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
+  const [showFull, setShowFull] = useState(false);
+
+  const viewStart = showFull ? G_FULL_START : DEFAULT_VIEW_START;
+  const { pct, barLeft, barWidth } = makeViewFns(viewStart);
+  const todayPct = pct(TODAY_MS);
+
+  const visibleMonths = MONTH_DATES.filter(m => m.ms >= viewStart && m.ms <= G_END);
+
+  // 뷰 밖(과거)에 완전히 잘린 바 개수
+  const hiddenCount = (roles ?? []).filter(r => r.end && new Date(r.end).getTime() < viewStart).length;
+
   return (
     <div className="mt-3">
-      {/* Month header + today label */}
-      <div className="flex mb-1">
+      {/* 월 헤더 */}
+      <div className="flex mb-0.5">
         <div className="w-36 shrink-0" />
-        <div className="flex-1 relative h-7">
-          {GANTT_MONTHS.map((m) => (
+        <div className="flex-1 relative h-5">
+          {visibleMonths.map((m) => (
             <span
               key={m.label}
-              className="absolute text-[10px] text-gray-400 -translate-x-1/2 top-3"
-              style={{ left: `${m.pct}%` }}
+              className="absolute text-xs text-gray-400 -translate-x-1/2"
+              style={{ left: `${pct(m.ms)}%` }}
             >
               {m.label}
             </span>
           ))}
-          {/* 오늘 날짜 레이블 */}
+        </div>
+      </div>
+
+      {/* 오늘 날짜 레이블 — 월 헤더 아래 별도 행 */}
+      <div className="flex mb-2">
+        <div className="w-36 shrink-0" />
+        <div className="flex-1 relative h-6">
           <span
-            className="absolute top-0 -translate-x-1/2 flex flex-col items-center"
-            style={{ left: `${TODAY_PCT}%` }}
+            className="absolute -translate-x-1/2"
+            style={{ left: `${todayPct}%` }}
           >
-            <span className="text-[10px] font-semibold text-red-500 whitespace-nowrap bg-red-50 px-1 rounded">
-              {TODAY_LABEL}
+            <span className="text-xs font-semibold text-red-500 whitespace-nowrap bg-red-50 border border-red-100 px-1.5 py-0.5 rounded">
+              오늘 {TODAY_LABEL}
             </span>
           </span>
         </div>
       </div>
-      {/* Role rows */}
+
+      {/* 롤 바 목록 */}
       <div className="relative">
         {roles && roles.length > 0 ? roles.map((r) => (
-          <div key={`${r.role}-${r.person}`} className="mb-2">
+          <div key={`${r.role}-${r.person}`} className="mb-2.5">
             <div className="flex items-center mb-0.5">
               <div className="w-36 shrink-0 flex items-center gap-1.5">
-                <span className="text-[11px] font-medium text-gray-600 w-14 shrink-0">{r.role}</span>
-                <span className="text-[11px] text-gray-400 truncate">{r.person}</span>
+                <span className="text-xs font-medium text-gray-600 w-14 shrink-0">{r.role}</span>
+                <span className="text-xs text-gray-400 truncate">{r.person}</span>
               </div>
-              <div className="flex-1 relative h-5 bg-gray-100 rounded-sm">
-                {/* Today marker */}
+              <div className="flex-1 relative h-5 bg-gray-100 rounded-sm overflow-hidden">
+                {/* 오늘 세로선 */}
                 <div
-                  className="absolute top-0 bottom-0 w-0.5 bg-red-500 z-10"
-                  style={{ left: `${TODAY_PCT}%` }}
+                  className="absolute top-0 bottom-0 w-px bg-red-400 z-10"
+                  style={{ left: `${todayPct}%` }}
                 />
-                <div
-                  className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : ""}`}
-                  style={{ left: `${toPct(r.start)}%`, width: `${spanPct(r.start, r.end)}%` }}
-                />
+                {barWidth(r.start, r.end) > 0 && (
+                  <div
+                    className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : ""}`}
+                    style={{ left: `${barLeft(r.start)}%`, width: `${barWidth(r.start, r.end)}%` }}
+                  />
+                )}
               </div>
-              <span className={`ml-2 text-[10px] w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : "text-gray-400"}`}>
+              <span className={`ml-2 text-xs w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : "text-gray-400"}`}>
                 {r.status}
               </span>
             </div>
-            {/* 날짜 + 소요기간 */}
             {r.start && r.end && (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
-                <span className="text-[10px] text-gray-400">
+                <span className="text-xs text-gray-400">
                   {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
                   <span className="ml-1.5 text-gray-300">({calcDuration(r.start, r.end)}일)</span>
                 </span>
@@ -224,6 +258,23 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           </div>
         )}
       </div>
+
+      {/* 이전 일정 collapse 토글 */}
+      <button
+        onClick={() => setShowFull(v => !v)}
+        className="mt-2 flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
+      >
+        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          {showFull
+            ? <path d="M5 15l7-7 7 7" strokeLinecap="round" strokeLinejoin="round"/>
+            : <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round"/>
+          }
+        </svg>
+        {showFull
+          ? "최근 일정으로 돌아가기"
+          : `이전 일정 전체 보기${hiddenCount > 0 ? ` (${hiddenCount}건 숨김)` : ""}`
+        }
+      </button>
     </div>
   );
 }
@@ -261,6 +312,24 @@ export default function TicketBoard() {
   const [memos, setMemos]           = useState<Record<string, string>>({});
   const [memoEditMode, setMemoEditMode] = useState(false);
   const [memoText, setMemoText]     = useState("");
+
+  // 우측 사이드바 너비 (드래그 리사이즈)
+  const [sidebarWidth, setSidebarWidth] = useState(380);
+  const isResizing = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = sidebarWidth;
+    const onMove = (ev: MouseEvent) => {
+      const delta = startX - ev.clientX;
+      setSidebarWidth(Math.min(700, Math.max(280, startW + delta)));
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [sidebarWidth]);
 
   const fetchTickets = useCallback(async () => {
     setFetching(true);
@@ -527,7 +596,12 @@ export default function TicketBoard() {
 
       {/* ── 우측 상세 패널 ── */}
       {selected && (
-        <div className="w-[380px] shrink-0 sticky top-0 h-screen overflow-y-auto border-l border-gray-200 bg-white">
+        <div className="shrink-0 sticky top-0 h-screen overflow-y-auto border-l border-gray-200 bg-white relative" style={{ width: sidebarWidth }}>
+          {/* 드래그 핸들 */}
+          <div
+            onMouseDown={isResizing}
+            className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-indigo-300 active:bg-indigo-400 transition-colors z-10"
+          />
           <div className="p-5">
             {/* 헤더 */}
             <div className="flex justify-between items-start mb-4">
@@ -611,7 +685,7 @@ export default function TicketBoard() {
               {/* 주요 내용 요약 */}
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">주요 내용 요약</p>
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">주요 내용 요약</p>
                   {!memoEditMode ? (
                     <button
                       onClick={() => { setMemoText(memos[selected.key] ?? ""); setMemoEditMode(true); }}
@@ -648,7 +722,7 @@ export default function TicketBoard() {
               <div className="border-t border-gray-100 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
-                <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wide">작업별 일정 (2026 H1)</p>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정 (2026 H1)</p>
                 {!editMode ? (
                   <button
                     onClick={startEdit}
@@ -725,14 +799,14 @@ export default function TicketBoard() {
                             className="text-gray-300 hover:text-red-400 text-base leading-none shrink-0">×</button>
                         </div>
                         <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] text-gray-500 w-6 shrink-0">시작</span>
+                          <span className="text-xs text-gray-500 w-6 shrink-0">시작</span>
                           <input
                             type="date"
                             value={row.start}
                             onChange={(e) => updateRow(i, "start", e.target.value)}
                             className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 flex-1"
                           />
-                          <span className="text-[10px] text-gray-400 shrink-0">~</span>
+                          <span className="text-xs text-gray-400 shrink-0">~</span>
                           <input
                             type="date"
                             value={row.end}
