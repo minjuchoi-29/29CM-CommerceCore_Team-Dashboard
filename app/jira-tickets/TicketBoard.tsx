@@ -1,6 +1,5 @@
 "use client";
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { STATIC_TICKETS } from "./tickets-data";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -291,10 +290,10 @@ function newRow(): RoleSchedule {
 }
 
 export default function TicketBoard() {
-  const [tickets, setTickets]       = useState<Ticket[]>(STATIC_TICKETS);
-  const [fetching, setFetching]     = useState(false);
+  const [tickets, setTickets]       = useState<Ticket[]>([]);
+  const [fetching, setFetching]     = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [syncedAt, setSyncedAt]     = useState<Date | null>(null);
 
   const [selected, setSelected]     = useState<Ticket | null>(null);
   const [quarters, setQuarters]     = useState<Set<string>>(new Set());
@@ -315,6 +314,12 @@ export default function TicketBoard() {
 
   // 우측 사이드바 너비 (드래그 리사이즈)
   const [sidebarWidth, setSidebarWidth] = useState(380);
+
+  // 사용자 직접 추가 티켓 관리
+  const [addKeyInput, setAddKeyInput]     = useState("");
+  const [addKeyLoading, setAddKeyLoading] = useState(false);
+  const [addKeyError, setAddKeyError]     = useState<string | null>(null);
+  const [customKeys, setCustomKeys]       = useState<Set<string>>(new Set());
   const isResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -331,27 +336,212 @@ export default function TicketBoard() {
     window.addEventListener("mouseup", onUp);
   }, [sidebarWidth]);
 
-  const fetchTickets = useCallback(async () => {
+  // localStorage 클라이언트 캐시 키 / 최대 보존 시간
+  const TICKET_CACHE_KEY = "cc-tickets-v1";
+  const CACHE_MAX_MS = 12 * 60 * 60 * 1000; // 12시간
+
+  // API에서 받은 데이터를 상태 + localStorage에 저장 (사용자 추가 티켓 병합)
+  function applyApiData(data: { tickets: Ticket[]; fetchedAt?: string }) {
+    const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
+    let customTickets: Ticket[] = [];
+    try {
+      const cr = localStorage.getItem("cc-custom-tickets");
+      if (cr) customTickets = JSON.parse(cr);
+    } catch {}
+    const jiraKeys = new Set(data.tickets.map(t => t.key));
+    const extra = customTickets.filter(t => !jiraKeys.has(t.key));
+    setTickets([...data.tickets, ...extra]);
+    setSyncedAt(at);
+    try {
+      localStorage.setItem(
+        TICKET_CACHE_KEY,
+        JSON.stringify({ tickets: data.tickets, fetchedAt: at.toISOString() })
+      );
+    } catch {}
+  }
+
+  // 클라이언트 fetch에 20초 타임아웃 적용 (서버가 오래 걸릴 때 UI가 멈추지 않도록)
+  async function apiFetch(url: string, init?: RequestInit): Promise<Response> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 20_000);
+    try {
+      return await fetch(url, { ...init, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // 마운트: localStorage 캐시가 유효하면 사용, 아니면 API (서버 12h 캐시) 호출
+  const loadTickets = useCallback(async () => {
+    try {
+      const raw = localStorage.getItem(TICKET_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw) as { tickets: Ticket[]; fetchedAt: string };
+        if (cached.tickets.length > 0 && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MAX_MS) {
+          let customTickets: Ticket[] = [];
+          try {
+            const cr = localStorage.getItem("cc-custom-tickets");
+            if (cr) customTickets = JSON.parse(cr);
+          } catch {}
+          const jiraKeys = new Set(cached.tickets.map((t: Ticket) => t.key));
+          const extra = customTickets.filter(t => !jiraKeys.has(t.key));
+          setTickets([...cached.tickets, ...extra]);
+          setSyncedAt(new Date(cached.fetchedAt));
+          setFetching(false);
+          return;
+        }
+      }
+    } catch {}
+
     setFetching(true);
     setFetchError(null);
     try {
-      const res = await fetch("/api/jira-tickets");
+      const res = await apiFetch("/api/jira-tickets");
       const data = await res.json();
       if (!res.ok || data.error) {
         setFetchError(data.error ?? "알 수 없는 오류");
       } else {
-        setTickets(data.tickets);
-        setLastUpdated(new Date());
+        applyApiData(data);
       }
-    } catch {
-      setFetchError("네트워크 오류가 발생했습니다.");
+    } catch (e) {
+      const isTimeout = e instanceof DOMException && e.name === "AbortError";
+      setFetchError(isTimeout
+        ? "JIRA 응답 시간 초과 (20초). 강제 업데이트 버튼으로 재시도하세요."
+        : "네트워크 오류가 발생했습니다."
+      );
     } finally {
       setFetching(false);
     }
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 자동 fetch 비활성화 — 새로고침 버튼으로만 호출
-  // useEffect(() => { fetchTickets(); }, [fetchTickets]);
+  // 강제 업데이트: 서버 캐시 무효화 → JIRA 재조회 → 커스텀 티켓도 재조회 → localStorage 갱신
+  const forceRefresh = useCallback(async () => {
+    setFetching(true);
+    setFetchError(null);
+    try {
+      await fetch("/api/jira-tickets/revalidate", { method: "POST" });
+      const res = await apiFetch("/api/jira-tickets");
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setFetchError(data.error ?? "알 수 없는 오류");
+        return;
+      }
+
+      // 커스텀 키 목록 읽기
+      let savedCustomKeys: string[] = [];
+      try {
+        const ck = localStorage.getItem("cc-custom-keys");
+        if (ck) savedCustomKeys = JSON.parse(ck);
+      } catch {}
+
+      // 배치 결과에 없는 커스텀 티켓만 단건 재조회
+      const jiraKeySet = new Set((data.tickets as Ticket[]).map(t => t.key));
+      const keysToRefetch = savedCustomKeys.filter(k => !jiraKeySet.has(k));
+
+      const freshCustom: Ticket[] = [];
+      await Promise.all(keysToRefetch.map(async (k) => {
+        try {
+          const r = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(k)}`);
+          const d = await r.json();
+          if (r.ok && d.ticket) freshCustom.push(d.ticket);
+        } catch {}
+      }));
+
+      // cc-custom-tickets 최신화
+      try {
+        localStorage.setItem("cc-custom-tickets", JSON.stringify(freshCustom));
+      } catch {}
+
+      // 화면 반영 + cc-tickets-v1 갱신
+      const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
+      setTickets([...(data.tickets as Ticket[]), ...freshCustom]);
+      setSyncedAt(at);
+      try {
+        localStorage.setItem(
+          TICKET_CACHE_KEY,
+          JSON.stringify({ tickets: data.tickets, fetchedAt: at.toISOString() })
+        );
+      } catch {}
+    } catch (e) {
+      const isTimeout = e instanceof DOMException && e.name === "AbortError";
+      setFetchError(isTimeout
+        ? "JIRA 응답 시간 초과 (20초). 잠시 후 다시 시도하세요."
+        : "네트워크 오류가 발생했습니다."
+      );
+    } finally {
+      setFetching(false);
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 티켓 키 직접 추가: 입력 → JIRA 단건 조회 → 상태 + localStorage 갱신
+  async function addTicket(key: string) {
+    const trimmed = key.trim().toUpperCase();
+    if (!trimmed) return;
+    if (!/^[A-Z]+-\d+$/.test(trimmed)) {
+      setAddKeyError("올바른 형식이 아닙니다. 예: TM-1234");
+      return;
+    }
+    if (tickets.some(t => t.key === trimmed) || customKeys.has(trimmed)) {
+      setAddKeyError("이미 등록된 티켓입니다.");
+      return;
+    }
+    setAddKeyLoading(true);
+    setAddKeyError(null);
+    try {
+      const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(trimmed)}`);
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        setAddKeyError(data.error ?? "티켓을 가져올 수 없습니다.");
+      } else {
+        const newTicket = data.ticket as Ticket;
+        setTickets(prev => [...prev, newTicket]);
+        const newCustomKeys = new Set([...customKeys, trimmed]);
+        setCustomKeys(newCustomKeys);
+        try {
+          localStorage.setItem("cc-custom-keys", JSON.stringify([...newCustomKeys]));
+          const prev: Ticket[] = (() => {
+            try { const r = localStorage.getItem("cc-custom-tickets"); return r ? JSON.parse(r) : []; }
+            catch { return []; }
+          })();
+          localStorage.setItem("cc-custom-tickets",
+            JSON.stringify([...prev.filter(t => t.key !== trimmed), newTicket]));
+        } catch {}
+        setAddKeyInput("");
+      }
+    } catch (e) {
+      const isTimeout = e instanceof DOMException && e.name === "AbortError";
+      setAddKeyError(isTimeout ? "요청 시간 초과 (20초)" : "네트워크 오류");
+    } finally {
+      setAddKeyLoading(false);
+    }
+  }
+
+  // 사용자 추가 티켓 제거
+  function removeTicket(key: string) {
+    setTickets(prev => prev.filter(t => t.key !== key));
+    const newCustomKeys = new Set([...customKeys].filter(k => k !== key));
+    setCustomKeys(newCustomKeys);
+    if (selected?.key === key) { setSelected(null); setEditMode(false); }
+    try {
+      localStorage.setItem("cc-custom-keys", JSON.stringify([...newCustomKeys]));
+      const prev: Ticket[] = (() => {
+        try { const r = localStorage.getItem("cc-custom-tickets"); return r ? JSON.parse(r) : []; }
+        catch { return []; }
+      })();
+      localStorage.setItem("cc-custom-tickets", JSON.stringify(prev.filter(t => t.key !== key)));
+    } catch {}
+  }
+
+  // 마운트 시 자동 로드
+  useEffect(() => { loadTickets(); }, [loadTickets]);
+
+  // tickets 갱신 시 선택된 티켓도 최신 데이터로 동기화
+  useEffect(() => {
+    if (selected) {
+      const updated = tickets.find(t => t.key === selected.key);
+      if (updated && updated !== selected) setSelected(updated);
+    }
+  }, [tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     try {
@@ -359,6 +549,8 @@ export default function TicketBoard() {
       if (saved) setSchedules(JSON.parse(saved));
       const savedMemos = localStorage.getItem("cc-memos");
       if (savedMemos) setMemos(JSON.parse(savedMemos));
+      const savedCustomKeys = localStorage.getItem("cc-custom-keys");
+      if (savedCustomKeys) setCustomKeys(new Set(JSON.parse(savedCustomKeys)));
     } catch {}
   }, []);
 
@@ -439,6 +631,20 @@ export default function TicketBoard() {
     if (!isSame) setMemoText(memos[t.key] ?? "");
   }
 
+  if (fetching && tickets.length === 0) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="text-center">
+          <svg className="w-8 h-8 animate-spin text-indigo-400 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          <p className="text-sm text-gray-400">JIRA에서 티켓 불러오는 중…</p>
+          <p className="text-xs text-gray-300 mt-1">응답 없으면 20초 후 자동 종료됩니다</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex bg-gray-50 min-h-screen">
       {/* ── 리스트 패널 ── */}
@@ -449,20 +655,31 @@ export default function TicketBoard() {
             <p className="text-sm text-gray-400 mt-0.5">Sub Group: 29CM-P Commerce Core</p>
           </div>
           <div className="flex items-center gap-3 mt-1">
-            {lastUpdated && (
+            {syncedAt && (
               <span className="text-xs text-gray-400">
-                {lastUpdated.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })} 기준
+                JIRA 동기화:{" "}
+                <span className="text-gray-600 font-medium">
+                  {(() => {
+                    const now = new Date();
+                    const isToday = syncedAt.toDateString() === now.toDateString();
+                    const time = syncedAt.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+                    if (isToday) return `오늘 ${time}`;
+                    const dow = ["일","월","화","수","목","금","토"][syncedAt.getDay()];
+                    return `${syncedAt.getMonth()+1}/${syncedAt.getDate()}(${dow}) ${time}`;
+                  })()}
+                </span>
               </span>
             )}
             <button
-              onClick={fetchTickets}
+              onClick={forceRefresh}
               disabled={fetching}
+              title="JIRA에서 즉시 재동기화 (서버 캐시 초기화)"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
             >
               <svg className={`w-3 h-3 ${fetching ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
-              {fetching ? "불러오는 중…" : "새로고침"}
+              {fetching ? "동기화 중…" : "강제 업데이트"}
             </button>
           </div>
         </div>
@@ -518,6 +735,27 @@ export default function TicketBoard() {
               className="border border-gray-200 rounded-lg px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
             />
           </div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-gray-400 w-14 shrink-0">티켓 추가</span>
+            <input
+              type="text"
+              placeholder="예: TM-1234"
+              value={addKeyInput}
+              onChange={(e) => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
+              onKeyDown={(e) => e.key === "Enter" && addTicket(addKeyInput)}
+              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-300 w-36"
+            />
+            <button
+              onClick={() => addTicket(addKeyInput)}
+              disabled={addKeyLoading || !addKeyInput.trim()}
+              className="px-3 py-1 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+            >
+              {addKeyLoading ? "추가 중…" : "추가"}
+            </button>
+            {addKeyError && (
+              <span className="text-xs text-red-500">{addKeyError}</span>
+            )}
+          </div>
         </div>
 
         {/* 티켓 목록 */}
@@ -533,6 +771,7 @@ export default function TicketBoard() {
             <span className="w-24 shrink-0 text-center">상태</span>
             <span className="w-24 shrink-0 text-center">시작일</span>
             <span className="w-24 shrink-0 text-center">ETA</span>
+            <span className="w-6 shrink-0" />
           </div>
 
           {filtered.length === 0 ? (
@@ -579,6 +818,11 @@ export default function TicketBoard() {
                     <span className={`w-24 shrink-0 text-xs text-center ${!t.eta || t.eta === "-" ? "text-gray-300" : "text-gray-600"}`}>
                       {!t.eta || t.eta === "-" ? "미정" : t.eta}
                     </span>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}
+                      title="목록에서 제거"
+                      className="w-6 shrink-0 flex justify-center items-center text-gray-300 hover:text-red-400 transition-colors"
+                    >×</button>
                   </div>
 
                   {/* 펼침: Gantt */}
