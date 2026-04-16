@@ -319,6 +319,9 @@ export default function TicketBoard() {
 
   // 시트 우선순위 (key → priority 문자열)
   const [priorities, setPriorities] = useState<Record<string, string>>({});
+  // 플래닝 상태 (key → "스프린트 대기중" | "검토중" | "플래닝 완료", 기본값: "스프린트 대기중")
+  const [planning, setPlanning]     = useState<Record<string, string>>({});
+  const [planningTab, setPlanningTab] = useState("전체");
 
   // 사용자 직접 추가 티켓 관리
   const [addKeyInput, setAddKeyInput]     = useState("");
@@ -468,10 +471,13 @@ export default function TicketBoard() {
         );
       } catch {}
 
-      // 시트 우선순위도 함께 갱신
+      // 시트 우선순위 + 플래닝 상태도 함께 갱신
       fetch("/api/sheet-priorities")
         .then(r => r.json())
-        .then(d => { if (d.priorities) setPriorities(d.priorities); })
+        .then(d => {
+          if (d.priorities) setPriorities(d.priorities);
+          if (d.planning)   setPlanning(d.planning);
+        })
         .catch(() => {});
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
@@ -546,11 +552,14 @@ export default function TicketBoard() {
   // 마운트 시 자동 로드
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
-  // 시트 우선순위 로드
+  // 시트 우선순위 + 플래닝 상태 로드
   useEffect(() => {
     fetch("/api/sheet-priorities")
       .then(r => r.json())
-      .then(d => { if (d.priorities) setPriorities(d.priorities); })
+      .then(d => {
+        if (d.priorities) setPriorities(d.priorities);
+        if (d.planning)   setPlanning(d.planning);
+      })
       .catch(() => {});
   }, []);
 
@@ -602,6 +611,18 @@ export default function TicketBoard() {
     setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
   }
 
+  const PLANNING_STATES = ["스프린트 대기중", "검토중", "플래닝 완료"] as const;
+
+  const planningCounts = useMemo(() => {
+    const counts: Record<string, number> = { "전체": tickets.length };
+    for (const s of PLANNING_STATES) counts[s] = 0;
+    for (const t of tickets) {
+      const p = planning[t.key] ?? "스프린트 대기중";
+      counts[p] = (counts[p] ?? 0) + 1;
+    }
+    return counts;
+  }, [tickets, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const allDomains = useMemo(() => {
     const set = new Set(tickets.map((t) => extractDomain(t.summary)));
     return [...set].sort((a, b) => a === "기타" ? 1 : b === "기타" ? -1 : a.localeCompare(b, "ko"));
@@ -621,6 +642,7 @@ export default function TicketBoard() {
           (wantQ1Q2 && isQ1Q2);
         if (!matches) return false;
       }
+      if (planningTab !== "전체" && (planning[t.key] ?? "스프린트 대기중") !== planningTab) return false;
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (domainFilter.size > 0 && !domainFilter.has(extractDomain(t.summary))) return false;
       if (projects.size > 0 && !projects.has(t.project)) return false;
@@ -631,7 +653,7 @@ export default function TicketBoard() {
       }
       return true;
     });
-  }, [tickets, quarters, projects, statuses, levels, domainFilter, search]);
+  }, [tickets, planningTab, quarters, projects, statuses, levels, domainFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const done       = filtered.filter((t) => ["론치완료", "완료", "배포완료"].includes(t.status)).length;
   const inProgress = filtered.filter((t) => ["개발중", "In Progress", "QA중"].includes(t.status)).length;
@@ -708,6 +730,28 @@ export default function TicketBoard() {
             {fetchError}
           </div>
         )}
+
+        {/* 플래닝 탭 */}
+        <div className="flex gap-1 mb-5 bg-white rounded-xl border border-gray-200 p-1">
+          {(["전체", ...PLANNING_STATES] as string[]).map((tab) => {
+            const active = planningTab === tab;
+            const activeColor =
+              tab === "플래닝 완료" ? "bg-green-600" :
+              tab === "검토중"     ? "bg-orange-500" :
+              tab === "스프린트 대기중" ? "bg-gray-500" :
+              "bg-gray-900";
+            return (
+              <button
+                key={tab}
+                onClick={() => setPlanningTab(tab)}
+                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${active ? `${activeColor} text-white` : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"}`}
+              >
+                {tab}
+                <span className="ml-1.5 text-xs opacity-75">({planningCounts[tab] ?? 0})</span>
+              </button>
+            );
+          })}
+        </div>
 
         {/* 요약 카드 */}
         <div className="grid grid-cols-4 gap-3 mb-5">
@@ -825,6 +869,18 @@ export default function TicketBoard() {
                         P{priorities[t.key]}
                       </span>
                     )}
+                    {(() => {
+                      const ps = planning[t.key] ?? "스프린트 대기중";
+                      if (ps === "스프린트 대기중") return null;
+                      const cls = ps === "플래닝 완료"
+                        ? "bg-green-100 text-green-700 border-green-200"
+                        : "bg-orange-100 text-orange-600 border-orange-200";
+                      return (
+                        <span className={`shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>
+                          {ps}
+                        </span>
+                      );
+                    })()}
                     <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
                     <span className="w-20 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
