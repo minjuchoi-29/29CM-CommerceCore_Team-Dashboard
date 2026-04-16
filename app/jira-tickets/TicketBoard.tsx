@@ -217,7 +217,12 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
 
       {/* 롤 바 목록 */}
       <div className="relative">
-        {roles && roles.length > 0 ? roles.map((r) => (
+        {roles && roles.length > 0 ? roles.map((r) => {
+          const endMs   = r.end   ? new Date(r.end).getTime()   : null;
+          const startMs = r.start ? new Date(r.start).getTime() : null;
+          const overdue   = endMs   !== null && endMs   < TODAY_MS && r.status !== "완료";
+          const notStarted = startMs !== null && startMs < TODAY_MS && r.status === "예정";
+          return (
           <div key={`${r.role}-${r.person}`} className="mb-2.5">
             <div className="flex items-center mb-0.5">
               <div className="w-36 shrink-0 flex items-center gap-1.5">
@@ -240,6 +245,28 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
               <span className={`ml-2 text-xs w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : "text-gray-400"}`}>
                 {r.status}
               </span>
+              {overdue && (
+                <span className="relative ml-1 shrink-0 group">
+                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-600 border border-red-200 cursor-default">
+                    기한 초과
+                  </span>
+                  <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 w-40 rounded-lg bg-gray-900 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 whitespace-normal text-center">
+                    종료일이 지났으나 완료 처리되지 않았습니다
+                    <span className="absolute top-full right-3 border-4 border-transparent border-t-gray-900" />
+                  </span>
+                </span>
+              )}
+              {!overdue && notStarted && (
+                <span className="relative ml-1 shrink-0 group">
+                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-600 border border-orange-200 cursor-default">
+                    시작 확인
+                  </span>
+                  <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 w-40 rounded-lg bg-gray-900 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 whitespace-normal text-center">
+                    시작일이 지났으나 아직 예정 상태입니다
+                    <span className="absolute top-full right-3 border-4 border-transparent border-t-gray-900" />
+                  </span>
+                </span>
+              )}
             </div>
             {r.start && r.end && (
               <div className="flex items-center">
@@ -251,7 +278,8 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
               </div>
             )}
           </div>
-        )) : (
+          );
+        }) : (
           <div className="flex items-center">
             <div className="w-36 shrink-0" />
             <p className="text-xs text-gray-400 py-2">일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다</p>
@@ -279,7 +307,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
   );
 }
 
-const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "FE-CFE", "FE-DFE", "Mobile", "QA"];
+const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "BE-메가존", "FE-CFE", "FE-DFE", "FE-Sotatek", "Mobile", "QA"];
 
 function isCustomRole(role: string) {
   return !PRESET_ROLES.includes(role);
@@ -309,6 +337,7 @@ export default function TicketBoard() {
   const [schedules, setSchedules]   = useState<Record<string, RoleSchedule[]>>({});
   const [editMode, setEditMode]     = useState(false);
   const [editRows, setEditRows]     = useState<RoleSchedule[]>([]);
+  const [editError, setEditError]   = useState<string | null>(null);
 
   // localStorage 기반 주요 내용 요약
   const [memos, setMemos]           = useState<Record<string, string>>({});
@@ -603,7 +632,18 @@ export default function TicketBoard() {
 
   function saveEdit() {
     if (!selected) return;
-    saveSchedule(selected.key, editRows.filter(r => r.role && r.start && r.end));
+    const invalid = editRows.find(r => !r.role || !r.person || !r.start || !r.end);
+    if (invalid) {
+      const missing: string[] = [];
+      if (!invalid.role)   missing.push("작업명");
+      if (!invalid.person) missing.push("담당자명");
+      if (!invalid.start)  missing.push("시작일");
+      if (!invalid.end)    missing.push("종료일");
+      setEditError(`필수 항목을 입력해주세요: ${missing.join(", ")}`);
+      return;
+    }
+    setEditError(null);
+    saveSchedule(selected.key, editRows);
     setEditMode(false);
   }
 
@@ -1129,7 +1169,7 @@ export default function TicketBoard() {
               {(planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && <div className="border-t border-gray-100 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정 (2026 H1)</p>
+                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정</p>
                 {!editMode ? (
                   <button
                     onClick={startEdit}
@@ -1139,7 +1179,7 @@ export default function TicketBoard() {
                   <div className="flex gap-2">
                     <button onClick={saveEdit}
                       className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium">저장</button>
-                    <button onClick={() => setEditMode(false)}
+                    <button onClick={() => { setEditMode(false); setEditError(null); }}
                       className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
                   </div>
                 )}
@@ -1149,11 +1189,13 @@ export default function TicketBoard() {
               {editMode ? (
                 <div className="space-y-2">
                   {editRows.map((row, i) => {
-                    const custom = isCustomRole(row.role);
-                    const dashIdx = row.role.indexOf("-");
-                    const customD1 = custom ? (dashIdx === -1 ? "" : row.role.slice(0, dashIdx)) : "";
-                    const customD2 = custom ? (dashIdx === -1 ? row.role : row.role.slice(dashIdx + 1)) : "";
-                    const combineRole = (d1: string, d2: string) => d1 && d2 ? `${d1}-${d2}` : d1 || d2;
+                    const custom    = isCustomRole(row.role);
+                    const errRole   = !!editError && !row.role;
+                    const errPerson = !!editError && !row.person;
+                    const errStart  = !!editError && !row.start;
+                    const errEnd    = !!editError && !row.end;
+                    const errBorder = "border-red-400";
+                    const okBorder  = "border-gray-300";
                     return (
                       <div key={i} className="bg-gray-50 rounded-lg p-2.5 space-y-1.5">
                         <div className="flex items-center gap-1.5">
@@ -1161,37 +1203,30 @@ export default function TicketBoard() {
                           <select
                             value={custom ? "직접입력" : row.role}
                             onChange={(e) => {
+                              setEditError(null);
                               if (e.target.value === "직접입력") updateRow(i, "role", "");
                               else updateRow(i, "role", e.target.value);
                             }}
-                            className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 bg-white shrink-0 w-24"
+                            className={`text-xs text-gray-900 border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 bg-white shrink-0 w-24`}
                           >
                             {PRESET_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                             <option value="직접입력">직접입력</option>
                           </select>
-                          {/* 직접입력 시: depth1 + depth2 입력 */}
+                          {/* 직접입력 시: 작업명만 입력 */}
                           {custom && (
-                            <>
-                              <input
-                                value={customD1}
-                                onChange={(e) => updateRow(i, "role", combineRole(e.target.value, customD2))}
-                                placeholder="분류"
-                                className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 w-14 shrink-0"
-                              />
-                              <input
-                                value={customD2}
-                                onChange={(e) => updateRow(i, "role", combineRole(customD1, e.target.value))}
-                                placeholder="작업명"
-                                className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 w-16 shrink-0"
-                              />
-                            </>
+                            <input
+                              value={row.role}
+                              onChange={(e) => { setEditError(null); updateRow(i, "role", e.target.value); }}
+                              placeholder="작업명"
+                              className={`text-xs text-gray-900 border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 w-24 shrink-0`}
+                            />
                           )}
                           {/* 담당자 */}
                           <input
                             value={row.person}
-                            onChange={(e) => updateRow(i, "person", e.target.value)}
+                            onChange={(e) => { setEditError(null); updateRow(i, "person", e.target.value); }}
                             placeholder="담당자명"
-                            className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 flex-1 min-w-0"
+                            className={`text-xs text-gray-900 border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 flex-1 min-w-0`}
                           />
                           {/* 상태 */}
                           <select
@@ -1202,7 +1237,7 @@ export default function TicketBoard() {
                             {STATUS_OPTIONS.map(s => <option key={s}>{s}</option>)}
                           </select>
                           {/* 삭제 */}
-                          <button onClick={() => setEditRows(prev => prev.filter((_, idx) => idx !== i))}
+                          <button onClick={() => { setEditError(null); setEditRows(prev => prev.filter((_, idx) => idx !== i)); }}
                             className="text-gray-300 hover:text-red-400 text-base leading-none shrink-0">×</button>
                         </div>
                         <div className="flex items-center gap-1.5">
@@ -1210,16 +1245,16 @@ export default function TicketBoard() {
                           <input
                             type="date"
                             value={row.start}
-                            onChange={(e) => updateRow(i, "start", e.target.value)}
-                            className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 flex-1"
+                            onChange={(e) => { setEditError(null); updateRow(i, "start", e.target.value); }}
+                            className={`text-xs text-gray-900 border ${errStart ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
                           />
                           <span className="text-xs text-gray-400 shrink-0">~</span>
                           <input
                             type="date"
                             value={row.end}
                             min={row.start || undefined}
-                            onChange={(e) => updateRow(i, "end", e.target.value)}
-                            className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 flex-1"
+                            onChange={(e) => { setEditError(null); updateRow(i, "end", e.target.value); }}
+                            className={`text-xs text-gray-900 border ${errEnd ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
                           />
                         </div>
                       </div>
@@ -1229,6 +1264,9 @@ export default function TicketBoard() {
                     onClick={() => setEditRows(prev => [...prev, newRow()])}
                     className="w-full text-xs text-gray-400 hover:text-gray-600 border border-dashed border-gray-200 rounded-lg py-1.5 hover:border-gray-300 transition-colors"
                   >+ 작업 추가</button>
+                  {editError && (
+                    <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{editError}</p>
+                  )}
                 </div>
               ) : (
                 /* 뷰 모드: Gantt */
