@@ -45,12 +45,6 @@ export default async function RootLayout({
             >
               전체 과제 보기
             </Link>
-            <Link
-              href="/q2-initiative"
-              className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
-            >
-              담당자별 확인하기
-            </Link>
           </nav>
 
           {/* 하단: 로그인 유저 + 로그아웃 */}

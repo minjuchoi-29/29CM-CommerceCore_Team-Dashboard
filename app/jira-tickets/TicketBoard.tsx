@@ -302,6 +302,7 @@ export default function TicketBoard() {
   const [statuses, setStatuses]     = useState<Set<string>>(new Set());
   const [levels, setLevels]         = useState<Set<string>>(new Set());
   const [domainFilter, setDomainFilter] = useState<Set<string>>(new Set());
+  const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
   const [search, setSearch]         = useState("");
 
   // localStorage 기반 일정 데이터
@@ -627,6 +628,11 @@ export default function TicketBoard() {
     return [...set].sort((a, b) => a === "기타" ? 1 : b === "기타" ? -1 : a.localeCompare(b, "ko"));
   }, [tickets]);
 
+  const allAssignees = useMemo(() => {
+    const set = new Set(tickets.map((t) => t.assignee).filter(Boolean));
+    return [...set].sort((a, b) => a.localeCompare(b, "ko"));
+  }, [tickets]);
+
   const DONE_STATUSES      = ["론치완료", "완료", "배포완료"];
   const INPROGRESS_STATUSES = ["개발중", "In Progress", "QA중"];
   const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
@@ -648,6 +654,7 @@ export default function TicketBoard() {
       }
       if (planningTab !== "전체" && (planning[t.key] ?? "스프린트 대기중") !== planningTab) return false;
       if (levels.size > 0 && !levels.has(t.type)) return false;
+      if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
       if (domainFilter.size > 0 && !domainFilter.has(extractDomain(t.summary))) return false;
       if (projects.size > 0 && !projects.has(t.project)) return false;
       if (statuses.size > 0 && !Array.from(statuses).some((s) => matchStatus(t.status, s))) return false;
@@ -657,7 +664,7 @@ export default function TicketBoard() {
       }
       return true;
     });
-  }, [tickets, planningTab, quarters, projects, statuses, levels, domainFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const done       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
   const inProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
@@ -811,6 +818,7 @@ export default function TicketBoard() {
             { label: "레벨",    items: ALL_LEVELS,   state: levels,       setState: setLevels,       activeColor: "bg-violet-600 text-white" },
             { label: "프로젝트", items: ALL_PROJECTS, state: projects,    setState: setProjects,     activeColor: "bg-gray-800 text-white" },
             { label: "상태",    items: ALL_STATUSES, state: statuses,     setState: setStatuses,     activeColor: "bg-blue-600 text-white" },
+            { label: "담당자",  items: allAssignees,  state: assigneeFilter, setState: setAssigneeFilter, activeColor: "bg-pink-600 text-white" },
             { label: "도메인",  items: allDomains,   state: domainFilter, setState: setDomainFilter, activeColor: "bg-teal-600 text-white" },
           ].map(({ label, items, state, setState, activeColor }) => (
             <div key={label} className="flex flex-wrap items-center gap-1.5">
@@ -923,6 +931,7 @@ export default function TicketBoard() {
                     {(() => {
                       const ps = planning[t.key] ?? "스프린트 대기중";
                       if (ps === "플래닝 완료") return null;
+                      if ([...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(t.status)) return null;
                       const cls = ps === "검토중"
                         ? "bg-orange-100 text-orange-600 border-orange-200"
                         : "bg-gray-100 text-gray-500 border-gray-200";
@@ -1058,8 +1067,8 @@ export default function TicketBoard() {
               )}
             </div>
 
-            {/* 플래닝 상태 */}
-            <div className="mb-4">
+            {/* 플래닝 상태 — 진행중·완료 상태는 숨김 */}
+            {![...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(selected.status) && <div className="mb-4">
               <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">플래닝 상태</p>
               <div className="flex gap-1.5">
                 {PLANNING_STATES.map((s) => {
@@ -1077,7 +1086,7 @@ export default function TicketBoard() {
                   );
                 })}
               </div>
-            </div>
+            </div>}
 
             <div className="border-t border-gray-100 pt-4">
               {/* 주요 내용 요약 */}
@@ -1117,7 +1126,7 @@ export default function TicketBoard() {
                 )}
               </div>
 
-              <div className="border-t border-gray-100 pt-4">
+              {(planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && <div className="border-t border-gray-100 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정 (2026 H1)</p>
@@ -1232,7 +1241,7 @@ export default function TicketBoard() {
                   <GanttChart roles={getRoles(selected)} />
                 </>
               )}
-            </div>
+            </div>}
             </div>
           </div>
         </div>

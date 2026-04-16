@@ -62,6 +62,7 @@ export default function AssigneeView() {
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [priorities, setPriorities] = useState<Record<string, string>>({});
+  const [planning, setPlanning]     = useState<Record<string, string>>({});
 
   useEffect(() => {
     let loaded = false;
@@ -114,6 +115,12 @@ export default function AssigneeView() {
       .then(r => r.json())
       .then(d => { if (d.priorities) setPriorities(d.priorities); })
       .catch(() => {});
+
+    // 플래닝 상태 로드 (localStorage)
+    try {
+      const savedPlanning = localStorage.getItem("cc-planning");
+      if (savedPlanning) setPlanning(JSON.parse(savedPlanning));
+    } catch {}
   }, []);
 
   const grouped = useMemo(() => {
@@ -232,6 +239,18 @@ export default function AssigneeView() {
                                 P{priorities[t.key]}
                               </span>
                             )}
+                            {(() => {
+                              const ps = planning[t.key] ?? "스프린트 대기중";
+                              if (ps === "플래닝 완료") return null;
+                              const cls = ps === "검토중"
+                                ? "bg-orange-100 text-orange-600 border-orange-200"
+                                : "bg-gray-100 text-gray-500 border-gray-200";
+                              return (
+                                <span className={`shrink-0 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>
+                                  {ps}
+                                </span>
+                              );
+                            })()}
                             {t.summary}
                           </span>
                         </td>
