@@ -465,6 +465,12 @@ export default function TicketBoard() {
           JSON.stringify({ tickets: data.tickets, fetchedAt: at.toISOString() })
         );
       } catch {}
+
+      // 시트 우선순위도 함께 갱신
+      fetch("/api/sheet-priorities")
+        .then(r => r.json())
+        .then(d => { if (d.priorities) setPriorities(d.priorities); })
+        .catch(() => {});
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
       setFetchError(isTimeout
