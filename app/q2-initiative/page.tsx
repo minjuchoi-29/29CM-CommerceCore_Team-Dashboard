@@ -116,11 +116,16 @@ export default function AssigneeView() {
       .then(d => { if (d.priorities) setPriorities(d.priorities); })
       .catch(() => {});
 
-    // 플래닝 상태 로드 (localStorage)
-    try {
-      const savedPlanning = localStorage.getItem("cc-planning");
-      if (savedPlanning) setPlanning(JSON.parse(savedPlanning));
-    } catch {}
+    // 플래닝 상태 로드 (KV, localStorage 폴백)
+    fetch("/api/kv?keys=cc-planning")
+      .then((r) => r.json())
+      .then((d) => { if (d["cc-planning"]) setPlanning(d["cc-planning"]); })
+      .catch(() => {
+        try {
+          const p = localStorage.getItem("cc-planning");
+          if (p) setPlanning(JSON.parse(p));
+        } catch {}
+      });
   }, []);
 
   const grouped = useMemo(() => {

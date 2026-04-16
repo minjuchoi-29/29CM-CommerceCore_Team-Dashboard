@@ -599,16 +599,31 @@ export default function TicketBoard() {
   }, [tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    // 로컬 임시 데이터 (custom keys)
     try {
-      const saved = localStorage.getItem("cc-schedules");
-      if (saved) setSchedules(JSON.parse(saved));
-      const savedMemos = localStorage.getItem("cc-memos");
-      if (savedMemos) setMemos(JSON.parse(savedMemos));
       const savedCustomKeys = localStorage.getItem("cc-custom-keys");
       if (savedCustomKeys) setCustomKeys(new Set(JSON.parse(savedCustomKeys)));
-      const savedPlanning = localStorage.getItem("cc-planning");
-      if (savedPlanning) setPlanning(JSON.parse(savedPlanning));
     } catch {}
+
+    // 공유 데이터: KV에서 로드 (planning, schedules, memos)
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data["cc-planning"])  setPlanning(data["cc-planning"]);
+        if (data["cc-schedules"]) setSchedules(data["cc-schedules"]);
+        if (data["cc-memos"])     setMemos(data["cc-memos"]);
+      })
+      .catch(() => {
+        // KV 실패 시 localStorage 폴백
+        try {
+          const p = localStorage.getItem("cc-planning");
+          if (p) setPlanning(JSON.parse(p));
+          const s = localStorage.getItem("cc-schedules");
+          if (s) setSchedules(JSON.parse(s));
+          const m = localStorage.getItem("cc-memos");
+          if (m) setMemos(JSON.parse(m));
+        } catch {}
+      });
   }, []);
 
   function getRoles(t: Ticket): RoleSchedule[] {
@@ -618,7 +633,11 @@ export default function TicketBoard() {
   function saveSchedule(key: string, rows: RoleSchedule[]) {
     const updated = { ...schedules, [key]: rows };
     setSchedules(updated);
-    localStorage.setItem("cc-schedules", JSON.stringify(updated));
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-schedules", value: updated }),
+    }).catch(() => {});
   }
 
   function startEdit() {
@@ -732,13 +751,21 @@ export default function TicketBoard() {
   function saveMemo(key: string, text: string) {
     const updated = { ...memos, [key]: text };
     setMemos(updated);
-    localStorage.setItem("cc-memos", JSON.stringify(updated));
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-memos", value: updated }),
+    }).catch(() => {});
   }
 
   function savePlanning(key: string, state: string) {
     const updated = { ...planning, [key]: state };
     setPlanning(updated);
-    localStorage.setItem("cc-planning", JSON.stringify(updated));
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-planning", value: updated }),
+    }).catch(() => {});
   }
 
   function handleSelect(t: Ticket) {
@@ -1166,7 +1193,7 @@ export default function TicketBoard() {
                 )}
               </div>
 
-              {(planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && <div className="border-t border-gray-100 pt-4">
+              {((planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" || [...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(selected.status)) && <div className="border-t border-gray-100 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
                 <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정</p>
@@ -1271,7 +1298,7 @@ export default function TicketBoard() {
               ) : (
                 /* 뷰 모드: Gantt */
                 <>
-                  {(planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && getRoles(selected).length === 0 && (
+                  {getRoles(selected).length === 0 && (
                     <p className="mb-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
                       계획하신 일정과 담당자를 입력해주세요.
                     </p>
