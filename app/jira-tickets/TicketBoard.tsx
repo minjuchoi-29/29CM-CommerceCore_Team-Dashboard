@@ -873,10 +873,10 @@ export default function TicketBoard() {
                     )}
                     {(() => {
                       const ps = planning[t.key] ?? "스프린트 대기중";
-                      if (ps === "스프린트 대기중") return null;
-                      const cls = ps === "플래닝 완료"
-                        ? "bg-green-100 text-green-700 border-green-200"
-                        : "bg-orange-100 text-orange-600 border-orange-200";
+                      if (ps === "플래닝 완료") return null;
+                      const cls = ps === "검토중"
+                        ? "bg-orange-100 text-orange-600 border-orange-200"
+                        : "bg-gray-100 text-gray-500 border-gray-200";
                       return (
                         <span className={`shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>
                           {ps}
