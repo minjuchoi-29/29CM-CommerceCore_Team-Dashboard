@@ -322,6 +322,9 @@ export default function TicketBoard() {
   // 플래닝 상태 (key → "스프린트 대기중" | "검토중" | "플래닝 완료", 기본값: "스프린트 대기중")
   const [planning, setPlanning]     = useState<Record<string, string>>({});
   const [planningTab, setPlanningTab] = useState("전체");
+  // 정렬
+  const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("default");
+  const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기">("전체");
 
   // 사용자 직접 추가 티켓 관리
   const [addKeyInput, setAddKeyInput]     = useState("");
@@ -624,8 +627,13 @@ export default function TicketBoard() {
     return [...set].sort((a, b) => a === "기타" ? 1 : b === "기타" ? -1 : a.localeCompare(b, "ko"));
   }, [tickets]);
 
-  const filtered = useMemo(() => {
-    return tickets.filter((t) => {
+  const DONE_STATUSES      = ["론치완료", "완료", "배포완료"];
+  const INPROGRESS_STATUSES = ["개발중", "In Progress", "QA중"];
+  const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
+
+  // statusTab 제외한 필터 (카운트 계산용)
+  const preFiltered = useMemo(() => {
+    return tickets.filter((t: Ticket) => {
       if (quarters.size > 0) {
         const isQ2   = Q2_KEYS.has(t.key);
         const isQ1Q2 = Q1Q2_KEYS.has(t.key);
@@ -651,9 +659,28 @@ export default function TicketBoard() {
     });
   }, [tickets, planningTab, quarters, projects, statuses, levels, domainFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const done       = filtered.filter((t) => ["론치완료", "완료", "배포완료"].includes(t.status)).length;
-  const inProgress = filtered.filter((t) => ["개발중", "In Progress", "QA중"].includes(t.status)).length;
-  const planned    = filtered.filter((t) => ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"].includes(t.status)).length;
+  const done       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
+  const inProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
+  const planned    = preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status)).length;
+
+  // statusTab + 정렬 적용 (렌더용)
+  const filtered = useMemo(() => {
+    const result = statusTab === "전체" ? [...preFiltered]
+      : statusTab === "완료"     ? preFiltered.filter((t) => DONE_STATUSES.includes(t.status))
+      : statusTab === "진행중"   ? preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status))
+      :                            preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status));
+    const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
+    if (sortBy === "priority") {
+      result.sort((a: Ticket, b: Ticket) =>
+        parseInt(priorities[a.key] ?? "999") - parseInt(priorities[b.key] ?? "999")
+      );
+    } else if (sortBy === "startDate") {
+      result.sort((a: Ticket, b: Ticket) => dateVal(a.startDate) - dateVal(b.startDate));
+    } else if (sortBy === "eta") {
+      result.sort((a: Ticket, b: Ticket) => dateVal(a.eta) - dateVal(b.eta));
+    }
+    return result;
+  }, [preFiltered, statusTab, sortBy, priorities]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function saveMemo(key: string, text: string) {
     const updated = { ...memos, [key]: text };
@@ -757,17 +784,24 @@ export default function TicketBoard() {
 
         {/* 요약 카드 */}
         <div className="grid grid-cols-4 gap-3 mb-5">
-          {[
-            { label: "전체",    count: filtered.length, color: "text-gray-900" },
-            { label: "완료",    count: done,             color: "text-green-600" },
-            { label: "진행중",  count: inProgress,       color: "text-blue-600" },
-            { label: "계획/대기", count: planned,        color: "text-gray-400" },
-          ].map((s) => (
-            <div key={s.label} className="bg-white rounded-xl border border-gray-200 px-4 py-3">
-              <p className="text-xs text-gray-500">{s.label}</p>
-              <p className={`text-2xl font-bold mt-1 ${s.color}`}>{s.count}</p>
-            </div>
-          ))}
+          {([
+            { label: "전체",      count: preFiltered.length, numColor: "text-gray-900",  ring: "ring-gray-400"  },
+            { label: "완료",      count: done,               numColor: "text-green-600", ring: "ring-green-400" },
+            { label: "진행중",    count: inProgress,         numColor: "text-blue-600",  ring: "ring-blue-400"  },
+            { label: "계획/대기", count: planned,            numColor: "text-gray-400",  ring: "ring-gray-300"  },
+          ] as const).map((s) => {
+            const active = statusTab === s.label;
+            return (
+              <button
+                key={s.label}
+                onClick={() => setStatusTab(active ? "전체" : s.label)}
+                className={`bg-white rounded-xl border px-4 py-3 text-left transition-all ${active ? `border-transparent ring-2 ${s.ring}` : "border-gray-200 hover:border-gray-300"}`}
+              >
+                <p className="text-xs text-gray-500">{s.label}</p>
+                <p className={`text-2xl font-bold mt-1 ${s.numColor}`}>{s.count}</p>
+              </button>
+            );
+          })}
         </div>
 
         {/* 필터 */}
@@ -792,6 +826,21 @@ export default function TicketBoard() {
               ))}
             </div>
           ))}
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs text-gray-400 w-14 shrink-0">정렬</span>
+            {([
+              { key: "default",   label: "기본",         color: "bg-gray-800" },
+              { key: "priority",  label: "우선순위 P1↑",  color: "bg-amber-500" },
+              { key: "startDate", label: "시작일순",      color: "bg-gray-800" },
+              { key: "eta",       label: "ETA순",         color: "bg-gray-800" },
+            ] as const).map(({ key, label, color }) => (
+              <button
+                key={key}
+                onClick={() => setSortBy(key)}
+                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${sortBy === key ? `${color} text-white` : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+              >{label}</button>
+            ))}
+          </div>
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-gray-400 w-14 shrink-0">검색</span>
             <input
@@ -1175,6 +1224,11 @@ export default function TicketBoard() {
               ) : (
                 /* 뷰 모드: Gantt */
                 <>
+                  {(planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && getRoles(selected).length === 0 && (
+                    <p className="mb-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
+                      계획하신 일정과 담당자를 입력해주세요.
+                    </p>
+                  )}
                   <GanttChart roles={getRoles(selected)} />
                 </>
               )}
