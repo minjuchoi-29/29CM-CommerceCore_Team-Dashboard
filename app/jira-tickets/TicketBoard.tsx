@@ -471,13 +471,10 @@ export default function TicketBoard() {
         );
       } catch {}
 
-      // 시트 우선순위 + 플래닝 상태도 함께 갱신
+      // 시트 우선순위도 함께 갱신
       fetch("/api/sheet-priorities")
         .then(r => r.json())
-        .then(d => {
-          if (d.priorities) setPriorities(d.priorities);
-          if (d.planning)   setPlanning(d.planning);
-        })
+        .then(d => { if (d.priorities) setPriorities(d.priorities); })
         .catch(() => {});
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
@@ -552,14 +549,11 @@ export default function TicketBoard() {
   // 마운트 시 자동 로드
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
-  // 시트 우선순위 + 플래닝 상태 로드
+  // 시트 우선순위 로드
   useEffect(() => {
     fetch("/api/sheet-priorities")
       .then(r => r.json())
-      .then(d => {
-        if (d.priorities) setPriorities(d.priorities);
-        if (d.planning)   setPlanning(d.planning);
-      })
+      .then(d => { if (d.priorities) setPriorities(d.priorities); })
       .catch(() => {});
   }, []);
 
@@ -579,6 +573,8 @@ export default function TicketBoard() {
       if (savedMemos) setMemos(JSON.parse(savedMemos));
       const savedCustomKeys = localStorage.getItem("cc-custom-keys");
       if (savedCustomKeys) setCustomKeys(new Set(JSON.parse(savedCustomKeys)));
+      const savedPlanning = localStorage.getItem("cc-planning");
+      if (savedPlanning) setPlanning(JSON.parse(savedPlanning));
     } catch {}
   }, []);
 
@@ -663,6 +659,12 @@ export default function TicketBoard() {
     const updated = { ...memos, [key]: text };
     setMemos(updated);
     localStorage.setItem("cc-memos", JSON.stringify(updated));
+  }
+
+  function savePlanning(key: string, state: string) {
+    const updated = { ...planning, [key]: state };
+    setPlanning(updated);
+    localStorage.setItem("cc-planning", JSON.stringify(updated));
   }
 
   function handleSelect(t: Ticket) {
@@ -1005,6 +1007,27 @@ export default function TicketBoard() {
                   <span className="text-gray-300">-</span>
                 </div>
               )}
+            </div>
+
+            {/* 플래닝 상태 */}
+            <div className="mb-4">
+              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">플래닝 상태</p>
+              <div className="flex gap-1.5">
+                {PLANNING_STATES.map((s) => {
+                  const active = (planning[selected.key] ?? "스프린트 대기중") === s;
+                  const activeClass =
+                    s === "플래닝 완료"   ? "bg-green-600 text-white border-green-600" :
+                    s === "검토중"        ? "bg-orange-500 text-white border-orange-500" :
+                                           "bg-gray-500 text-white border-gray-500";
+                  return (
+                    <button
+                      key={s}
+                      onClick={() => savePlanning(selected.key, s)}
+                      className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+                    >{s}</button>
+                  );
+                })}
+              </div>
             </div>
 
             <div className="border-t border-gray-100 pt-4">
