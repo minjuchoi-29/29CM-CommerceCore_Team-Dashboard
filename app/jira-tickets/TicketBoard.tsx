@@ -315,6 +315,9 @@ export default function TicketBoard() {
   // 우측 사이드바 너비 (드래그 리사이즈)
   const [sidebarWidth, setSidebarWidth] = useState(380);
 
+  // 시트 우선순위 (key → priority 문자열)
+  const [priorities, setPriorities] = useState<Record<string, string>>({});
+
   // 사용자 직접 추가 티켓 관리
   const [addKeyInput, setAddKeyInput]     = useState("");
   const [addKeyLoading, setAddKeyLoading] = useState(false);
@@ -534,6 +537,14 @@ export default function TicketBoard() {
 
   // 마운트 시 자동 로드
   useEffect(() => { loadTickets(); }, [loadTickets]);
+
+  // 시트 우선순위 로드
+  useEffect(() => {
+    fetch("/api/sheet-priorities")
+      .then(r => r.json())
+      .then(d => { if (d.priorities) setPriorities(d.priorities); })
+      .catch(() => {});
+  }, []);
 
   // tickets 갱신 시 선택된 티켓도 최신 데이터로 동기화
   useEffect(() => {
@@ -799,6 +810,11 @@ export default function TicketBoard() {
                     >
                       {t.key}
                     </a>
+                    {priorities[t.key] && (
+                      <span className="shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
+                        P{priorities[t.key]}
+                      </span>
+                    )}
                     <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
                     <span className="w-20 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
