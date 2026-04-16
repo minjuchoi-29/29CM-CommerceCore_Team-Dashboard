@@ -18,6 +18,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
     authorized({ auth, request: { nextUrl } }) {
       const isPublic =
         nextUrl.pathname.startsWith("/api/auth") ||
+        nextUrl.pathname.startsWith("/api/sheet-priorities") ||
         nextUrl.pathname.startsWith("/_next") ||
         nextUrl.pathname === "/signin" ||
         nextUrl.pathname === "/favicon.ico";
