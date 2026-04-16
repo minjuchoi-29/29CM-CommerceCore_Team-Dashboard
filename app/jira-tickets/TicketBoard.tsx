@@ -113,6 +113,7 @@ const Q2_KEYS = new Set([
 const ALL_QUARTERS = ["Y26Q1", "Q1+Q2", "Y26Q2"];
 const ALL_PROJECTS = ["TM", "CMALL", "M29CMCCF", "EF"];
 const ALL_STATUSES = ["론치완료/완료", "개발중", "QA중", "SUGGESTED", "HOLD/Postponed", "기타"];
+const ALL_LEVELS   = ["Initiative", "Epic", "Dev"];
 
 function extractDomain(summary: string): string {
   const m = summary.match(/^\[([^\]]+)\]/);
@@ -299,6 +300,7 @@ export default function TicketBoard() {
   const [quarters, setQuarters]     = useState<Set<string>>(new Set());
   const [projects, setProjects]     = useState<Set<string>>(new Set());
   const [statuses, setStatuses]     = useState<Set<string>>(new Set());
+  const [levels, setLevels]         = useState<Set<string>>(new Set());
   const [domainFilter, setDomainFilter] = useState<Set<string>>(new Set());
   const [search, setSearch]         = useState("");
 
@@ -619,6 +621,7 @@ export default function TicketBoard() {
           (wantQ1Q2 && isQ1Q2);
         if (!matches) return false;
       }
+      if (levels.size > 0 && !levels.has(t.type)) return false;
       if (domainFilter.size > 0 && !domainFilter.has(extractDomain(t.summary))) return false;
       if (projects.size > 0 && !projects.has(t.project)) return false;
       if (statuses.size > 0 && !Array.from(statuses).some((s) => matchStatus(t.status, s))) return false;
@@ -628,7 +631,7 @@ export default function TicketBoard() {
       }
       return true;
     });
-  }, [tickets, quarters, projects, statuses, domainFilter, search]);
+  }, [tickets, quarters, projects, statuses, levels, domainFilter, search]);
 
   const done       = filtered.filter((t) => ["론치완료", "완료", "배포완료"].includes(t.status)).length;
   const inProgress = filtered.filter((t) => ["개발중", "In Progress", "QA중"].includes(t.status)).length;
@@ -725,6 +728,7 @@ export default function TicketBoard() {
         <div className="flex flex-col gap-2 mb-4">
           {[
             { label: "분기",    items: ALL_QUARTERS, state: quarters,     setState: setQuarters,     activeColor: "bg-indigo-600 text-white" },
+            { label: "레벨",    items: ALL_LEVELS,   state: levels,       setState: setLevels,       activeColor: "bg-violet-600 text-white" },
             { label: "프로젝트", items: ALL_PROJECTS, state: projects,    setState: setProjects,     activeColor: "bg-gray-800 text-white" },
             { label: "상태",    items: ALL_STATUSES, state: statuses,     setState: setStatuses,     activeColor: "bg-blue-600 text-white" },
             { label: "도메인",  items: allDomains,   state: domainFilter, setState: setDomainFilter, activeColor: "bg-teal-600 text-white" },
