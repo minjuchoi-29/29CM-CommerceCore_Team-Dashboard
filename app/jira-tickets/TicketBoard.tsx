@@ -45,6 +45,18 @@ type RoleSchedule = {
   status: "완료" | "진행중" | "예정";
 };
 
+type MemoEntry = {
+  text: string;
+  author: string;
+  date: string; // YYYY-MM-DD
+};
+
+type PlanningNote = {
+  text: string;
+  author: string;
+  date: string; // YYYY-MM-DD HH:mm
+};
+
 const TYPE_COLOR: Record<string, string> = {
   "Initiative": "bg-indigo-100 text-indigo-700",
   "Epic":       "bg-violet-100 text-violet-600",
@@ -318,7 +330,7 @@ function newRow(): RoleSchedule {
   return { role: "기획", person: "", start: "", end: "", status: "예정" };
 }
 
-export default function TicketBoard() {
+export default function TicketBoard({ userName = "알 수 없음" }: { userName?: string }) {
   const [tickets, setTickets]       = useState<Ticket[]>([]);
   const [fetching, setFetching]     = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -339,8 +351,8 @@ export default function TicketBoard() {
   const [editRows, setEditRows]     = useState<RoleSchedule[]>([]);
   const [editError, setEditError]   = useState<string | null>(null);
 
-  // localStorage 기반 주요 내용 요약
-  const [memos, setMemos]           = useState<Record<string, string>>({});
+  // 주요 내용 요약 (작성자/날짜 포함)
+  const [memos, setMemos]           = useState<Record<string, MemoEntry | string>>({});
   const [memoEditMode, setMemoEditMode] = useState(false);
   const [memoText, setMemoText]     = useState("");
 
@@ -352,6 +364,9 @@ export default function TicketBoard() {
   // 플래닝 상태 (key → "스프린트 대기중" | "검토중" | "플래닝 완료", 기본값: "스프린트 대기중")
   const [planning, setPlanning]     = useState<Record<string, string>>({});
   const [planningTab, setPlanningTab] = useState("전체");
+  // 플래닝 코멘트 (key → PlanningNote[])
+  const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
+  const [noteInput, setNoteInput]   = useState("");
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("default");
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기">("전체");
@@ -605,16 +620,19 @@ export default function TicketBoard() {
       if (savedCustomKeys) setCustomKeys(new Set(JSON.parse(savedCustomKeys)));
     } catch {}
 
-    // 공유 데이터: KV에서 로드 (planning, schedules, memos)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos")
+    // 공유 데이터: KV에서 로드
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-planning-notes")
       .then((r) => r.json())
       .then((data) => {
-        if (data["cc-planning"])  setPlanning(data["cc-planning"]);
-        if (data["cc-schedules"]) setSchedules(data["cc-schedules"]);
-        if (data["cc-memos"])     setMemos(data["cc-memos"]);
+        if (data["cc-planning"])       setPlanning(data["cc-planning"]);
+        if (data["cc-schedules"])      setSchedules(data["cc-schedules"]);
+        if (data["cc-memos"])          setMemos(data["cc-memos"]);
+        if (data["cc-planning-notes"]) {
+          setPlanningNotes(data["cc-planning-notes"]);
+          try { localStorage.setItem("cc-planning-notes", JSON.stringify(data["cc-planning-notes"])); } catch {}
+        }
       })
       .catch(() => {
-        // KV 실패 시 localStorage 폴백
         try {
           const p = localStorage.getItem("cc-planning");
           if (p) setPlanning(JSON.parse(p));
@@ -622,6 +640,8 @@ export default function TicketBoard() {
           if (s) setSchedules(JSON.parse(s));
           const m = localStorage.getItem("cc-memos");
           if (m) setMemos(JSON.parse(m));
+          const n = localStorage.getItem("cc-planning-notes");
+          if (n) setPlanningNotes(JSON.parse(n));
         } catch {}
       });
   }, []);
@@ -749,13 +769,56 @@ export default function TicketBoard() {
   }, [preFiltered, statusTab, sortBy, priorities]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function saveMemo(key: string, text: string) {
-    const updated = { ...memos, [key]: text };
+    const entry: MemoEntry = {
+      text,
+      author: userName,
+      date: new Date().toISOString().slice(0, 10),
+    };
+    const updated = { ...memos, [key]: entry };
     setMemos(updated);
     fetch("/api/kv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "cc-memos", value: updated }),
     }).catch(() => {});
+  }
+
+  function savePlanningNotes(updated: Record<string, PlanningNote[]>) {
+    setPlanningNotes(updated);
+    try { localStorage.setItem("cc-planning-notes", JSON.stringify(updated)); } catch {}
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-planning-notes", value: updated }),
+    }).catch(() => {});
+  }
+
+  function addPlanningNote(ticketKey: string, text: string) {
+    if (!text.trim()) return;
+    const now = new Date();
+    const date = `${now.toISOString().slice(0, 10)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const note: PlanningNote = { text: text.trim(), author: userName, date };
+    const prev = planningNotes[ticketKey] ?? [];
+    savePlanningNotes({ ...planningNotes, [ticketKey]: [...prev, note] });
+  }
+
+  function deletePlanningNote(ticketKey: string, index: number) {
+    const prev = planningNotes[ticketKey] ?? [];
+    savePlanningNotes({ ...planningNotes, [ticketKey]: prev.filter((_, i) => i !== index) });
+  }
+
+  /** 구버전(string) 호환 — 메모 텍스트 추출 */
+  function getMemoText(key: string): string {
+    const m = memos[key];
+    if (!m) return "";
+    return typeof m === "string" ? m : m.text;
+  }
+
+  /** 메모 메타 정보 (작성자/날짜) */
+  function getMemoMeta(key: string): { author: string; date: string } | null {
+    const m = memos[key];
+    if (!m || typeof m === "string") return null;
+    return { author: m.author, date: m.date };
   }
 
   function savePlanning(key: string, state: string) {
@@ -773,7 +836,8 @@ export default function TicketBoard() {
     setSelected(isSame ? null : t);
     setEditMode(false);
     setMemoEditMode(false);
-    if (!isSame) setMemoText(memos[t.key] ?? "");
+    setNoteInput("");
+    if (!isSame) setMemoText(getMemoText(t.key));
   }
 
   if (fetching && tickets.length === 0) {
@@ -1152,9 +1216,9 @@ export default function TicketBoard() {
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">주요 내용 요약</p>
                   {!memoEditMode ? (
                     <button
-                      onClick={() => { setMemoText(memos[selected.key] ?? ""); setMemoEditMode(true); }}
+                      onClick={() => { setMemoText(getMemoText(selected.key)); setMemoEditMode(true); }}
                       className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
-                    >{memos[selected.key] ? "편집" : "입력"}</button>
+                    >{getMemoText(selected.key) ? "편집" : "입력"}</button>
                   ) : (
                     <div className="flex gap-2">
                       <button
@@ -1174,10 +1238,17 @@ export default function TicketBoard() {
                     rows={4}
                     className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
                   />
-                ) : memos[selected.key] ? (
-                  <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2">
-                    {memos[selected.key]}
-                  </p>
+                ) : getMemoText(selected.key) ? (
+                  <div>
+                    <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2 mb-1.5">
+                      {getMemoText(selected.key)}
+                    </p>
+                    {getMemoMeta(selected.key) && (
+                      <p className="text-xs text-gray-400 text-right">
+                        {getMemoMeta(selected.key)!.author} · {getMemoMeta(selected.key)!.date}
+                      </p>
+                    )}
+                  </div>
                 ) : (
                   <p className="text-xs text-gray-300 italic">입력된 내용이 없습니다</p>
                 )}
@@ -1206,6 +1277,76 @@ export default function TicketBoard() {
                       >{s}</button>
                     );
                   })}
+                </div>
+
+                {/* 플래닝 코멘트 */}
+                <div className="mt-3">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">플래닝 코멘트</p>
+
+                  {/* 작성자+날짜 기준 그룹핑 */}
+                  {(planningNotes[selected.key] ?? []).length > 0 ? (() => {
+                    // 같은 author + 같은 날짜(YYYY-MM-DD)끼리 묶기
+                    type Group = { author: string; date: string; items: { text: string; idx: number }[] };
+                    const groups: Group[] = [];
+                    (planningNotes[selected.key] ?? []).forEach((note, idx) => {
+                      const day = note.date.slice(0, 10);
+                      const last = groups[groups.length - 1];
+                      if (last && last.author === note.author && last.date === day) {
+                        last.items.push({ text: note.text, idx });
+                      } else {
+                        groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
+                      }
+                    });
+                    return (
+                      <div className="space-y-3 mb-3">
+                        {groups.map((g, gi) => (
+                          <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
+                            {/* 그룹 헤더 */}
+                            <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
+                              <span className="text-xs font-medium text-gray-600">{g.author}</span>
+                              <span className="text-xs text-gray-400">{g.date}</span>
+                            </div>
+                            {/* 내용 */}
+                            <div className="divide-y divide-gray-50">
+                              {g.items.map(({ text, idx }) => (
+                                <div key={idx} className="group flex items-start gap-2 px-3 py-2">
+                                  <p className="flex-1 text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                  <button
+                                    onClick={() => deletePlanningNote(selected.key, idx)}
+                                    className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+                                  >삭제</button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })() : (
+                    <p className="text-xs text-gray-300 italic mb-2">등록된 코멘트가 없습니다</p>
+                  )}
+
+                  {/* 새 코멘트 입력 */}
+                  <div className="flex flex-col gap-1.5">
+                    <textarea
+                      value={noteInput}
+                      onChange={(e) => setNoteInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          addPlanningNote(selected.key, noteInput);
+                          setNoteInput("");
+                        }
+                      }}
+                      placeholder="논의 내용을 입력하세요 (⌘+Enter로 등록)"
+                      rows={2}
+                      className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    />
+                    <button
+                      onClick={() => { addPlanningNote(selected.key, noteInput); setNoteInput(""); }}
+                      disabled={!noteInput.trim()}
+                      className="self-end text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
+                    >등록</button>
+                  </div>
                 </div>
               </div>
 
