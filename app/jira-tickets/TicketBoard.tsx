@@ -1058,7 +1058,20 @@ export default function TicketBoard() {
           <div className="p-5">
             {/* 헤더 */}
             <div className="flex justify-between items-start mb-4">
-              <h3 className="text-sm font-bold text-gray-900 leading-snug pr-2 flex-1">{selected.summary}</h3>
+              <div className="flex-1 pr-2">
+                <h3 className="text-sm font-bold text-gray-900 leading-snug">{selected.summary}</h3>
+                {(() => {
+                  const ps = planning[selected.key] ?? "스프린트 대기중";
+                  if (ps === "플래닝 완료") return null;
+                  if ([...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(selected.status)) return null;
+                  const cls = ps === "검토중"
+                    ? "bg-orange-100 text-orange-600 border-orange-200"
+                    : "bg-gray-100 text-gray-500 border-gray-200";
+                  return (
+                    <span className={`inline-block mt-1.5 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>{ps}</span>
+                  );
+                })()}
+              </div>
               <button
                 onClick={() => { setSelected(null); setEditMode(false); }}
                 className="text-gray-400 hover:text-gray-600 text-lg leading-none shrink-0"
@@ -1193,10 +1206,21 @@ export default function TicketBoard() {
                 )}
               </div>
 
-              {((planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" || [...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(selected.status)) && <div className="border-t border-gray-100 pt-4">
+              <div className="border-t border-gray-100 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정</p>
+                  {(() => {
+                    const ps = planning[selected.key] ?? "스프린트 대기중";
+                    if (ps === "플래닝 완료") return null;
+                    if ([...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(selected.status)) return null;
+                    const cls = ps === "검토중"
+                      ? "bg-orange-100 text-orange-600 border-orange-200"
+                      : "bg-gray-100 text-gray-500 border-gray-200";
+                    return <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>{ps}</span>;
+                  })()}
+                </div>
                 {!editMode ? (
                   <button
                     onClick={startEdit}
@@ -1298,15 +1322,15 @@ export default function TicketBoard() {
               ) : (
                 /* 뷰 모드: Gantt */
                 <>
-                  {getRoles(selected).length === 0 && (
+                  {getRoles(selected).length === 0 && (planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && (
                     <p className="mb-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                      계획하신 일정과 담당자를 입력해주세요.
+                      작업별 일정과 담당자를 입력해주세요.
                     </p>
                   )}
                   <GanttChart roles={getRoles(selected)} />
                 </>
               )}
-            </div>}
+            </div>
             </div>
           </div>
         </div>
