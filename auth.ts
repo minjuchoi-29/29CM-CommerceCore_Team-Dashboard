@@ -4,6 +4,7 @@ import Google from "next-auth/providers/google"
 const ALLOWED_DOMAINS = ["29cm.co.kr", "musinsa.com"]
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  secret: process.env.AUTH_SECRET,
   trustHost: true,
   providers: [
     Google({
