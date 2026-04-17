@@ -4,7 +4,7 @@ import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 
 export const dynamic = "force-dynamic";
 
-const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
+const JIRA_HOST = "https://jira.team.musinsa.com";
 
 /** customfield URL 값 추출 — 문자열이면 그대로, 객체면 url/href 키 사용 */
 function extractUrl(val: unknown): string | undefined {
@@ -63,7 +63,7 @@ export async function GET(request: Request) {
   ].join(",");
 
   const searchUrl =
-    `${JIRA_HOST}/rest/api/3/search/jql?` +
+    `${JIRA_HOST}/rest/api/2/search?` +
     new URLSearchParams({
       jql: `key = ${key}`,
       maxResults: "1",
