@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 const FETCH_TIMEOUT_MS = 15_000;
+const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -58,10 +58,12 @@ export async function GET(request: NextRequest) {
 
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+
+  console.log("[ai-summary] key:", key, "| GEMINI_API_KEY:", geminiKey ? "SET" : "MISSING");
 
   if (!email || !token) return NextResponse.json({ error: "JIRA 환경변수 누락" }, { status: 500 });
-  if (!anthropicKey) return NextResponse.json({ error: "ANTHROPIC_API_KEY 누락" }, { status: 500 });
+  if (!geminiKey) return NextResponse.json({ error: "GEMINI_API_KEY 누락" }, { status: 500 });
 
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const jiraHeaders = { Authorization: `Basic ${auth}`, Accept: "application/json" };
@@ -148,7 +150,7 @@ export async function GET(request: NextRequest) {
     } catch {}
   }
 
-  // 4. Anthropic API로 요약 생성
+  // 4. Gemini API로 요약 생성
   const context = [
     `티켓: ${key} (${ticketType})`,
     `제목: ${ticketSummary}`,
@@ -161,34 +163,58 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "요약할 내용이 없습니다." }, { status: 422 });
   }
 
-  try {
-    const client = new Anthropic({ apiKey: anthropicKey });
-    const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 600,
-      messages: [
-        {
-          role: "user",
-          content: `아래 JIRA 티켓 정보를 바탕으로 팀 대시보드용 "주요 내용 요약"을 작성해줘.
+  const prompt = `아래는 JIRA 티켓과 연결 문서의 내용이다. 이 과제가 무엇인지 처음 보는 사람도 핵심을 파악할 수 있도록 팀 대시보드용 요약을 작성하라.
 
 ${context}
 
 ---
 작성 규칙:
 - 한국어로 작성
-- 3~5개의 bullet point (•)로 구성
-- 각 항목은 1~2줄 이내
-- 작업 목적, 핵심 변경 내용, 주요 AC 또는 기술 포인트 중심으로
-- 불필요한 서론/결론 없이 내용만 작성
-- 앞뒤에 제목/레이블 없이 bullet만 출력`,
-        },
-      ],
-    });
+- 4~6개의 bullet point (•)로 구성
+- 각 항목은 구체적이고 명확하게 (추상적 표현 금지)
+- 아래 항목을 중심으로 작성:
+  1. 이 과제가 왜 필요한가 (배경/목적)
+  2. 무엇을 만들거나 변경하는가 (핵심 작업 내용)
+  3. 주요 Acceptance Criteria 또는 완료 조건
+  4. 기술적으로 중요한 포인트 (있는 경우)
+  5. 영향 범위 또는 주의사항 (있는 경우)
+- 티켓 제목을 단순 반복하는 bullet 금지
+- 불필요한 서론/결론 없이 bullet만 출력
+- 앞뒤에 제목/레이블 없이 bullet만 출력`;
 
-    const summary = (message.content[0] as { type: string; text: string }).text.trim();
-    return NextResponse.json({ summary, key });
+  try {
+    const res = await fetchWithTimeout(
+      `${GEMINI_API_URL}?key=${geminiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { maxOutputTokens: 1024, temperature: 0.2 },
+        }),
+      }
+    );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("[ai-summary] Gemini API error:", res.status, errText);
+      return NextResponse.json({ error: `AI 요약 실패: ${res.status} ${errText}` }, { status: 500 });
+    }
+
+    const data = await res.json() as Record<string, unknown>;
+    const summary = ((data.candidates as Array<Record<string, unknown>>)?.[0]
+      ?.content as Record<string, unknown>)
+      ?.parts as Array<Record<string, unknown>>;
+    const text = summary?.[0]?.text as string | undefined;
+
+    if (!text) {
+      return NextResponse.json({ error: "요약 결과가 없습니다." }, { status: 500 });
+    }
+
+    return NextResponse.json({ summary: text.trim(), key });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : "알 수 없는 오류";
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error("[ai-summary] Gemini fetch error:", msg);
     return NextResponse.json({ error: `AI 요약 실패: ${msg}` }, { status: 500 });
   }
 }

@@ -614,12 +614,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setAddKeyInput("");
 
         // 메모가 없을 때만 AI 요약 1회 생성
-        const hasMemo = !!memos[trimmed];
+        const hasMemo = !!memos[trimmed]?.text?.trim();
         if (!hasMemo) {
           setSummaryLoading(prev => new Set([...prev, trimmed]));
           fetch(`/api/ai-summary?key=${encodeURIComponent(trimmed)}`)
-            .then(r => r.json())
+            .then(r => {
+              console.log("[ai-summary] HTTP status:", r.status, r.statusText);
+              return r.json();
+            })
             .then(d => {
+              console.log("[ai-summary] response body:", d);
               if (d.summary) {
                 const entry: MemoEntry = {
                   text: d.summary,
@@ -637,7 +641,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 });
               }
             })
-            .catch(() => {})
+            .catch((err) => { console.error("[ai-summary] fetch error:", err); })
             .finally(() => {
               setSummaryLoading(prev => {
                 const next = new Set(prev);
