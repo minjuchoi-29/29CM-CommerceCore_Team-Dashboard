@@ -384,14 +384,21 @@ export default function TicketBoard() {
   // API에서 받은 데이터를 상태 + localStorage에 저장 (사용자 추가 티켓 병합)
   function applyApiData(data: { tickets: Ticket[]; fetchedAt?: string }) {
     const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
-    let customTickets: Ticket[] = [];
+    // localStorage에서 custom tickets 미리 읽기 (동기 작업)
+    let localExtra: Ticket[] = [];
     try {
       const cr = localStorage.getItem("cc-custom-tickets");
-      if (cr) customTickets = JSON.parse(cr);
+      if (cr) localExtra = JSON.parse(cr);
     } catch {}
-    const jiraKeys = new Set(data.tickets.map(t => t.key));
-    const extra = customTickets.filter(t => !jiraKeys.has(t.key));
-    setTickets([...data.tickets, ...extra]);
+    setTickets(prev => {
+      const jiraKeys = new Set(data.tickets.map(t => t.key));
+      // KV에서 이미 로드된 custom tickets(prev에 있는 것) 우선 유지
+      const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
+      const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
+      // localStorage에서 읽은 것도 병합 (KV에 없는 경우 fallback)
+      for (const t of localExtra) if (!extraByKey.has(t.key)) extraByKey.set(t.key, t);
+      return [...data.tickets, ...extraByKey.values()];
+    });
     setSyncedAt(at);
     try {
       localStorage.setItem(
@@ -419,14 +426,18 @@ export default function TicketBoard() {
       if (raw) {
         const cached = JSON.parse(raw) as { tickets: Ticket[]; fetchedAt: string };
         if (cached.tickets.length > 0 && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MAX_MS) {
-          let customTickets: Ticket[] = [];
+          let localExtra: Ticket[] = [];
           try {
             const cr = localStorage.getItem("cc-custom-tickets");
-            if (cr) customTickets = JSON.parse(cr);
+            if (cr) localExtra = JSON.parse(cr);
           } catch {}
-          const jiraKeys = new Set(cached.tickets.map((t: Ticket) => t.key));
-          const extra = customTickets.filter(t => !jiraKeys.has(t.key));
-          setTickets([...cached.tickets, ...extra]);
+          setTickets(prev => {
+            const jiraKeys = new Set(cached.tickets.map((t: Ticket) => t.key));
+            const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
+            const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
+            for (const t of localExtra) if (!extraByKey.has(t.key)) extraByKey.set(t.key, t);
+            return [...cached.tickets, ...extraByKey.values()];
+          });
           setSyncedAt(new Date(cached.fetchedAt));
           setFetching(false);
           return;
@@ -468,11 +479,15 @@ export default function TicketBoard() {
         return;
       }
 
-      // 커스텀 키 목록 읽기
-      let savedCustomKeys: string[] = [];
+      // 커스텀 키 목록: KV 우선, 없으면 현재 상태 사용
+      let savedCustomKeys: string[] = [...customKeys];
       try {
-        const ck = localStorage.getItem("cc-custom-keys");
-        if (ck) savedCustomKeys = JSON.parse(ck);
+        const kvRes = await fetch("/api/kv?keys=cc-custom-keys");
+        const kvData = await kvRes.json();
+        if (Array.isArray(kvData["cc-custom-keys"]) && kvData["cc-custom-keys"].length > 0) {
+          savedCustomKeys = kvData["cc-custom-keys"];
+          setCustomKeys(new Set(savedCustomKeys));
+        }
       } catch {}
 
       // 배치 결과에 없는 커스텀 티켓만 단건 재조회
@@ -488,7 +503,12 @@ export default function TicketBoard() {
         } catch {}
       }));
 
-      // cc-custom-tickets 최신화
+      // cc-custom-tickets KV + localStorage 최신화
+      fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-custom-tickets", value: freshCustom }),
+      }).catch(() => {});
       try {
         localStorage.setItem("cc-custom-tickets", JSON.stringify(freshCustom));
       } catch {}
@@ -504,10 +524,18 @@ export default function TicketBoard() {
         );
       } catch {}
 
-      // 시트 우선순위도 함께 갱신
+      // 시트 우선순위 + 공유 KV 데이터 (planning, schedules, memos) 함께 갱신
       fetch("/api/sheet-priorities")
         .then(r => r.json())
         .then(d => { if (d.priorities) setPriorities(d.priorities); })
+        .catch(() => {});
+      fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos")
+        .then(r => r.json())
+        .then(d => {
+          if (d["cc-planning"])  setPlanning(d["cc-planning"]);
+          if (d["cc-schedules"]) setSchedules(d["cc-schedules"]);
+          if (d["cc-memos"])     setMemos(d["cc-memos"]);
+        })
         .catch(() => {});
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
@@ -541,17 +569,29 @@ export default function TicketBoard() {
         setAddKeyError(data.error ?? "티켓을 가져올 수 없습니다.");
       } else {
         const newTicket = data.ticket as Ticket;
-        setTickets(prev => [...prev, newTicket]);
         const newCustomKeys = new Set([...customKeys, trimmed]);
         setCustomKeys(newCustomKeys);
+        setTickets(prev => [...prev, newTicket]);
+
+        const newCustomKeysArr = [...newCustomKeys];
+        const currentCustomTickets = tickets.filter(t => customKeys.has(t.key));
+        const newCustomTickets = [...currentCustomTickets.filter(t => t.key !== trimmed), newTicket];
+
+        // KV에 저장 (팀 공유)
+        fetch("/api/kv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-custom-keys", value: newCustomKeysArr }),
+        }).catch(() => {});
+        fetch("/api/kv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }),
+        }).catch(() => {});
+        // localStorage 동기화 (오프라인 폴백용)
         try {
-          localStorage.setItem("cc-custom-keys", JSON.stringify([...newCustomKeys]));
-          const prev: Ticket[] = (() => {
-            try { const r = localStorage.getItem("cc-custom-tickets"); return r ? JSON.parse(r) : []; }
-            catch { return []; }
-          })();
-          localStorage.setItem("cc-custom-tickets",
-            JSON.stringify([...prev.filter(t => t.key !== trimmed), newTicket]));
+          localStorage.setItem("cc-custom-keys", JSON.stringify(newCustomKeysArr));
+          localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
         } catch {}
         setAddKeyInput("");
       }
@@ -569,13 +609,25 @@ export default function TicketBoard() {
     const newCustomKeys = new Set([...customKeys].filter(k => k !== key));
     setCustomKeys(newCustomKeys);
     if (selected?.key === key) { setSelected(null); setEditMode(false); }
+
+    const newCustomKeysArr = [...newCustomKeys];
+    const newCustomTickets = tickets.filter(t => customKeys.has(t.key) && t.key !== key);
+
+    // KV에 저장 (팀 공유)
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-custom-keys", value: newCustomKeysArr }),
+    }).catch(() => {});
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }),
+    }).catch(() => {});
+    // localStorage 동기화 (오프라인 폴백용)
     try {
-      localStorage.setItem("cc-custom-keys", JSON.stringify([...newCustomKeys]));
-      const prev: Ticket[] = (() => {
-        try { const r = localStorage.getItem("cc-custom-tickets"); return r ? JSON.parse(r) : []; }
-        catch { return []; }
-      })();
-      localStorage.setItem("cc-custom-tickets", JSON.stringify(prev.filter(t => t.key !== key)));
+      localStorage.setItem("cc-custom-keys", JSON.stringify(newCustomKeysArr));
+      localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
     } catch {}
   }
 
@@ -599,19 +651,65 @@ export default function TicketBoard() {
   }, [tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    // 로컬 임시 데이터 (custom keys)
-    try {
-      const savedCustomKeys = localStorage.getItem("cc-custom-keys");
-      if (savedCustomKeys) setCustomKeys(new Set(JSON.parse(savedCustomKeys)));
-    } catch {}
-
-    // 공유 데이터: KV에서 로드 (planning, schedules, memos)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos")
+    // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets)
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-custom-keys,cc-custom-tickets")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])  setPlanning(data["cc-planning"]);
         if (data["cc-schedules"]) setSchedules(data["cc-schedules"]);
         if (data["cc-memos"])     setMemos(data["cc-memos"]);
+
+        // custom keys: KV 우선, 없으면 localStorage 폴백
+        const kvKeys: string[] = Array.isArray(data["cc-custom-keys"]) ? data["cc-custom-keys"] : [];
+        if (kvKeys.length > 0) {
+          setCustomKeys(new Set(kvKeys));
+        } else {
+          try {
+            const local = localStorage.getItem("cc-custom-keys");
+            if (local) {
+              const parsed: string[] = JSON.parse(local);
+              setCustomKeys(new Set(parsed));
+              // localStorage에만 있던 데이터를 KV로 마이그레이션
+              if (parsed.length > 0) {
+                fetch("/api/kv", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ key: "cc-custom-keys", value: parsed }),
+                }).catch(() => {});
+              }
+            }
+          } catch {}
+        }
+
+        // custom tickets: KV 우선, 없으면 localStorage 폴백
+        const kvTickets: Ticket[] = Array.isArray(data["cc-custom-tickets"]) ? data["cc-custom-tickets"] : [];
+        if (kvTickets.length > 0) {
+          setTickets(prev => {
+            const jiraKeys = new Set(prev.map(t => t.key));
+            const extra = kvTickets.filter(t => !jiraKeys.has(t.key));
+            return extra.length > 0 ? [...prev, ...extra] : prev;
+          });
+        } else {
+          try {
+            const local = localStorage.getItem("cc-custom-tickets");
+            if (local) {
+              const parsed: Ticket[] = JSON.parse(local);
+              if (parsed.length > 0) {
+                setTickets(prev => {
+                  const jiraKeys = new Set(prev.map(t => t.key));
+                  const extra = parsed.filter(t => !jiraKeys.has(t.key));
+                  return extra.length > 0 ? [...prev, ...extra] : prev;
+                });
+                // localStorage 데이터 KV로 마이그레이션
+                fetch("/api/kv", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ key: "cc-custom-tickets", value: parsed }),
+                }).catch(() => {});
+              }
+            }
+          } catch {}
+        }
       })
       .catch(() => {
         // KV 실패 시 localStorage 폴백
@@ -622,6 +720,17 @@ export default function TicketBoard() {
           if (s) setSchedules(JSON.parse(s));
           const m = localStorage.getItem("cc-memos");
           if (m) setMemos(JSON.parse(m));
+          const ck = localStorage.getItem("cc-custom-keys");
+          if (ck) setCustomKeys(new Set(JSON.parse(ck)));
+          const ct = localStorage.getItem("cc-custom-tickets");
+          if (ct) {
+            const parsed: Ticket[] = JSON.parse(ct);
+            setTickets(prev => {
+              const jiraKeys = new Set(prev.map(t => t.key));
+              const extra = parsed.filter(t => !jiraKeys.has(t.key));
+              return extra.length > 0 ? [...prev, ...extra] : prev;
+            });
+          }
         } catch {}
       });
   }, []);
