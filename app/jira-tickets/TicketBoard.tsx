@@ -356,6 +356,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [memoEditMode, setMemoEditMode] = useState(false);
   const [memoText, setMemoText]     = useState("");
 
+  // AI 요약 생성 중인 티켓 키 집합
+  const [summaryLoading, setSummaryLoading] = useState<Set<string>>(new Set());
+
   // 우측 사이드바 너비 (드래그 리사이즈)
   const [sidebarWidth, setSidebarWidth] = useState(380);
 
@@ -609,6 +612,40 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
         } catch {}
         setAddKeyInput("");
+
+        // 메모가 없을 때만 AI 요약 1회 생성
+        const hasMemo = !!memos[trimmed];
+        if (!hasMemo) {
+          setSummaryLoading(prev => new Set([...prev, trimmed]));
+          fetch(`/api/ai-summary?key=${encodeURIComponent(trimmed)}`)
+            .then(r => r.json())
+            .then(d => {
+              if (d.summary) {
+                const entry: MemoEntry = {
+                  text: d.summary,
+                  author: "AI 자동 요약",
+                  date: new Date().toISOString().slice(0, 10),
+                };
+                setMemos(prev => {
+                  const updated = { ...prev, [trimmed]: entry };
+                  fetch("/api/kv", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ key: "cc-memos", value: updated }),
+                  }).catch(() => {});
+                  return updated;
+                });
+              }
+            })
+            .catch(() => {})
+            .finally(() => {
+              setSummaryLoading(prev => {
+                const next = new Set(prev);
+                next.delete(trimmed);
+                return next;
+              });
+            });
+        }
       }
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
@@ -1345,6 +1382,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     rows={4}
                     className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
                   />
+                ) : summaryLoading.has(selected.key) ? (
+                  <div className="flex items-center gap-2 text-xs text-indigo-400 bg-indigo-50 rounded-lg px-3 py-2">
+                    <svg className="animate-spin h-3.5 w-3.5 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                    </svg>
+                    AI가 티켓 내용을 분석하고 있습니다...
+                  </div>
                 ) : getMemoText(selected.key) ? (
                   <div>
                     <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2 mb-1.5">
