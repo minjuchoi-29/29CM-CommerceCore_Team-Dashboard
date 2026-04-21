@@ -614,7 +614,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setAddKeyInput("");
 
         // 메모가 없을 때만 AI 요약 1회 생성
-        const hasMemo = !!memos[trimmed]?.text?.trim();
+        const memoVal = memos[trimmed];
+        const hasMemo = typeof memoVal === "string" ? !!memoVal.trim() : !!memoVal?.text?.trim();
         if (!hasMemo) {
           setSummaryLoading(prev => new Set([...prev, trimmed]));
           fetch(`/api/ai-summary?key=${encodeURIComponent(trimmed)}`)
