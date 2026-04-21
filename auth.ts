@@ -1,13 +1,11 @@
-import NextAuth from "next-auth";
-import Google from "next-auth/providers/google";
+import NextAuth from "next-auth"
+import Google from "next-auth/providers/google"
 
-const ALLOWED_DOMAINS = ["29cm.co.kr", "musinsa.com"];
+const ALLOWED_DOMAINS = ["29cm.co.kr", "musinsa.com"]
 
 export const { handlers, signIn, signOut, auth } = NextAuth({
+  secret: process.env.AUTH_SECRET,
   trustHost: true,
-  pages: {
-    signIn: "/signin",
-  },
   providers: [
     Google({
       clientId: process.env.GOOGLE_CLIENT_ID!,
@@ -27,10 +25,12 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       return !!auth;
     },
     signIn({ profile }) {
-      console.log("[signIn] email:", profile?.email);
-      const domain = profile?.email?.split("@")[1] ?? "";
-      console.log("[signIn] domain:", domain, "allowed:", ALLOWED_DOMAINS.includes(domain));
-      return true; // 임시: 도메인 제한 해제
+      const email = profile?.email ?? ""
+      return ALLOWED_DOMAINS.some((domain) => email.endsWith(`@${domain}`))
     },
   },
-});
+  pages: {
+    signIn: "/signin",
+    error: "/signin",
+  },
+})

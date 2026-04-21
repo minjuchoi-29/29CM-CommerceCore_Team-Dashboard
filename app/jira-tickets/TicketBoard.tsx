@@ -45,6 +45,18 @@ type RoleSchedule = {
   status: "완료" | "진행중" | "예정";
 };
 
+type MemoEntry = {
+  text: string;
+  author: string;
+  date: string; // YYYY-MM-DD
+};
+
+type PlanningNote = {
+  text: string;
+  author: string;
+  date: string; // YYYY-MM-DD HH:mm
+};
+
 const TYPE_COLOR: Record<string, string> = {
   "Initiative": "bg-indigo-100 text-indigo-700",
   "Epic":       "bg-violet-100 text-violet-600",
@@ -318,7 +330,7 @@ function newRow(): RoleSchedule {
   return { role: "기획", person: "", start: "", end: "", status: "예정" };
 }
 
-export default function TicketBoard() {
+export default function TicketBoard({ userName = "알 수 없음" }: { userName?: string }) {
   const [tickets, setTickets]       = useState<Ticket[]>([]);
   const [fetching, setFetching]     = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -339,8 +351,8 @@ export default function TicketBoard() {
   const [editRows, setEditRows]     = useState<RoleSchedule[]>([]);
   const [editError, setEditError]   = useState<string | null>(null);
 
-  // localStorage 기반 주요 내용 요약
-  const [memos, setMemos]           = useState<Record<string, string>>({});
+  // 주요 내용 요약 (작성자/날짜 포함)
+  const [memos, setMemos]           = useState<Record<string, MemoEntry | string>>({});
   const [memoEditMode, setMemoEditMode] = useState(false);
   const [memoText, setMemoText]     = useState("");
 
@@ -352,6 +364,9 @@ export default function TicketBoard() {
   // 플래닝 상태 (key → "스프린트 대기중" | "검토중" | "플래닝 완료", 기본값: "스프린트 대기중")
   const [planning, setPlanning]     = useState<Record<string, string>>({});
   const [planningTab, setPlanningTab] = useState("전체");
+  // 플래닝 코멘트 (key → PlanningNote[])
+  const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
+  const [noteInput, setNoteInput]   = useState("");
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("default");
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기">("전체");
@@ -651,13 +666,17 @@ export default function TicketBoard() {
   }, [tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-custom-keys,cc-custom-tickets")
+    // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-custom-keys,cc-custom-tickets,cc-planning-notes")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])  setPlanning(data["cc-planning"]);
         if (data["cc-schedules"]) setSchedules(data["cc-schedules"]);
         if (data["cc-memos"])     setMemos(data["cc-memos"]);
+        if (data["cc-planning-notes"]) {
+          setPlanningNotes(data["cc-planning-notes"]);
+          try { localStorage.setItem("cc-planning-notes", JSON.stringify(data["cc-planning-notes"])); } catch {}
+        }
 
         // custom keys: KV 우선, 없으면 localStorage 폴백
         const kvKeys: string[] = Array.isArray(data["cc-custom-keys"]) ? data["cc-custom-keys"] : [];
@@ -669,7 +688,6 @@ export default function TicketBoard() {
             if (local) {
               const parsed: string[] = JSON.parse(local);
               setCustomKeys(new Set(parsed));
-              // localStorage에만 있던 데이터를 KV로 마이그레이션
               if (parsed.length > 0) {
                 fetch("/api/kv", {
                   method: "POST",
@@ -700,7 +718,6 @@ export default function TicketBoard() {
                   const extra = parsed.filter(t => !jiraKeys.has(t.key));
                   return extra.length > 0 ? [...prev, ...extra] : prev;
                 });
-                // localStorage 데이터 KV로 마이그레이션
                 fetch("/api/kv", {
                   method: "POST",
                   headers: { "Content-Type": "application/json" },
@@ -712,7 +729,6 @@ export default function TicketBoard() {
         }
       })
       .catch(() => {
-        // KV 실패 시 localStorage 폴백
         try {
           const p = localStorage.getItem("cc-planning");
           if (p) setPlanning(JSON.parse(p));
@@ -720,6 +736,8 @@ export default function TicketBoard() {
           if (s) setSchedules(JSON.parse(s));
           const m = localStorage.getItem("cc-memos");
           if (m) setMemos(JSON.parse(m));
+          const n = localStorage.getItem("cc-planning-notes");
+          if (n) setPlanningNotes(JSON.parse(n));
           const ck = localStorage.getItem("cc-custom-keys");
           if (ck) setCustomKeys(new Set(JSON.parse(ck)));
           const ct = localStorage.getItem("cc-custom-tickets");
@@ -858,13 +876,56 @@ export default function TicketBoard() {
   }, [preFiltered, statusTab, sortBy, priorities]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function saveMemo(key: string, text: string) {
-    const updated = { ...memos, [key]: text };
+    const entry: MemoEntry = {
+      text,
+      author: userName,
+      date: new Date().toISOString().slice(0, 10),
+    };
+    const updated = { ...memos, [key]: entry };
     setMemos(updated);
     fetch("/api/kv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "cc-memos", value: updated }),
     }).catch(() => {});
+  }
+
+  function savePlanningNotes(updated: Record<string, PlanningNote[]>) {
+    setPlanningNotes(updated);
+    try { localStorage.setItem("cc-planning-notes", JSON.stringify(updated)); } catch {}
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-planning-notes", value: updated }),
+    }).catch(() => {});
+  }
+
+  function addPlanningNote(ticketKey: string, text: string) {
+    if (!text.trim()) return;
+    const now = new Date();
+    const date = `${now.toISOString().slice(0, 10)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+    const note: PlanningNote = { text: text.trim(), author: userName, date };
+    const prev = planningNotes[ticketKey] ?? [];
+    savePlanningNotes({ ...planningNotes, [ticketKey]: [...prev, note] });
+  }
+
+  function deletePlanningNote(ticketKey: string, index: number) {
+    const prev = planningNotes[ticketKey] ?? [];
+    savePlanningNotes({ ...planningNotes, [ticketKey]: prev.filter((_, i) => i !== index) });
+  }
+
+  /** 구버전(string) 호환 — 메모 텍스트 추출 */
+  function getMemoText(key: string): string {
+    const m = memos[key];
+    if (!m) return "";
+    return typeof m === "string" ? m : m.text;
+  }
+
+  /** 메모 메타 정보 (작성자/날짜) */
+  function getMemoMeta(key: string): { author: string; date: string } | null {
+    const m = memos[key];
+    if (!m || typeof m === "string") return null;
+    return { author: m.author, date: m.date };
   }
 
   function savePlanning(key: string, state: string) {
@@ -882,7 +943,8 @@ export default function TicketBoard() {
     setSelected(isSame ? null : t);
     setEditMode(false);
     setMemoEditMode(false);
-    if (!isSame) setMemoText(memos[t.key] ?? "");
+    setNoteInput("");
+    if (!isSame) setMemoText(getMemoText(t.key));
   }
 
   if (fetching && tickets.length === 0) {
@@ -1032,7 +1094,7 @@ export default function TicketBoard() {
               placeholder="티켓 번호 · 제목 · 담당자"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="border border-gray-200 rounded-lg px-3 py-1 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
+              className="border border-gray-200 rounded-lg px-3 py-1 text-sm placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
             />
           </div>
           <div className="flex items-center gap-1.5">
@@ -1043,7 +1105,7 @@ export default function TicketBoard() {
               value={addKeyInput}
               onChange={(e) => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
               onKeyDown={(e) => e.key === "Enter" && addTicket(addKeyInput)}
-              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-indigo-300 w-36"
+              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-300 w-36"
             />
             <button
               onClick={() => addTicket(addKeyInput)}
@@ -1107,7 +1169,6 @@ export default function TicketBoard() {
                     {(() => {
                       const ps = planning[t.key] ?? "스프린트 대기중";
                       if (ps === "플래닝 완료") return null;
-                      if ([...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(t.status)) return null;
                       const cls = ps === "검토중"
                         ? "bg-orange-100 text-orange-600 border-orange-200"
                         : "bg-gray-100 text-gray-500 border-gray-200";
@@ -1167,7 +1228,19 @@ export default function TicketBoard() {
           <div className="p-5">
             {/* 헤더 */}
             <div className="flex justify-between items-start mb-4">
-              <h3 className="text-sm font-bold text-gray-900 leading-snug pr-2 flex-1">{selected.summary}</h3>
+              <div className="flex-1 pr-2">
+                <h3 className="text-sm font-bold text-gray-900 leading-snug">{selected.summary}</h3>
+                {(() => {
+                  const ps = planning[selected.key] ?? "스프린트 대기중";
+                  if (ps === "플래닝 완료") return null;
+                  const cls = ps === "검토중"
+                    ? "bg-orange-100 text-orange-600 border-orange-200"
+                    : "bg-gray-100 text-gray-500 border-gray-200";
+                  return (
+                    <span className={`inline-block mt-1.5 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>{ps}</span>
+                  );
+                })()}
+              </div>
               <button
                 onClick={() => { setSelected(null); setEditMode(false); }}
                 className="text-gray-400 hover:text-gray-600 text-lg leading-none shrink-0"
@@ -1243,27 +1316,6 @@ export default function TicketBoard() {
               )}
             </div>
 
-            {/* 플래닝 상태 — 진행중·완료 상태는 숨김 */}
-            {![...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(selected.status) && <div className="mb-4">
-              <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">플래닝 상태</p>
-              <div className="flex gap-1.5">
-                {PLANNING_STATES.map((s) => {
-                  const active = (planning[selected.key] ?? "스프린트 대기중") === s;
-                  const activeClass =
-                    s === "플래닝 완료"   ? "bg-green-600 text-white border-green-600" :
-                    s === "검토중"        ? "bg-orange-500 text-white border-orange-500" :
-                                           "bg-gray-500 text-white border-gray-500";
-                  return (
-                    <button
-                      key={s}
-                      onClick={() => savePlanning(selected.key, s)}
-                      className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
-                    >{s}</button>
-                  );
-                })}
-              </div>
-            </div>}
-
             <div className="border-t border-gray-100 pt-4">
               {/* 주요 내용 요약 */}
               <div className="mb-4">
@@ -1271,9 +1323,9 @@ export default function TicketBoard() {
                   <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">주요 내용 요약</p>
                   {!memoEditMode ? (
                     <button
-                      onClick={() => { setMemoText(memos[selected.key] ?? ""); setMemoEditMode(true); }}
+                      onClick={() => { setMemoText(getMemoText(selected.key)); setMemoEditMode(true); }}
                       className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
-                    >{memos[selected.key] ? "편집" : "입력"}</button>
+                    >{getMemoText(selected.key) ? "편집" : "입력"}</button>
                   ) : (
                     <div className="flex gap-2">
                       <button
@@ -1291,21 +1343,134 @@ export default function TicketBoard() {
                     onChange={(e) => setMemoText(e.target.value)}
                     placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
                     rows={4}
-                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
                   />
-                ) : memos[selected.key] ? (
-                  <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2">
-                    {memos[selected.key]}
-                  </p>
+                ) : getMemoText(selected.key) ? (
+                  <div>
+                    <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2 mb-1.5">
+                      {getMemoText(selected.key)}
+                    </p>
+                    {getMemoMeta(selected.key) && (
+                      <p className="text-xs text-gray-400 text-right">
+                        {getMemoMeta(selected.key)!.author} · {getMemoMeta(selected.key)!.date}
+                      </p>
+                    )}
+                  </div>
                 ) : (
                   <p className="text-xs text-gray-300 italic">입력된 내용이 없습니다</p>
                 )}
               </div>
 
-              {((planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" || [...DONE_STATUSES, ...INPROGRESS_STATUSES].includes(selected.status)) && <div className="border-t border-gray-100 pt-4">
+              {/* 플래닝 상태 */}
+              <div className="border-t border-gray-100 pt-4 mb-4">
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">플래닝 상태</p>
+                  {(planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && getRoles(selected).length === 0 && (
+                    <span className="text-xs font-medium text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">등록 필요</span>
+                  )}
+                </div>
+                <div className="flex gap-1.5">
+                  {PLANNING_STATES.map((s) => {
+                    const active = (planning[selected.key] ?? "스프린트 대기중") === s;
+                    const activeClass =
+                      s === "플래닝 완료" ? "bg-green-600 text-white border-green-600" :
+                      s === "검토중"      ? "bg-orange-500 text-white border-orange-500" :
+                                           "bg-gray-500 text-white border-gray-500";
+                    return (
+                      <button
+                        key={s}
+                        onClick={() => savePlanning(selected.key, s)}
+                        className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+                      >{s}</button>
+                    );
+                  })}
+                </div>
+
+                {/* 플래닝 코멘트 */}
+                <div className="mt-3">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">플래닝 코멘트</p>
+
+                  {/* 작성자+날짜 기준 그룹핑 */}
+                  {(planningNotes[selected.key] ?? []).length > 0 ? (() => {
+                    // 같은 author + 같은 날짜(YYYY-MM-DD)끼리 묶기
+                    type Group = { author: string; date: string; items: { text: string; idx: number }[] };
+                    const groups: Group[] = [];
+                    (planningNotes[selected.key] ?? []).forEach((note, idx) => {
+                      const day = note.date.slice(0, 10);
+                      const last = groups[groups.length - 1];
+                      if (last && last.author === note.author && last.date === day) {
+                        last.items.push({ text: note.text, idx });
+                      } else {
+                        groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
+                      }
+                    });
+                    return (
+                      <div className="space-y-3 mb-3">
+                        {groups.map((g, gi) => (
+                          <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
+                            {/* 그룹 헤더 */}
+                            <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
+                              <span className="text-xs font-medium text-gray-600">{g.author}</span>
+                              <span className="text-xs text-gray-400">{g.date}</span>
+                            </div>
+                            {/* 내용 */}
+                            <div className="divide-y divide-gray-50">
+                              {g.items.map(({ text, idx }) => (
+                                <div key={idx} className="group flex items-start gap-2 px-3 py-2">
+                                  <p className="flex-1 text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                  <button
+                                    onClick={() => deletePlanningNote(selected.key, idx)}
+                                    className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+                                  >삭제</button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    );
+                  })() : (
+                    <p className="text-xs text-gray-300 italic mb-2">등록된 코멘트가 없습니다</p>
+                  )}
+
+                  {/* 새 코멘트 입력 */}
+                  <div className="flex flex-col gap-1.5">
+                    <textarea
+                      value={noteInput}
+                      onChange={(e) => setNoteInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                          addPlanningNote(selected.key, noteInput);
+                          setNoteInput("");
+                        }
+                      }}
+                      placeholder="논의 내용을 입력하세요 (⌘+Enter로 등록)"
+                      rows={2}
+                      className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    />
+                    <button
+                      onClick={() => { addPlanningNote(selected.key, noteInput); setNoteInput(""); }}
+                      disabled={!noteInput.trim()}
+                      className="self-end text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
+                    >등록</button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="border-t border-gray-100 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정</p>
+                <div className="flex items-center gap-2">
+                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정</p>
+                  {(() => {
+                    const ps = planning[selected.key] ?? "스프린트 대기중";
+                    if (ps === "플래닝 완료") return null;
+                    const cls = ps === "검토중"
+                      ? "bg-orange-100 text-orange-600 border-orange-200"
+                      : "bg-gray-100 text-gray-500 border-gray-200";
+                    return <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>{ps}</span>;
+                  })()}
+                </div>
                 {!editMode ? (
                   <button
                     onClick={startEdit}
@@ -1354,7 +1519,7 @@ export default function TicketBoard() {
                               value={row.role}
                               onChange={(e) => { setEditError(null); updateRow(i, "role", e.target.value); }}
                               placeholder="작업명"
-                              className={`text-xs text-gray-900 border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 w-24 shrink-0`}
+                              className={`text-xs text-gray-900 border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 w-24 shrink-0 placeholder:text-gray-500`}
                             />
                           )}
                           {/* 담당자 */}
@@ -1362,7 +1527,7 @@ export default function TicketBoard() {
                             value={row.person}
                             onChange={(e) => { setEditError(null); updateRow(i, "person", e.target.value); }}
                             placeholder="담당자명"
-                            className={`text-xs text-gray-900 border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 flex-1 min-w-0`}
+                            className={`text-xs text-gray-900 border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 flex-1 min-w-0 placeholder:text-gray-500`}
                           />
                           {/* 상태 */}
                           <select
@@ -1407,15 +1572,15 @@ export default function TicketBoard() {
               ) : (
                 /* 뷰 모드: Gantt */
                 <>
-                  {getRoles(selected).length === 0 && (
+                  {getRoles(selected).length === 0 && (planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && (
                     <p className="mb-2 text-xs text-green-700 bg-green-50 border border-green-200 rounded-lg px-3 py-2">
-                      계획하신 일정과 담당자를 입력해주세요.
+                      작업별 일정과 담당자를 입력해주세요.
                     </p>
                   )}
                   <GanttChart roles={getRoles(selected)} />
                 </>
               )}
-            </div>}
+            </div>
             </div>
           </div>
         </div>
