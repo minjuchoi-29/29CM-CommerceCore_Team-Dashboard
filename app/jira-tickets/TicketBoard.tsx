@@ -1580,7 +1580,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {/* 헤더 */}
             <div className="flex justify-between items-start mb-4">
               <div className="flex-1 pr-2">
-                <h3 className="text-sm font-bold text-gray-900 leading-snug">{selected.summary}</h3>
+                <h3 className="text-base font-bold text-gray-900 leading-snug">{selected.summary}</h3>
                 {(() => {
                   const p = getPlanningVal(planning[selected.key]);
                   const designDone = p.design === "완료";
@@ -1620,7 +1620,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {selected.type}
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-y-1.5 text-xs">
+              <div className="grid grid-cols-2 gap-y-1.5 text-sm">
                 {[
                   { label: "담당자",  value: selected.assignee },
                   { label: "프로젝트", value: selected.project },
@@ -1636,7 +1636,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
 
             {/* 추가 메타 정보 */}
-            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-xs">
+            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-sm">
               {[
                 { label: "요청부문",      value: selected.requestDept },
                 { label: "요청 우선순위", value: selected.requestPriority },
@@ -1791,7 +1791,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           <div className="divide-y divide-gray-50">
                             {g.items.map(({ text, idx }) => (
                               <div key={idx} className="group flex items-start gap-2 px-3 py-2">
-                                <p className="flex-1 text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                <p className="flex-1 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
                                 <button
                                   onClick={() => deleteTicketNote(selected.key, idx)}
                                   className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
@@ -1819,7 +1819,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     }}
                     placeholder="메모를 입력하세요 (⌘+Enter로 등록)"
                     rows={2}
-                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
                   />
                   <button
                     onClick={() => { addTicketNote(selected.key, ticketNoteInput); setTicketNoteInput(""); }}
@@ -1882,7 +1882,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     onChange={(e) => setMemoText(e.target.value)}
                     placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
                     rows={6}
-                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-y"
+                    className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-y"
                   />
                 ) : summaryLoading.has(selected.key) ? (
                   <div className="flex items-center gap-2 text-xs text-indigo-400 bg-indigo-50 rounded-lg px-3 py-2">
@@ -1899,7 +1899,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       const cur = getCurrentMemo(selected.key)!;
                       return (
                         <div className="overflow-visible">
-                          <div className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1.5 overflow-visible">
+                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1.5 overflow-visible">
                             {cur.text}
                           </div>
                           <div className="flex items-center justify-between">
@@ -1933,7 +1933,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               </span>
                               <span className="text-xs text-gray-400">{v.date}</span>
                             </div>
-                            <div className="text-xs text-gray-500 whitespace-pre-wrap leading-relaxed px-3 py-2">{v.text}</div>
+                            <div className="text-sm text-gray-500 whitespace-pre-wrap leading-relaxed px-3 py-2">{v.text}</div>
                           </div>
                         ))}
                       </div>
@@ -1955,11 +1955,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     {(() => {
                       const p = getPlanningVal(planning[selected.key]);
                       const allDone = p.design === "완료" && p.dev === "완료";
-                      if (allDone && getRoles(selected).length === 0)
-                        return <span className="text-xs font-medium text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">일정 등록 필요</span>;
-                      if (allDone)
-                        return <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded">플래닝 완료</span>;
-                      return null;
+                      if (!allDone) return null;
+                      return (
+                        <div className="flex gap-1">
+                          <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded">플래닝 완료</span>
+                          {getRoles(selected).length === 0 && (
+                            <span className="text-xs font-medium text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">일정 등록 필요</span>
+                          )}
+                        </div>
+                      );
                     })()}
                   </div>
                   <svg
@@ -1979,7 +1983,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const label = track === "design" ? "Design" : "Dev";
                     return (
                       <div key={track} className="flex items-center gap-1.5">
-                        <span className={`text-xs font-medium w-12 shrink-0 ${track === "design" ? "text-violet-600" : "text-blue-600"}`}>{label}</span>
+                        <span className={`text-sm font-medium w-12 shrink-0 ${track === "design" ? "text-violet-600" : "text-blue-600"}`}>{label}</span>
                         {TRACK_STATES.map((s) => {
                           const active = current === s;
                           const activeClass =
@@ -1990,7 +1994,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <button
                               key={s}
                               onClick={() => savePlanning(selected.key, track, s)}
-                              className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+                              className={`flex-1 py-1.5 px-2 rounded-lg text-sm font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
                             >{s}</button>
                           );
                         })}
@@ -2026,7 +2030,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <div className="divide-y divide-gray-50">
                               {g.items.map(({ text, idx }) => (
                                 <div key={idx} className="group flex items-start gap-2 px-3 py-2">
-                                  <p className="flex-1 text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                  <p className="flex-1 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
                                   <button
                                     onClick={() => deletePlanningNote(selected.key, idx)}
                                     className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
@@ -2054,7 +2058,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       }}
                       placeholder="논의 내용을 입력하세요 (⌘+Enter로 등록)"
                       rows={2}
-                      className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                      className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
                     />
                     <button
                       onClick={() => { addPlanningNote(selected.key, noteInput); setNoteInput(""); }}
