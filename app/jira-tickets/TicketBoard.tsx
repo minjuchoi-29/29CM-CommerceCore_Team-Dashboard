@@ -482,6 +482,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [etrInput, setEtrInput]   = useState("");
   const [etrError, setEtrError]   = useState<string | null>(null);
   const [etrLoading, setEtrLoading] = useState<Set<string>>(new Set());
+  const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
+
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("default");
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기">("전체");
@@ -666,25 +668,43 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         const allNewTickets = [...(data.tickets as Ticket[]), ...freshCustom];
 
-        // 대시보드에 있지만 시트 A열에 없는 티켓 → 추가
-        const missingKeys = allNewTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
-        if (missingKeys.length > 0) {
-          fetch("/api/sheet-append", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ keys: missingKeys }),
-          }).catch(() => {});
-        }
+        // 토큰 없으면 시트 연동 스킵
+        if (!priData.error) {
+          // 완료 제외한 활성 티켓 중 시트에 없는 것만 추가
+          const activeTickets = allNewTickets.filter(t => !DONE_PRIORITY_STATUSES.has(t.status));
+          const missingKeys = activeTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
 
-        // 우선순위 재정렬
-        const rebalanced = computeRebalance(rawPri, allNewTickets);
-        if (rebalanced) {
-          setPriorities(rebalanced.newState);
-          fetch("/api/sheet-priorities", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ priorities: rebalanced.sheetUpdate }),
-          }).catch(() => {});
+          if (missingKeys.length > 0) {
+            try {
+              const appendRes = await fetch("/api/sheet-append", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ keys: missingKeys }),
+              });
+              const appendData = await appendRes.json();
+              if (appendRes.ok) {
+                setSheetSyncMsg(`시트에 ${missingKeys.length}개 티켓 추가됨`);
+                setTimeout(() => setSheetSyncMsg(null), 4000);
+              } else {
+                console.error("[sheet-append]", appendData);
+              }
+            } catch (e) {
+              console.error("[sheet-append]", e);
+            }
+          }
+
+          // 우선순위 재정렬
+          const rebalanced = computeRebalance(rawPri, allNewTickets);
+          if (rebalanced) {
+            setPriorities(rebalanced.newState);
+            fetch("/api/sheet-priorities", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ priorities: rebalanced.sheetUpdate }),
+            }).catch(() => {});
+          } else {
+            setPriorities(rawPri);
+          }
         } else {
           setPriorities(rawPri);
         }
@@ -1434,6 +1454,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <span className="text-xs text-red-400">
                 {priorityError === "no_token" ? "시트 권한 없음 — 재로그인 필요" : `시트 오류(${priorityError})`}
               </span>
+            )}
+            {sheetSyncMsg && (
+              <span className="text-xs text-green-600 font-medium">{sheetSyncMsg}</span>
             )}
             {syncedAt && (
               <span className="text-xs text-gray-400">
