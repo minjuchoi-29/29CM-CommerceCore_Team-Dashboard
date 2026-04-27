@@ -5,7 +5,8 @@ export const maxDuration = 60;
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 const FETCH_TIMEOUT_MS = 15_000;
-const GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+const GEMINI_API_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -18,29 +19,46 @@ async function fetchWithTimeout(url: string, options: RequestInit): Promise<Resp
 }
 
 /** ADF(Atlassian Document Format) JSON → plain text */
-function adfToText(node: unknown, depth = 0): string {
+function adfToText(node: unknown): string {
   if (!node || typeof node !== "object") return "";
   const n = node as Record<string, unknown>;
   if (n.type === "text") return (n.text as string) ?? "";
   if (n.type === "hardBreak" || n.type === "rule") return "\n";
+  if (n.type === "mention") return `@${(n.attrs as Record<string, unknown>)?.text ?? ""}`;
+  if (n.type === "inlineCard") {
+    const url = (n.attrs as Record<string, unknown>)?.url as string ?? "";
+    return url ? `[링크: ${url}]` : "";
+  }
   if (Array.isArray(n.content)) {
-    const sep = ["paragraph", "heading", "bulletList", "orderedList", "listItem", "blockquote", "codeBlock"].includes(n.type as string) ? "\n" : "";
-    return sep + (n.content as unknown[]).map(c => adfToText(c, depth + 1)).join("") + sep;
+    const blockTypes = ["paragraph", "heading", "bulletList", "orderedList", "listItem", "blockquote", "codeBlock", "panel"];
+    const sep = blockTypes.includes(n.type as string) ? "\n" : "";
+    const prefix = n.type === "heading" ? `${"#".repeat((n.attrs as Record<string, unknown>)?.level as number ?? 2)} ` : "";
+    return sep + prefix + (n.content as unknown[]).map(c => adfToText(c)).join("") + sep;
   }
   return "";
 }
 
-/** Confluence storage XML에서 텍스트 추출 (간단 태그 제거) */
+/** Confluence storage XML → plain text */
 function storageToText(html: string): string {
   return html
-    .replace(/<ac:[^>]*>[\s\S]*?<\/ac:[^>]*>/g, "") // Confluence 매크로 제거
-    .replace(/<[^>]+>/g, " ")
+    .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, "") // 매크로 제거
+    .replace(/<ac:[^>]*\/>/g, "")
+    .replace(/<ac:[^>]*>[\s\S]*?<\/ac:[^>]*>/g, "")
+    .replace(/<h([1-6])[^>]*>/g, "\n## ")
+    .replace(/<\/h[1-6]>/g, "\n")
+    .replace(/<li[^>]*>/g, "\n• ")
+    .replace(/<\/li>/g, "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<p[^>]*>/g, "\n")
+    .replace(/<\/p>/g, "\n")
+    .replace(/<[^>]+>/g, "")
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/\s{3,}/g, "\n\n")
+    .replace(/&#39;/g, "'")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -56,23 +74,26 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "유효하지 않은 티켓 키" }, { status: 400 });
   }
 
-  const email = process.env.JIRA_EMAIL;
-  const token = process.env.JIRA_API_TOKEN;
+  const email    = process.env.JIRA_EMAIL;
+  const token    = process.env.JIRA_API_TOKEN;
   const geminiKey = process.env.GEMINI_API_KEY;
 
-  console.log("[ai-summary] key:", key, "| GEMINI_API_KEY:", geminiKey ? "SET" : "MISSING");
-
   if (!email || !token) return NextResponse.json({ error: "JIRA 환경변수 누락" }, { status: 500 });
-  if (!geminiKey) return NextResponse.json({ error: "GEMINI_API_KEY 누락" }, { status: 500 });
+  if (!geminiKey)       return NextResponse.json({ error: "GEMINI_API_KEY 누락" }, { status: 500 });
 
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const jiraHeaders = { Authorization: `Basic ${auth}`, Accept: "application/json" };
 
-  // 1. JIRA 티켓 상세 조회 (description 포함)
-  let ticketSummary = "";
+  // ── 1. JIRA 티켓 상세 조회 ──────────────────────────────────────────────
+  let ticketSummary    = "";
   let ticketDescription = "";
-  let ticketAssignee = "";
-  let ticketType = "";
+  let ticketAssignee   = "";
+  let ticketType       = "";
+  let ticketPriority   = "";
+  let ticketLabels: string[] = [];
+  let ticketComponents: string[] = [];
+  let ticketEta        = "";
+  let parentSummary    = "";
   let twoPagerUrl: string | null = null;
 
   try {
@@ -81,7 +102,7 @@ export async function GET(request: NextRequest) {
         new URLSearchParams({
           jql: `key = ${key}`,
           maxResults: "1",
-          fields: "summary,description,assignee,issuetype,customfield_10070",
+          fields: "summary,description,assignee,issuetype,priority,labels,components,duedate,parent,customfield_10070,customfield_10014",
         }),
       { headers: jiraHeaders, cache: "no-store" }
     );
@@ -90,12 +111,24 @@ export async function GET(request: NextRequest) {
       const issue = (data.issues as Array<Record<string, unknown>>)?.[0];
       if (issue) {
         const f = issue.fields as Record<string, unknown>;
-        ticketSummary = (f.summary as string) ?? "";
-        ticketAssignee = ((f.assignee as Record<string, unknown>)?.displayName as string | undefined)?.split("/")[0].trim() ?? "-";
-        ticketType = (f.issuetype as Record<string, unknown>)?.name as string ?? "";
-        ticketDescription = adfToText(f.description).slice(0, 2000).trim();
+        ticketSummary    = (f.summary as string) ?? "";
+        ticketAssignee   = ((f.assignee as Record<string, unknown>)?.displayName as string | undefined)
+          ?.split("/")[0].trim() ?? "-";
+        ticketType       = (f.issuetype as Record<string, unknown>)?.name as string ?? "";
+        ticketPriority   = (f.priority as Record<string, unknown>)?.name as string ?? "";
+        ticketLabels     = Array.isArray(f.labels) ? (f.labels as string[]) : [];
+        ticketComponents = Array.isArray(f.components)
+          ? (f.components as Array<Record<string, unknown>>).map(c => c.name as string)
+          : [];
+        ticketEta        = (f.duedate as string) ?? "";
+        parentSummary    = (f.parent as Record<string, unknown>)?.fields
+          ? ((f.parent as Record<string, unknown>).fields as Record<string, unknown>).summary as string ?? ""
+          : "";
 
-        // customfield_10070 = 2-Pager/PRD URL
+        // description — 최대 5,000자
+        ticketDescription = adfToText(f.description).slice(0, 5000).trim();
+
+        // 2-Pager / PRD URL (customfield_10070)
         const prd = f.customfield_10070;
         if (prd) {
           if (typeof prd === "string") twoPagerUrl = prd;
@@ -104,13 +137,23 @@ export async function GET(request: NextRequest) {
             twoPagerUrl = (p.url ?? p.href ?? p.link) as string | null;
           }
         }
+        // Epic link (customfield_10014)
+        if (!twoPagerUrl && typeof f.customfield_10014 === "string") {
+          twoPagerUrl = f.customfield_10014;
+        }
       }
     }
   } catch {}
 
-  // 2. JIRA Remote Links 조회 → Confluence 페이지 URL 찾기
-  const remotePageUrls: string[] = [];
-  if (twoPagerUrl) remotePageUrls.push(twoPagerUrl);
+  // ── 2. JIRA Remote Links → Confluence URL 수집 (PRD 여부 태깅) ───────────
+  const PRD_TITLE_KEYWORDS = ["prd", "2-pager", "2pager", "기획서", "기획안", "요구사항", "spec", "제품 요구"];
+
+  type LinkedDoc = { url: string; title: string; isPrd: boolean };
+  const linkedDocs: LinkedDoc[] = [];
+
+  if (twoPagerUrl) {
+    linkedDocs.push({ url: twoPagerUrl, title: "", isPrd: true });
+  }
 
   try {
     const res = await fetchWithTimeout(
@@ -120,67 +163,123 @@ export async function GET(request: NextRequest) {
     if (res.ok) {
       const links = await res.json() as Array<Record<string, unknown>>;
       for (const link of links) {
-        const obj = link.object as Record<string, unknown> | undefined;
-        const url = obj?.url as string | undefined;
-        if (url && (url.includes("atlassian.net/wiki") || url.includes("confluence"))) {
-          if (!remotePageUrls.includes(url)) remotePageUrls.push(url);
-        }
+        const obj   = link.object as Record<string, unknown> | undefined;
+        const url   = obj?.url   as string | undefined;
+        const title = (obj?.title as string | undefined) ?? "";
+        if (!url || (!url.includes("atlassian.net/wiki") && !url.includes("confluence"))) continue;
+        if (linkedDocs.some(d => d.url === url)) continue;
+        const isPrd = PRD_TITLE_KEYWORDS.some(k => title.toLowerCase().includes(k));
+        linkedDocs.push({ url, title, isPrd });
       }
     }
   } catch {}
 
-  // 3. Confluence 페이지 내용 조회 (최대 2개, 각 3000자 제한)
-  let confluenceContent = "";
-  for (const url of remotePageUrls.slice(0, 2)) {
-    const pageId = extractConfluencePageId(url);
+  // ── 3. Confluence 본문 조회 — PRD(최대 8,000자) / 기타(최대 3,000자) ────
+  let prdDoc:  { title: string; content: string } | null = null;
+  const suppDocs: { title: string; content: string }[] = [];
+
+  for (const doc of linkedDocs.slice(0, 4)) {
+    const pageId = extractConfluencePageId(doc.url);
     if (!pageId) continue;
+    const limit  = (doc.isPrd && !prdDoc) ? 8000 : 3000;
     try {
       const res = await fetchWithTimeout(
         `${JIRA_HOST}/wiki/rest/api/content/${pageId}?expand=body.storage`,
         { headers: jiraHeaders, cache: "no-store" }
       );
-      if (res.ok) {
-        const data = await res.json() as Record<string, unknown>;
-        const title = (data.title as string) ?? "";
-        const storage = (data.body as Record<string, unknown>)?.storage as Record<string, unknown> | undefined;
-        const raw = (storage?.value as string) ?? "";
-        const text = storageToText(raw).slice(0, 3000);
-        if (text) confluenceContent += `\n\n### 연결 페이지: ${title}\n${text}`;
+      if (!res.ok) continue;
+      const data    = await res.json() as Record<string, unknown>;
+      const title   = (data.title as string) ?? doc.title ?? "";
+      const storage = (data.body as Record<string, unknown>)?.storage as Record<string, unknown> | undefined;
+      const raw     = (storage?.value as string) ?? "";
+      const content = storageToText(raw).slice(0, limit);
+      if (!content) continue;
+
+      if (doc.isPrd && !prdDoc) {
+        prdDoc = { title, content };
+      } else if (suppDocs.length < 2) {
+        suppDocs.push({ title, content });
       }
     } catch {}
   }
 
-  // 4. Gemini API로 요약 생성
-  const context = [
-    `티켓: ${key} (${ticketType})`,
-    `제목: ${ticketSummary}`,
-    `담당자: ${ticketAssignee}`,
-    ticketDescription ? `\n설명:\n${ticketDescription}` : "",
-    confluenceContent,
+  // ── 4. 컨텍스트 블록 조립 ────────────────────────────────────────────────
+  const metaLines = [
+    `- 티켓: ${key} (${ticketType})`,
+    `- 제목: ${ticketSummary}`,
+    `- 담당자: ${ticketAssignee || "-"}`,
+    ticketPriority          ? `- 우선순위: ${ticketPriority}`                        : "",
+    ticketEta               ? `- 목표일(ETA): ${ticketEta}`                          : "",
+    parentSummary           ? `- 상위 과제: ${parentSummary}`                        : "",
+    ticketLabels.length     > 0 ? `- 레이블: ${ticketLabels.join(", ")}`              : "",
+    ticketComponents.length > 0 ? `- 컴포넌트: ${ticketComponents.join(", ")}`        : "",
+    prdDoc                  ? `- PRD/2-Pager: ${prdDoc.title} (연결됨)`              : "",
   ].filter(Boolean).join("\n");
+
+  const contextParts = [
+    `## 과제 정보\n${metaLines}`,
+    ticketDescription ? `## JIRA 설명\n${ticketDescription}` : "",
+    prdDoc   ? `## PRD / 2-Pager: ${prdDoc.title}\n${prdDoc.content}`                                     : "",
+    suppDocs.length > 0
+      ? `## 기타 연결 문서\n${suppDocs.map(d => `### ${d.title}\n${d.content}`).join("\n\n")}`
+      : "",
+  ].filter(Boolean);
+
+  const context = contextParts.join("\n\n");
 
   if (!context.trim()) {
     return NextResponse.json({ error: "요약할 내용이 없습니다." }, { status: 422 });
   }
 
-  const prompt = `아래는 JIRA 티켓과 연결 문서의 내용이다. 이 과제가 무엇인지 처음 보는 사람도 핵심을 파악할 수 있도록 팀 대시보드용 요약을 작성하라.
+  // ── 5. Gemini 요약 생성 ────────────────────────────────────────────────────
+  const systemInstruction = `당신은 29CM Commerce Core 팀 대시보드를 위해 과제 요약을 작성하는 PM 어시스턴트입니다.
+
+목적: 팀원이 처음 보는 과제를 10초 이내에 핵심 파악할 수 있도록 돕는 것.
+독자: Commerce Core 팀 PM 및 개발자 (도메인 맥락을 이미 알고 있음).
+문체: 간결한 한국어. 주어 생략 가능. 명사형 또는 동사 원형 종결.`;
+
+  const hasPrd = !!prdDoc;
+
+  const prompt = `아래 JIRA 티켓 정보를 분석해 과제 요약을 작성하라.
 
 ${context}
 
 ---
-작성 규칙:
-- 한국어로 작성
-- 4~6개의 bullet point (•)로 구성
-- 각 항목은 구체적이고 명확하게 (추상적 표현 금지)
-- 아래 항목을 중심으로 작성:
-  1. 이 과제가 왜 필요한가 (배경/목적)
-  2. 무엇을 만들거나 변경하는가 (핵심 작업 내용)
-  3. 주요 Acceptance Criteria 또는 완료 조건
-  4. 기술적으로 중요한 포인트 (있는 경우)
-  5. 영향 범위 또는 주의사항 (있는 경우)
-- 티켓 제목을 단순 반복하는 bullet 금지
-- 불필요한 서론/결론 없이 bullet만 출력
-- 앞뒤에 제목/레이블 없이 bullet만 출력`;
+## 작성 규칙
+
+### [1단계] 과제 요약 (필수)
+bullet point (•) 4~5개 항목으로 작성.
+
+각 bullet의 역할 (순서 준수):
+1. **배경/목적** — 왜 이 과제가 필요한가. 사용자 문제나 비즈니스 필요성 중심으로.
+2. **핵심 작업** — 구체적으로 무엇을 만들거나 변경하는가. 산출물·기능 중심.
+3. **완료 조건** — 이 과제가 끝났다고 볼 수 있는 기준 (Acceptance Criteria 또는 Done 조건).
+4. **영향 범위** — 어떤 시스템·도메인·서비스·팀에 영향을 주는가.
+5. **주의사항** — 기술 리스크, 의존성, 알려진 제약 (해당될 때만. 없으면 생략).
+${hasPrd ? `
+### [2단계] PRD 핵심 (PRD / 2-Pager 문서가 있을 때 필수)
+위 과제 요약 아래에 빈 줄을 하나 두고, 다음 형식으로 출력:
+
+PRD 핵심:
+• (bullet 3~5개)
+
+각 bullet의 역할:
+1. **핵심 목표** — PRD가 달성하고자 하는 최종 목표 또는 사용자 가치.
+2. **주요 요구사항** — 반드시 구현해야 하는 핵심 기능/조건.
+3. **스코프** — In-Scope와 Out-of-Scope 항목 중 중요한 것.
+4. **성공 기준** — 이 PRD가 성공했다고 볼 수 있는 측정 기준 또는 완료 조건.
+5. **제약/리스크** — 명시된 기술 제약, 의존성, 주의해야 할 리스크 (해당될 때만).
+
+금지 사항:
+- PRD 원문을 그대로 복붙하는 bullet 금지
+- 정보가 없는 항목을 억지로 채우거나 일반적인 말로 때우는 것 금지
+` : ""}
+공통 금지 사항:
+- 티켓 제목을 그대로 반복하는 bullet 금지
+- 정보가 없는 항목을 억지로 채우거나 일반적인 말로 때우는 것 금지
+- "~를 개발합니다", "~를 구현합니다" 같은 서술형 종결 금지 (명사형 사용)
+- [1단계] bullet 앞에 제목·레이블·서론·결론 출력 금지
+- [2단계]의 "PRD 핵심:" 헤더 외의 추가 제목·레이블 출력 금지`;
 
   try {
     const res = await fetchWithTimeout(
@@ -189,23 +288,28 @@ ${context}
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 1024, temperature: 0.2 },
+          systemInstruction: { parts: [{ text: systemInstruction }] },
+          contents: [{ role: "user", parts: [{ text: prompt }] }],
+          generationConfig: {
+            maxOutputTokens: 1500,
+            temperature: 0.35,
+            topP: 0.9,
+          },
         }),
       }
     );
 
     if (!res.ok) {
       const errText = await res.text();
-      console.error("[ai-summary] Gemini API error:", res.status, errText);
-      return NextResponse.json({ error: `AI 요약 실패: ${res.status} ${errText}` }, { status: 500 });
+      console.error("[ai-summary] Gemini error:", res.status, errText);
+      return NextResponse.json({ error: `AI 요약 실패: ${res.status}` }, { status: 500 });
     }
 
     const data = await res.json() as Record<string, unknown>;
-    const summary = ((data.candidates as Array<Record<string, unknown>>)?.[0]
+    const parts = ((data.candidates as Array<Record<string, unknown>>)?.[0]
       ?.content as Record<string, unknown>)
-      ?.parts as Array<Record<string, unknown>>;
-    const text = summary?.[0]?.text as string | undefined;
+      ?.parts as Array<Record<string, unknown>> | undefined;
+    const text = parts?.[0]?.text as string | undefined;
 
     if (!text) {
       return NextResponse.json({ error: "요약 결과가 없습니다." }, { status: 500 });
@@ -214,7 +318,7 @@ ${context}
     return NextResponse.json({ summary: text.trim(), key });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[ai-summary] Gemini fetch error:", msg);
+    console.error("[ai-summary] fetch error:", msg);
     return NextResponse.json({ error: `AI 요약 실패: ${msg}` }, { status: 500 });
   }
 }

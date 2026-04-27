@@ -57,6 +57,13 @@ type PlanningNote = {
   date: string; // YYYY-MM-DD HH:mm
 };
 
+type MemoVersion = {
+  text: string;
+  author: string;
+  date: string; // YYYY-MM-DD HH:mm
+  isAI?: boolean;
+};
+
 const TYPE_COLOR: Record<string, string> = {
   "Initiative": "bg-indigo-100 text-indigo-700",
   "Epic":       "bg-violet-100 text-violet-600",
@@ -404,8 +411,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 주요 내용 요약 (작성자/날짜 포함)
   const [memos, setMemos]           = useState<Record<string, MemoEntry | string>>({});
+  const [memoHistory, setMemoHistory] = useState<Record<string, MemoVersion[]>>({});
   const [memoEditMode, setMemoEditMode] = useState(false);
   const [memoText, setMemoText]     = useState("");
+  const [memoHistoryOpen, setMemoHistoryOpen] = useState(false);
 
   // AI 요약 생성 중인 티켓 키 집합
   const [summaryLoading, setSummaryLoading] = useState<Set<string>>(new Set());
@@ -436,6 +445,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [addKeyInput, setAddKeyInput]     = useState("");
   const [addKeyLoading, setAddKeyLoading] = useState(false);
   const [addKeyError, setAddKeyError]     = useState<string | null>(null);
+  const [addKeyProgress, setAddKeyProgress] = useState<{ current: number; total: number } | null>(null);
+  const [newlyAddedKeys, setNewlyAddedKeys] = useState<Set<string>>(new Set());
   const [customKeys, setCustomKeys]       = useState<Set<string>>(new Set());
   const isResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -670,6 +681,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
         } catch {}
         setAddKeyInput("");
+        setPlanningTab("플래닝 대기·검토");
+        setNewlyAddedKeys(new Set([trimmed]));
+        setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
 
         // 메모가 없을 때만 AI 요약 1회 생성
         const memoVal = memos[trimmed];
@@ -683,22 +697,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             })
             .then(d => {
               console.log("[ai-summary] response body:", d);
-              if (d.summary) {
-                const entry: MemoEntry = {
-                  text: d.summary,
-                  author: "AI 자동 요약",
-                  date: new Date().toISOString().slice(0, 10),
-                };
-                setMemos(prev => {
-                  const updated = { ...prev, [trimmed]: entry };
-                  fetch("/api/kv", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ key: "cc-memos", value: updated }),
-                  }).catch(() => {});
-                  return updated;
-                });
-              }
+              if (d.summary) saveMemoVersion(trimmed, d.summary, true);
             })
             .catch((err) => { console.error("[ai-summary] fetch error:", err); })
             .finally(() => {
@@ -716,6 +715,82 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     } finally {
       setAddKeyLoading(false);
     }
+  }
+
+  // 다중 티켓 추가 (쉼표/공백 구분)
+  async function addTickets(input: string) {
+    const keys = input.split(/[\s,]+/).map(k => k.trim().toUpperCase()).filter(Boolean);
+    if (keys.length === 0) return;
+    if (keys.length === 1) return addTicket(keys[0]);
+
+    const invalid = keys.filter(k => !/^[A-Z]+-\d+$/.test(k));
+    if (invalid.length > 0) {
+      setAddKeyError(`형식 오류: ${invalid.join(", ")} (예: TM-1234)`);
+      return;
+    }
+    const newKeys = keys.filter(k => !tickets.some(t => t.key === k) && !customKeys.has(k));
+    if (newKeys.length === 0) {
+      setAddKeyError("입력된 티켓이 이미 모두 등록돼 있습니다.");
+      return;
+    }
+
+    setAddKeyLoading(true);
+    setAddKeyError(null);
+    setAddKeyInput("");
+    setAddKeyProgress({ current: 0, total: newKeys.length });
+
+    const fetched: Ticket[] = [];
+    const errors: string[] = [];
+
+    for (let i = 0; i < newKeys.length; i++) {
+      setAddKeyProgress({ current: i + 1, total: newKeys.length });
+      try {
+        const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(newKeys[i])}`);
+        const data = await res.json();
+        if (!res.ok || data.error) errors.push(newKeys[i]);
+        else fetched.push(data.ticket as Ticket);
+      } catch {
+        errors.push(newKeys[i]);
+      }
+    }
+
+    if (fetched.length > 0) {
+      const newCustomKeys = new Set([...customKeys, ...fetched.map(t => t.key)]);
+      setCustomKeys(newCustomKeys);
+      setTickets(prev => [...prev, ...fetched]);
+
+      const newCustomKeysArr = [...newCustomKeys];
+      const currentCustomTickets = tickets.filter(t => customKeys.has(t.key));
+      const newCustomTickets = [...currentCustomTickets, ...fetched];
+
+      fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-keys", value: newCustomKeysArr }) }).catch(() => {});
+      fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }) }).catch(() => {});
+      try {
+        localStorage.setItem("cc-custom-keys", JSON.stringify(newCustomKeysArr));
+        localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
+      } catch {}
+
+      for (const t of fetched) {
+        const hasMemo = !!getCurrentMemo(t.key);
+        if (!hasMemo) {
+          setSummaryLoading(prev => new Set([...prev, t.key]));
+          fetch(`/api/ai-summary?key=${encodeURIComponent(t.key)}`)
+            .then(r => r.json())
+            .then(d => { if (d.summary) saveMemoVersion(t.key, d.summary, true); })
+            .catch(() => {})
+            .finally(() => { setSummaryLoading(prev => { const n = new Set(prev); n.delete(t.key); return n; }); });
+        }
+      }
+    }
+
+    setAddKeyProgress(null);
+    setAddKeyLoading(false);
+    if (fetched.length > 0) {
+      setPlanningTab("플래닝 대기·검토");
+      setNewlyAddedKeys(new Set(fetched.map(t => t.key)));
+      setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
+    }
+    if (errors.length > 0) setAddKeyError(`추가 실패: ${errors.join(", ")}`);
   }
 
   // 사용자 추가 티켓 제거
@@ -767,13 +842,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-etr")
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-etr")
       .then((r) => r.json())
       .then((data) => {
-        if (data["cc-planning"])  setPlanning(data["cc-planning"]);
-        if (data["cc-schedules"]) setSchedules(data["cc-schedules"]);
-        if (data["cc-memos"])     setMemos(data["cc-memos"]);
-        if (data["cc-etr"])       setEtrMap(data["cc-etr"]);
+        if (data["cc-planning"])   setPlanning(data["cc-planning"]);
+        if (data["cc-schedules"])  setSchedules(data["cc-schedules"]);
+        if (data["cc-memos"])      setMemos(data["cc-memos"]);
+        if (data["cc-memos-v2"])   setMemoHistory(data["cc-memos-v2"]);
+        if (data["cc-etr"])        setEtrMap(data["cc-etr"]);
         if (data["cc-planning-notes"]) {
           setPlanningNotes(data["cc-planning-notes"]);
           try { localStorage.setItem("cc-planning-notes", JSON.stringify(data["cc-planning-notes"])); } catch {}
@@ -837,6 +913,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           if (s) setSchedules(JSON.parse(s));
           const m = localStorage.getItem("cc-memos");
           if (m) setMemos(JSON.parse(m));
+          const mv2 = localStorage.getItem("cc-memos-v2");
+          if (mv2) setMemoHistory(JSON.parse(mv2));
           const n = localStorage.getItem("cc-planning-notes");
           if (n) setPlanningNotes(JSON.parse(n));
           const etr = localStorage.getItem("cc-etr");
@@ -855,6 +933,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         } catch {}
       });
   }, []);
+
+  // 새로 추가된 티켓이 생기면 첫 번째 행으로 스크롤
+  useEffect(() => {
+    if (newlyAddedKeys.size === 0) return;
+    const firstKey = [...newlyAddedKeys][0];
+    const timer = setTimeout(() => {
+      document.querySelector(`[data-ticket-key="${firstKey}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [newlyAddedKeys]);
 
   function getRoles(t: Ticket): RoleSchedule[] {
     return schedules[t.key] ?? t.roles ?? [];
@@ -987,19 +1076,59 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return result;
   }, [preFiltered, statusTab, sortBy, priorities]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  function nowDateStr(): string {
+    const now = new Date();
+    return `${now.toISOString().slice(0, 10)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+  }
+
+  /** cc-memos-v2에 새 버전 추가 */
+  function saveMemoVersion(key: string, text: string, isAI = false) {
+    const version: MemoVersion = { text, author: isAI ? "AI 자동 요약" : userName, date: nowDateStr(), isAI };
+    setMemoHistory(prev => {
+      const updated = { ...prev, [key]: [...(prev[key] ?? []), version] };
+      fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-memos-v2", value: updated }) }).catch(() => {});
+      return updated;
+    });
+  }
+
+  /** 현재(최신) 메모 — cc-memos-v2 우선, 없으면 cc-memos 폴백 */
+  function getCurrentMemo(key: string): MemoVersion | null {
+    const versions = memoHistory[key];
+    if (versions && versions.length > 0) return versions[versions.length - 1];
+    const m = memos[key];
+    if (!m) return null;
+    const text = typeof m === "string" ? m : m.text;
+    if (!text) return null;
+    const author = typeof m === "string" ? "-" : (m.author ?? "-");
+    const date = typeof m === "string" ? "" : (m.date ?? "");
+    return { text, author, date };
+  }
+
+  /** AI 요약 수동 재생성 */
+  const [regenError, setRegenError] = useState<string | null>(null);
+
+  async function regenerateSummary(ticketKey: string) {
+    setRegenError(null);
+    setSummaryLoading(prev => new Set([...prev, ticketKey]));
+    try {
+      const res = await apiFetch(`/api/ai-summary?key=${encodeURIComponent(ticketKey)}`);
+      const data = await res.json();
+      if (data.summary) {
+        saveMemoVersion(ticketKey, data.summary, true);
+      } else {
+        setRegenError(data.error ?? "AI 요약 생성에 실패했습니다.");
+      }
+    } catch (e) {
+      const isTimeout = e instanceof DOMException && e.name === "AbortError";
+      setRegenError(isTimeout ? "응답 시간 초과 (20초)" : "네트워크 오류가 발생했습니다.");
+    } finally {
+      setSummaryLoading(prev => { const n = new Set(prev); n.delete(ticketKey); return n; });
+    }
+  }
+
+  /** 기존 saveMemo — 하위 호환용으로 유지 */
   function saveMemo(key: string, text: string) {
-    const entry: MemoEntry = {
-      text,
-      author: userName,
-      date: new Date().toISOString().slice(0, 10),
-    };
-    const updated = { ...memos, [key]: entry };
-    setMemos(updated);
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-memos", value: updated }),
-    }).catch(() => {});
+    saveMemoVersion(key, text, false);
   }
 
   function savePlanningNotes(updated: Record<string, PlanningNote[]>) {
@@ -1026,19 +1155,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     savePlanningNotes({ ...planningNotes, [ticketKey]: prev.filter((_, i) => i !== index) });
   }
 
-  /** 구버전(string) 호환 — 메모 텍스트 추출 */
-  function getMemoText(key: string): string {
-    const m = memos[key];
-    if (!m) return "";
-    return typeof m === "string" ? m : m.text;
-  }
 
-  /** 메모 메타 정보 (작성자/날짜) */
-  function getMemoMeta(key: string): { author: string; date: string } | null {
-    const m = memos[key];
-    if (!m || typeof m === "string") return null;
-    return { author: m.author, date: m.date };
-  }
 
   function savePlanning(key: string, track: "design" | "dev", state: TrackState) {
     const current = getPlanningVal(planning[key]);
@@ -1115,11 +1232,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setSelected(isSame ? null : t);
     setEditMode(false);
     setMemoEditMode(false);
+    setMemoHistoryOpen(false);
+    setRegenError(null);
     setNoteInput("");
     setEtrInput("");
     setEtrError(null);
     if (!isSame) {
-      setMemoText(getMemoText(t.key));
+      setMemoText(getCurrentMemo(t.key)?.text ?? "");
       const p = getPlanningVal(planning[t.key]);
       setPlanningOpen(!(p.design === "완료" && p.dev === "완료"));
     }
@@ -1278,22 +1397,26 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               className="border border-gray-200 rounded-lg px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
             />
           </div>
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className="text-xs text-gray-500 w-14 shrink-0">티켓 추가</span>
             <input
               type="text"
-              placeholder="예: TM-1234"
+              placeholder="예: TM-1234, TM-5678 (쉼표/공백으로 여러 개 입력)"
               value={addKeyInput}
               onChange={(e) => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
-              onKeyDown={(e) => e.key === "Enter" && addTicket(addKeyInput)}
-              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 w-36"
+              onKeyDown={(e) => e.key === "Enter" && addTickets(addKeyInput)}
+              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 w-80"
             />
             <button
-              onClick={() => addTicket(addKeyInput)}
+              onClick={() => addTickets(addKeyInput)}
               disabled={addKeyLoading || !addKeyInput.trim()}
               className="px-3 py-1 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
             >
-              {addKeyLoading ? "추가 중…" : "추가"}
+              {addKeyLoading
+                ? addKeyProgress
+                  ? `${addKeyProgress.current}/${addKeyProgress.total} 추가 중…`
+                  : "추가 중…"
+                : "추가"}
             </button>
             {addKeyError && (
               <span className="text-xs text-red-500">{addKeyError}</span>
@@ -1322,10 +1445,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           ) : (
             filtered.map((t, idx) => {
               const isSelected = selected?.key === t.key;
+              const isNew = newlyAddedKeys.has(t.key);
               return (
                 <div
                   key={t.key}
-                  className={`border-b border-gray-100 last:border-0 transition-colors ${isSelected ? "bg-indigo-50" : "hover:bg-gray-50"}`}
+                  data-ticket-key={t.key}
+                  className={`border-b border-gray-100 last:border-0 transition-colors duration-700 ${isSelected ? "bg-indigo-50" : isNew ? "bg-emerald-50" : "hover:bg-gray-50"}`}
                 >
                   {/* 메인 행 */}
                   <div
@@ -1342,6 +1467,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     >
                       {t.key}
                     </a>
+                    {isNew && (
+                      <span className="shrink-0 mr-1 px-1.5 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-700 border border-emerald-300 animate-pulse">
+                        추가됨
+                      </span>
+                    )}
                     {priorities[t.key] && (
                       <span className="shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
                         P{priorities[t.key]}
@@ -1594,51 +1724,114 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <div className="border-t border-gray-200 pt-4">
               {/* 주요 내용 요약 */}
               <div className="mb-4">
+                {/* 헤더 */}
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">주요 내용 요약</p>
-                  {!memoEditMode ? (
-                    <button
-                      onClick={() => { setMemoText(getMemoText(selected.key)); setMemoEditMode(true); }}
-                      className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
-                    >{getMemoText(selected.key) ? "편집" : "입력"}</button>
-                  ) : (
-                    <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
+                    {/* AI 재생성 버튼 */}
+                    {!memoEditMode && (
                       <button
-                        onClick={() => { saveMemo(selected.key, memoText); setMemoEditMode(false); }}
-                        className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium"
-                      >저장</button>
-                      <button onClick={() => setMemoEditMode(false)}
-                        className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
-                    </div>
-                  )}
+                        onClick={() => regenerateSummary(selected.key)}
+                        disabled={summaryLoading.has(selected.key)}
+                        className="flex items-center gap-1 text-xs text-gray-400 hover:text-indigo-500 disabled:opacity-40 transition-colors"
+                        title="AI로 요약 재생성"
+                      >
+                        <svg className={`w-3 h-3 ${summaryLoading.has(selected.key) ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        AI 재생성
+                      </button>
+                    )}
+                    {/* 편집 / 저장·취소 */}
+                    {!memoEditMode ? (
+                      <button
+                        onClick={() => { setMemoText(getCurrentMemo(selected.key)?.text ?? ""); setMemoEditMode(true); }}
+                        className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
+                      >{getCurrentMemo(selected.key) ? "편집" : "입력"}</button>
+                    ) : (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { saveMemo(selected.key, memoText); setMemoEditMode(false); }}
+                          className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium"
+                        >저장</button>
+                        <button onClick={() => setMemoEditMode(false)}
+                          className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
+                      </div>
+                    )}
+                  </div>
                 </div>
+
+                {/* AI 에러 메시지 */}
+                {regenError && !memoEditMode && !summaryLoading.has(selected.key) && (
+                  <div className="mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600">
+                    {regenError}
+                  </div>
+                )}
+
+                {/* 본문 */}
                 {memoEditMode ? (
                   <textarea
                     value={memoText}
                     onChange={(e) => setMemoText(e.target.value)}
                     placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
-                    rows={4}
-                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    rows={6}
+                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-y"
                   />
                 ) : summaryLoading.has(selected.key) ? (
                   <div className="flex items-center gap-2 text-xs text-indigo-400 bg-indigo-50 rounded-lg px-3 py-2">
-                    <svg className="animate-spin h-3.5 w-3.5 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <svg className="animate-spin h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
                     </svg>
-                    AI가 티켓 내용을 분석하고 있습니다...
+                    AI가 티켓 내용을 분석하고 있습니다… (최대 30초 소요)
                   </div>
-                ) : getMemoText(selected.key) ? (
-                  <div>
-                    <p className="text-xs text-gray-600 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2 mb-1.5">
-                      {getMemoText(selected.key)}
-                    </p>
-                    {getMemoMeta(selected.key) && (
-                      <p className="text-xs text-gray-400 text-right">
-                        {getMemoMeta(selected.key)!.author} · {getMemoMeta(selected.key)!.date}
-                      </p>
+                ) : getCurrentMemo(selected.key) ? (
+                  <>
+                    {/* 현재 버전 — overflow-visible 보장 */}
+                    {(() => {
+                      const cur = getCurrentMemo(selected.key)!;
+                      return (
+                        <div className="overflow-visible">
+                          <div className="text-xs text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1.5 overflow-visible">
+                            {cur.text}
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs text-gray-400 flex items-center gap-1">
+                              {cur.isAI && <span className="px-1 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">AI</span>}
+                              {cur.author}{cur.date ? ` · ${cur.date}` : ""}
+                            </span>
+                            {(memoHistory[selected.key]?.length ?? 0) > 1 && (
+                              <button
+                                onClick={() => setMemoHistoryOpen(o => !o)}
+                                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                              >
+                                {memoHistoryOpen ? "히스토리 닫기" : `이전 버전 ${(memoHistory[selected.key]?.length ?? 1) - 1}개`}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* 히스토리 */}
+                    {memoHistoryOpen && (memoHistory[selected.key]?.length ?? 0) > 1 && (
+                      <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
+                        <p className="text-xs text-gray-400 font-medium mb-1.5">이전 버전</p>
+                        {[...(memoHistory[selected.key] ?? [])].reverse().slice(1).map((v, i) => (
+                          <div key={i} className="border border-gray-100 rounded-lg overflow-visible opacity-70">
+                            <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-t-lg border-b border-gray-100">
+                              <span className="text-xs text-gray-500 flex items-center gap-1">
+                                {v.isAI && <span className="px-1 py-0.5 rounded bg-indigo-50 text-indigo-400 text-xs">AI</span>}
+                                {v.author}
+                              </span>
+                              <span className="text-xs text-gray-400">{v.date}</span>
+                            </div>
+                            <div className="text-xs text-gray-500 whitespace-pre-wrap leading-relaxed px-3 py-2">{v.text}</div>
+                          </div>
+                        ))}
+                      </div>
                     )}
-                  </div>
+                  </>
                 ) : (
                   <p className="text-xs text-gray-300 italic">입력된 내용이 없습니다</p>
                 )}
