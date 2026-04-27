@@ -174,7 +174,7 @@ function makeViewFns(viewStart: number) {
 function formatDateWithDay(dateStr: string): string {
   if (!dateStr) return "-";
   const d = new Date(dateStr + "T00:00:00");
-  return `${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
+  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
 }
 
 function calcDuration(start: string, end: string): number {
@@ -203,7 +203,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           {visibleMonths.map((m) => (
             <span
               key={m.label}
-              className="absolute text-xs text-gray-400 -translate-x-1/2"
+              className="absolute text-xs text-gray-500 -translate-x-1/2"
               style={{ left: `${pct(m.ms)}%` }}
             >
               {m.label}
@@ -239,7 +239,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
             <div className="flex items-center mb-0.5">
               <div className="w-36 shrink-0 flex items-center gap-1.5">
                 <span className="text-xs font-medium text-gray-600 w-14 shrink-0">{r.role}</span>
-                <span className="text-xs text-gray-400 truncate">{r.person}</span>
+                <span className="text-xs text-gray-500 truncate">{r.person}</span>
               </div>
               <div className="flex-1 relative h-5 bg-gray-100 rounded-sm overflow-hidden">
                 {/* 오늘 세로선 */}
@@ -283,9 +283,9 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
             {r.start && r.end && (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
-                <span className="text-xs text-gray-400">
+                <span className="text-xs text-gray-500">
                   {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
-                  <span className="ml-1.5 text-gray-300">({calcDuration(r.start, r.end)}일)</span>
+                  <span className="ml-1.5 text-gray-400">({calcDuration(r.start, r.end)}일)</span>
                 </span>
               </div>
             )}
@@ -294,7 +294,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
         }) : (
           <div className="flex items-center">
             <div className="w-36 shrink-0" />
-            <p className="text-xs text-gray-400 py-2">일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다</p>
+            <p className="text-xs text-gray-500 py-2">일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다</p>
           </div>
         )}
       </div>
@@ -330,6 +330,36 @@ function newRow(): RoleSchedule {
   return { role: "기획", person: "", start: "", end: "", status: "예정" };
 }
 
+type TrackState = "대기중" | "검토중" | "완료";
+const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료"];
+
+function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState } {
+  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중" };
+  const v = val as Record<string, string>;
+  return { design: (v.design as TrackState) ?? "대기중", dev: (v.dev as TrackState) ?? "대기중" };
+}
+
+function HealthBadge({ value }: { value: string }) {
+  const v = value.toLowerCase();
+  const isGreen  = ["그린", "green", "정상", "good", "ok"].some(k => v.includes(k));
+  const isYellow = ["옐로우", "yellow", "주의", "warning", "caution"].some(k => v.includes(k));
+  const isRed    = ["레드", "red", "위험", "danger", "critical", "bad"].some(k => v.includes(k));
+  const dotCls = isGreen ? "bg-green-500" : isYellow ? "bg-yellow-400" : isRed ? "bg-red-500" : "bg-gray-400";
+  const badgeCls = isGreen
+    ? "bg-green-50 text-green-700 border-green-200"
+    : isYellow
+    ? "bg-yellow-50 text-yellow-700 border-yellow-200"
+    : isRed
+    ? "bg-red-50 text-red-700 border-red-200"
+    : "bg-gray-100 text-gray-600 border-gray-200";
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-xs font-medium ${badgeCls}`}>
+      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
+      {value}
+    </span>
+  );
+}
+
 export default function TicketBoard({ userName = "알 수 없음" }: { userName?: string }) {
   const [tickets, setTickets]       = useState<Ticket[]>([]);
   const [fetching, setFetching]     = useState(true);
@@ -360,12 +390,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [summaryLoading, setSummaryLoading] = useState<Set<string>>(new Set());
 
   // 우측 사이드바 너비 (드래그 리사이즈)
-  const [sidebarWidth, setSidebarWidth] = useState(380);
+  const [sidebarWidth, setSidebarWidth] = useState(480);
 
   // 시트 우선순위 (key → priority 문자열)
   const [priorities, setPriorities] = useState<Record<string, string>>({});
-  // 플래닝 상태 (key → "스프린트 대기중" | "검토중" | "플래닝 완료", 기본값: "스프린트 대기중")
-  const [planning, setPlanning]     = useState<Record<string, string>>({});
+  // 플래닝 상태 (key → { design: TrackState, dev: TrackState })
+  const [planning, setPlanning]     = useState<Record<string, unknown>>({});
   const [planningTab, setPlanningTab] = useState("전체");
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
@@ -839,14 +869,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
   }
 
-  const PLANNING_STATES = ["스프린트 대기중", "검토중", "플래닝 완료"] as const;
-
   const planningCounts = useMemo(() => {
-    const counts: Record<string, number> = { "전체": tickets.length };
-    for (const s of PLANNING_STATES) counts[s] = 0;
+    const counts: Record<string, number> = { "전체": tickets.length, "Design 대기·검토": 0, "Dev 대기·검토": 0, "모두 완료": 0 };
     for (const t of tickets) {
-      const p = planning[t.key] ?? "스프린트 대기중";
-      counts[p] = (counts[p] ?? 0) + 1;
+      const p = getPlanningVal(planning[t.key]);
+      if (p.design !== "완료") counts["Design 대기·검토"]++;
+      if (p.dev !== "완료") counts["Dev 대기·검토"]++;
+      if (p.design === "완료" && p.dev === "완료") counts["모두 완료"]++;
     }
     return counts;
   }, [tickets, planning]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -880,7 +909,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           (wantQ1Q2 && isQ1Q2);
         if (!matches) return false;
       }
-      if (planningTab !== "전체" && (planning[t.key] ?? "스프린트 대기중") !== planningTab) return false;
+      if (planningTab !== "전체") {
+        const p = getPlanningVal(planning[t.key]);
+        if (planningTab === "Design 대기·검토" && p.design === "완료") return false;
+        if (planningTab === "Dev 대기·검토" && p.dev === "완료") return false;
+        if (planningTab === "모두 완료" && !(p.design === "완료" && p.dev === "완료")) return false;
+      }
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
       if (domainFilter.size > 0 && !domainFilter.has(extractDomain(t.summary))) return false;
@@ -970,8 +1004,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return { author: m.author, date: m.date };
   }
 
-  function savePlanning(key: string, state: string) {
-    const updated = { ...planning, [key]: state };
+  function savePlanning(key: string, track: "design" | "dev", state: TrackState) {
+    const current = getPlanningVal(planning[key]);
+    const updated = { ...planning, [key]: { ...current, [track]: state } };
     setPlanning(updated);
     fetch("/api/kv", {
       method: "POST",
@@ -1049,12 +1084,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         {/* 플래닝 탭 */}
         <div className="flex gap-1 mb-5 bg-white rounded-xl border border-gray-200 p-1">
-          {(["전체", ...PLANNING_STATES] as string[]).map((tab) => {
+          {(["전체", "Design 대기·검토", "Dev 대기·검토", "모두 완료"] as const).map((tab) => {
             const active = planningTab === tab;
             const activeColor =
-              tab === "플래닝 완료" ? "bg-green-600" :
-              tab === "검토중"     ? "bg-orange-500" :
-              tab === "스프린트 대기중" ? "bg-gray-500" :
+              tab === "모두 완료"        ? "bg-green-600" :
+              tab === "Design 대기·검토" ? "bg-violet-600" :
+              tab === "Dev 대기·검토"    ? "bg-blue-600" :
               "bg-gray-900";
             return (
               <button
@@ -1102,7 +1137,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             { label: "도메인",  items: allDomains,   state: domainFilter, setState: setDomainFilter, activeColor: "bg-teal-600 text-white" },
           ].map(({ label, items, state, setState, activeColor }) => (
             <div key={label} className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-gray-400 w-14 shrink-0">{label}</span>
+              <span className="text-xs text-gray-500 w-14 shrink-0">{label}</span>
               <button
                 onClick={() => setState(new Set())}
                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${state.size === 0 ? activeColor : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
@@ -1115,7 +1150,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
           ))}
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-gray-400 w-14 shrink-0">정렬</span>
+            <span className="text-xs text-gray-500 w-14 shrink-0">정렬</span>
             {([
               { key: "default",   label: "기본",         color: "bg-gray-800" },
               { key: "priority",  label: "우선순위 P1↑",  color: "bg-amber-500" },
@@ -1130,24 +1165,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             ))}
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-gray-400 w-14 shrink-0">검색</span>
+            <span className="text-xs text-gray-500 w-14 shrink-0">검색</span>
             <input
               type="text"
               placeholder="티켓 번호 · 제목 · 담당자"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="border border-gray-200 rounded-lg px-3 py-1 text-sm placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
+              className="border border-gray-200 rounded-lg px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
             />
           </div>
           <div className="flex items-center gap-1.5">
-            <span className="text-xs text-gray-400 w-14 shrink-0">티켓 추가</span>
+            <span className="text-xs text-gray-500 w-14 shrink-0">티켓 추가</span>
             <input
               type="text"
               placeholder="예: TM-1234"
               value={addKeyInput}
               onChange={(e) => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
               onKeyDown={(e) => e.key === "Enter" && addTicket(addKeyInput)}
-              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-indigo-300 w-36"
+              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 w-36"
             />
             <button
               onClick={() => addTicket(addKeyInput)}
@@ -1165,7 +1200,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         {/* 티켓 목록 */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           {/* 헤더 */}
-          <div className="flex items-center px-4 py-2.5 bg-gray-50 border-b border-gray-100 text-xs text-gray-500 font-medium">
+          <div className="flex items-center px-4 py-2.5 bg-gray-50 border-b border-gray-200 text-xs text-gray-600 font-semibold">
             <span className="w-8 shrink-0 text-center">#</span>
             <span className="w-32 shrink-0">티켓</span>
             <span className="flex-1 min-w-0">제목</span>
@@ -1186,7 +1221,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               return (
                 <div
                   key={t.key}
-                  className={`border-b border-gray-50 last:border-0 transition-colors ${isSelected ? "bg-indigo-50" : "hover:bg-gray-50"}`}
+                  className={`border-b border-gray-100 last:border-0 transition-colors ${isSelected ? "bg-indigo-50" : "hover:bg-gray-50"}`}
                 >
                   {/* 메인 행 */}
                   <div
@@ -1209,14 +1244,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </span>
                     )}
                     {(() => {
-                      const ps = planning[t.key] ?? "스프린트 대기중";
-                      if (ps === "플래닝 완료") return null;
-                      const cls = ps === "검토중"
-                        ? "bg-orange-100 text-orange-600 border-orange-200"
-                        : "bg-gray-100 text-gray-500 border-gray-200";
+                      const p = getPlanningVal(planning[t.key]);
+                      const designDone = p.design === "완료";
+                      const devDone = p.dev === "완료";
+                      if (designDone && devDone) return null;
                       return (
-                        <span className={`shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>
-                          {ps}
+                        <span className="shrink-0 mr-1.5 flex items-center gap-1">
+                          {!designDone && (
+                            <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                              Design{p.design === "검토중" ? " 검토" : " 대기"}
+                            </span>
+                          )}
+                          {!devDone && (
+                            <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                              Dev{p.dev === "검토중" ? " 검토" : " 대기"}
+                            </span>
+                          )}
                         </span>
                       );
                     })()}
@@ -1226,18 +1269,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         {t.type}
                       </span>
                     </span>
-                    <span className="w-16 shrink-0 text-xs text-gray-400 text-center">{t.project}</span>
-                    <span className="w-16 shrink-0 text-xs text-gray-500 text-center truncate">{t.assignee}</span>
+                    <span className="w-16 shrink-0 text-xs text-gray-500 text-center">{t.project}</span>
+                    <span className="w-16 shrink-0 text-xs text-gray-700 text-center truncate">{t.assignee}</span>
                     <span className="w-24 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
                         {t.status}
                       </span>
                     </span>
-                    <span className={`w-24 shrink-0 text-xs text-center ${t.startDate ? "text-gray-600" : "text-gray-300"}`}>
-                      {t.startDate ?? "미정"}
+                    <span className={`w-24 shrink-0 text-xs text-center ${t.startDate ? "text-gray-700" : "text-gray-400"}`}>
+                      {t.startDate ? formatDateWithDay(t.startDate) : "미정"}
                     </span>
-                    <span className={`w-24 shrink-0 text-xs text-center ${!t.eta || t.eta === "-" ? "text-gray-300" : "text-gray-600"}`}>
-                      {!t.eta || t.eta === "-" ? "미정" : t.eta}
+                    <span className={`w-24 shrink-0 text-xs text-center ${!t.eta || t.eta === "-" ? "text-gray-400" : "text-gray-700"}`}>
+                      {!t.eta || t.eta === "-" ? "미정" : formatDateWithDay(t.eta)}
                     </span>
                     <button
                       onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}
@@ -1273,13 +1316,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <div className="flex-1 pr-2">
                 <h3 className="text-sm font-bold text-gray-900 leading-snug">{selected.summary}</h3>
                 {(() => {
-                  const ps = planning[selected.key] ?? "스프린트 대기중";
-                  if (ps === "플래닝 완료") return null;
-                  const cls = ps === "검토중"
-                    ? "bg-orange-100 text-orange-600 border-orange-200"
-                    : "bg-gray-100 text-gray-500 border-gray-200";
+                  const p = getPlanningVal(planning[selected.key]);
+                  const designDone = p.design === "완료";
+                  const devDone = p.dev === "완료";
+                  if (designDone && devDone) return null;
                   return (
-                    <span className={`inline-block mt-1.5 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>{ps}</span>
+                    <div className="flex gap-1 mt-1.5">
+                      {!designDone && (
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                          Design{p.design === "검토중" ? " 검토" : " 대기"}
+                        </span>
+                      )}
+                      {!devDone && (
+                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                          Dev{p.dev === "검토중" ? " 검토" : " 대기"}
+                        </span>
+                      )}
+                    </div>
                   );
                 })()}
               </div>
@@ -1305,11 +1358,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 {[
                   { label: "담당자",  value: selected.assignee },
                   { label: "프로젝트", value: selected.project },
-                  { label: "시작일",  value: selected.startDate ?? "미정" },
-                  { label: "ETA",     value: (!selected.eta || selected.eta === "-") ? "미정" : selected.eta },
+                  { label: "시작일",  value: selected.startDate ? formatDateWithDay(selected.startDate) : "미정" },
+                  { label: "ETA",     value: (!selected.eta || selected.eta === "-") ? "미정" : formatDateWithDay(selected.eta) },
                 ].map(({ label, value }) => (
                   <div key={label}>
-                    <span className="text-gray-400">{label} </span>
+                    <span className="text-gray-500">{label} </span>
                     <span className="text-gray-700 font-medium">{value || "-"}</span>
                   </div>
                 ))}
@@ -1317,52 +1370,55 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
 
             {/* 추가 메타 정보 */}
-            <div className="bg-gray-50 rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-xs">
+            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-xs">
               {[
-                { label: "요청부문",        value: selected.requestDept },
-                { label: "요청 우선순위",   value: selected.requestPriority },
-                { label: "상위 항목",       value: selected.parent },
-                { label: "Health Check",    value: selected.healthCheck },
-                { label: "Story Points",    value: selected.storyPoints?.toString() },
+                { label: "요청부문",      value: selected.requestDept },
+                { label: "요청 우선순위", value: selected.requestPriority },
+                { label: "Story Points",  value: selected.storyPoints?.toString() },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center gap-1">
-                  <span className="text-gray-400 w-28 shrink-0">{label}</span>
+                  <span className="text-gray-500 w-28 shrink-0">{label}</span>
                   <span className="text-gray-700 font-medium">{value || <span className="text-gray-300">-</span>}</span>
                 </div>
               ))}
-              {selected.twoPagerUrl && (
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-400 w-28 shrink-0">2-Pager</span>
-                  <a href={selected.twoPagerUrl} target="_blank" rel="noopener noreferrer"
-                    className="text-blue-500 hover:underline truncate">링크 열기</a>
-                </div>
-              )}
-              {!selected.twoPagerUrl && (
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-400 w-28 shrink-0">2-Pager</span>
-                  <span className="text-gray-300">-</span>
-                </div>
-              )}
-              {selected.prdUrl && (
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-400 w-28 shrink-0">PRD Link</span>
-                  <a href={selected.prdUrl} target="_blank" rel="noopener noreferrer"
-                    className="text-blue-500 hover:underline truncate">링크 열기</a>
-                </div>
-              )}
-              {!selected.prdUrl && (
-                <div className="flex items-center gap-1">
-                  <span className="text-gray-400 w-28 shrink-0">PRD Link</span>
-                  <span className="text-gray-300">-</span>
-                </div>
-              )}
+              <div className="flex items-center gap-1">
+                <span className="text-gray-500 w-28 shrink-0">상위 항목</span>
+                {selected.parent
+                  ? <a href={`${JIRA_BASE}${selected.parent}`} target="_blank" rel="noopener noreferrer"
+                      className="font-mono text-blue-500 hover:underline">{selected.parent}</a>
+                  : <span className="text-gray-300">-</span>
+                }
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-gray-500 w-28 shrink-0">Health Check</span>
+                {selected.healthCheck
+                  ? <HealthBadge value={selected.healthCheck} />
+                  : <span className="text-gray-300">-</span>
+                }
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-gray-500 w-28 shrink-0">2-Pager</span>
+                {selected.twoPagerUrl
+                  ? <a href={selected.twoPagerUrl} target="_blank" rel="noopener noreferrer"
+                      className="text-blue-500 hover:underline truncate">링크 열기</a>
+                  : <span className="text-gray-300">-</span>
+                }
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-gray-500 w-28 shrink-0">PRD Link</span>
+                {selected.prdUrl
+                  ? <a href={selected.prdUrl} target="_blank" rel="noopener noreferrer"
+                      className="text-blue-500 hover:underline truncate">링크 열기</a>
+                  : <span className="text-gray-300">-</span>
+                }
+              </div>
             </div>
 
-            <div className="border-t border-gray-100 pt-4">
+            <div className="border-t border-gray-200 pt-4">
               {/* 주요 내용 요약 */}
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">주요 내용 요약</p>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">주요 내용 요약</p>
                   {!memoEditMode ? (
                     <button
                       onClick={() => { setMemoText(getMemoText(selected.key)); setMemoEditMode(true); }}
@@ -1414,31 +1470,44 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               {/* 플래닝 상태 */}
               <div className="border-t border-gray-100 pt-4 mb-4">
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">플래닝 상태</p>
-                  {(planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && getRoles(selected).length === 0 && (
-                    <span className="text-xs font-medium text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">등록 필요</span>
-                  )}
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">플래닝 상태</p>
+                  {(() => {
+                    const p = getPlanningVal(planning[selected.key]);
+                    return p.design === "완료" && p.dev === "완료" && getRoles(selected).length === 0
+                      ? <span className="text-xs font-medium text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">일정 등록 필요</span>
+                      : null;
+                  })()}
                 </div>
-                <div className="flex gap-1.5">
-                  {PLANNING_STATES.map((s) => {
-                    const active = (planning[selected.key] ?? "스프린트 대기중") === s;
-                    const activeClass =
-                      s === "플래닝 완료" ? "bg-green-600 text-white border-green-600" :
-                      s === "검토중"      ? "bg-orange-500 text-white border-orange-500" :
-                                           "bg-gray-500 text-white border-gray-500";
+                <div className="space-y-1.5">
+                  {(["design", "dev"] as const).map((track) => {
+                    const p = getPlanningVal(planning[selected.key]);
+                    const current = p[track];
+                    const label = track === "design" ? "Design" : "Dev";
                     return (
-                      <button
-                        key={s}
-                        onClick={() => savePlanning(selected.key, s)}
-                        className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
-                      >{s}</button>
+                      <div key={track} className="flex items-center gap-1.5">
+                        <span className={`text-xs font-medium w-12 shrink-0 ${track === "design" ? "text-violet-600" : "text-blue-600"}`}>{label}</span>
+                        {TRACK_STATES.map((s) => {
+                          const active = current === s;
+                          const activeClass =
+                            s === "완료"   ? "bg-green-600 text-white border-green-600" :
+                            s === "검토중" ? (track === "design" ? "bg-violet-600 text-white border-violet-600" : "bg-blue-600 text-white border-blue-600") :
+                                             "bg-gray-500 text-white border-gray-500";
+                          return (
+                            <button
+                              key={s}
+                              onClick={() => savePlanning(selected.key, track, s)}
+                              className={`flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+                            >{s}</button>
+                          );
+                        })}
+                      </div>
                     );
                   })}
                 </div>
 
                 {/* 플래닝 코멘트 */}
                 <div className="mt-3">
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide mb-2">플래닝 코멘트</p>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">플래닝 코멘트</p>
 
                   {/* 작성자+날짜 기준 그룹핑 */}
                   {(planningNotes[selected.key] ?? []).length > 0 ? (() => {
@@ -1507,18 +1576,30 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
               </div>
 
-              <div className="border-t border-gray-100 pt-4">
+              <div className="border-t border-gray-200 pt-4">
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <p className="text-xs font-semibold text-gray-400 uppercase tracking-wide">작업별 일정</p>
+                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">작업별 일정</p>
                   {(() => {
-                    const ps = planning[selected.key] ?? "스프린트 대기중";
-                    if (ps === "플래닝 완료") return null;
-                    const cls = ps === "검토중"
-                      ? "bg-orange-100 text-orange-600 border-orange-200"
-                      : "bg-gray-100 text-gray-500 border-gray-200";
-                    return <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>{ps}</span>;
+                    const p = getPlanningVal(planning[selected.key]);
+                    const designDone = p.design === "완료";
+                    const devDone = p.dev === "완료";
+                    if (designDone && devDone) return null;
+                    return (
+                      <div className="flex gap-1">
+                        {!designDone && (
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                            Design
+                          </span>
+                        )}
+                        {!devDone && (
+                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                            Dev
+                          </span>
+                        )}
+                      </div>
+                    );
                   })()}
                 </div>
                 {!editMode ? (

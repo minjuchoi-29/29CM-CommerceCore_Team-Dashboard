@@ -41,6 +41,14 @@ type Ticket = {
   project: string;
 };
 
+type TrackState = "대기중" | "검토중" | "완료";
+
+function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState } {
+  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중" };
+  const v = val as Record<string, string>;
+  return { design: (v.design as TrackState) ?? "대기중", dev: (v.dev as TrackState) ?? "대기중" };
+}
+
 function extractDomain(summary: string): string {
   const m = summary.match(/^\[([^\]]+)\]/);
   return m ? m[1] : "기타";
@@ -62,7 +70,7 @@ export default function AssigneeView() {
   const [syncedAt, setSyncedAt] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [priorities, setPriorities] = useState<Record<string, string>>({});
-  const [planning, setPlanning]     = useState<Record<string, string>>({});
+  const [planning, setPlanning]     = useState<Record<string, unknown>>({});
 
   useEffect(() => {
     let loaded = false;
@@ -245,15 +253,23 @@ export default function AssigneeView() {
                               </span>
                             )}
                             {(() => {
-                              const ps = planning[t.key] ?? "스프린트 대기중";
-                              if (ps === "플래닝 완료") return null;
-                              const cls = ps === "검토중"
-                                ? "bg-orange-100 text-orange-600 border-orange-200"
-                                : "bg-gray-100 text-gray-500 border-gray-200";
+                              const p = getPlanningVal(planning[t.key]);
+                              const designDone = p.design === "완료";
+                              const devDone = p.dev === "완료";
+                              if (designDone && devDone) return null;
                               return (
-                                <span className={`shrink-0 px-1.5 py-0.5 rounded text-xs font-medium border ${cls}`}>
-                                  {ps}
-                                </span>
+                                <>
+                                  {!designDone && (
+                                    <span className={`shrink-0 px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                                      Design{p.design === "검토중" ? " 검토" : " 대기"}
+                                    </span>
+                                  )}
+                                  {!devDone && (
+                                    <span className={`shrink-0 px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                                      Dev{p.dev === "검토중" ? " 검토" : " 대기"}
+                                    </span>
+                                  )}
+                                </>
                               );
                             })()}
                             {t.summary}
