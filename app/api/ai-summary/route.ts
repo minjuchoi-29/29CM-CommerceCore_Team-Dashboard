@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 const FETCH_TIMEOUT_MS = 15_000;
+const GEMINI_API_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -73,12 +74,12 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "유효하지 않은 티켓 키" }, { status: 400 });
   }
 
-  const email       = process.env.JIRA_EMAIL;
-  const token       = process.env.JIRA_API_TOKEN;
-  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  const email     = process.env.JIRA_EMAIL;
+  const token     = process.env.JIRA_API_TOKEN;
+  const geminiKey = process.env.GEMINI_API_KEY;
 
-  if (!email || !token)  return NextResponse.json({ error: "JIRA 환경변수 누락" }, { status: 500 });
-  if (!anthropicKey)     return NextResponse.json({ error: "ANTHROPIC_API_KEY 누락" }, { status: 500 });
+  if (!email || !token) return NextResponse.json({ error: "JIRA 환경변수 누락" }, { status: 500 });
+  if (!geminiKey)       return NextResponse.json({ error: "GEMINI_API_KEY 누락" }, { status: 500 });
 
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const jiraHeaders = { Authorization: `Basic ${auth}`, Accept: "application/json" };
@@ -227,8 +228,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "요약할 내용이 없습니다." }, { status: 422 });
   }
 
-  // ── 5. Claude 요약 생성 ──────────────────────────────────────────────────
-  const systemPrompt = `당신은 29CM Commerce Core 팀 대시보드를 위해 과제 요약을 작성하는 PM 어시스턴트입니다.
+  // ── 5. Gemini 요약 생성 (503/429/500 최대 3회 재시도) ────────────────────
+  const systemInstruction = `당신은 29CM Commerce Core 팀 대시보드를 위해 과제 요약을 작성하는 PM 어시스턴트입니다.
 
 목적: 팀원이 처음 보는 과제를 10초 이내에 핵심 파악할 수 있도록 돕는 것.
 독자: Commerce Core 팀 PM 및 개발자 (도메인 맥락을 이미 알고 있음).
@@ -236,7 +237,7 @@ export async function GET(request: NextRequest) {
 
   const hasPrd = !!prdDoc;
 
-  const userPrompt = `아래 JIRA 티켓 정보를 분석해 과제 요약을 작성하라.
+  const prompt = `아래 JIRA 티켓 정보를 분석해 과제 요약을 작성하라.
 
 ${context}
 
@@ -277,26 +278,53 @@ PRD 핵심:
 - [1단계] bullet 앞에 제목·레이블·서론·결론 출력 금지
 - [2단계]의 "PRD 핵심:" 헤더 외의 추가 제목·레이블 출력 금지`;
 
-  try {
-    const client = new Anthropic({ apiKey: anthropicKey, maxRetries: 3 });
-    const message = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1500,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }],
-    });
+  const geminiBody = JSON.stringify({
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: 1500, temperature: 0.35, topP: 0.9 },
+  });
+  const geminiReqOpts = { method: "POST", headers: { "Content-Type": "application/json" }, body: geminiBody };
+  const RETRY_STATUSES = new Set([429, 500, 503]);
+  const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
-    const block = message.content[0];
-    const text = block.type === "text" ? block.text.trim() : "";
+  let res!: Response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await delay(attempt * 2000);
+    try {
+      res = await fetchWithTimeout(`${GEMINI_API_URL}?key=${geminiKey}`, geminiReqOpts);
+      if (!RETRY_STATUSES.has(res.status)) break;
+      console.warn(`[ai-summary] Gemini ${res.status}, retry ${attempt + 1}/3`);
+    } catch (e) {
+      if (attempt === 2) throw e;
+      console.warn(`[ai-summary] fetch error on attempt ${attempt + 1}, retrying`);
+    }
+  }
+
+  try {
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("[ai-summary] Gemini error:", res.status, errText);
+      const isTransient = RETRY_STATUSES.has(res.status);
+      return NextResponse.json(
+        { error: isTransient ? "Gemini API가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요." : `AI 요약 실패: ${res.status}` },
+        { status: 500 }
+      );
+    }
+
+    const data = await res.json() as Record<string, unknown>;
+    const parts = ((data.candidates as Array<Record<string, unknown>>)?.[0]
+      ?.content as Record<string, unknown>)
+      ?.parts as Array<Record<string, unknown>> | undefined;
+    const text = parts?.[0]?.text as string | undefined;
 
     if (!text) {
       return NextResponse.json({ error: "요약 결과가 없습니다." }, { status: 500 });
     }
 
-    return NextResponse.json({ summary: text, key });
+    return NextResponse.json({ summary: text.trim(), key });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[ai-summary] Claude error:", msg);
+    console.error("[ai-summary] fetch error:", msg);
     return NextResponse.json({ error: `AI 요약 실패: ${msg}` }, { status: 500 });
   }
 }
