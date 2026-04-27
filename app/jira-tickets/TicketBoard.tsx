@@ -424,7 +424,7 @@ function computeRebalance(
   active.forEach(({ key }, idx) => { newState[key] = String(idx + 1); });
 
   const sheetUpdate: Record<string, string> = { ...newState };
-  toClean.forEach(key => { sheetUpdate[key] = ""; });
+  toClean.forEach(key => { sheetUpdate[key] = "완료"; });
 
   return { newState, sheetUpdate };
 }
@@ -670,9 +670,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         // 토큰 없으면 시트 연동 스킵
         if (!priData.error) {
-          // 대시보드 전체 티켓 중 시트에 없는 것만 추가 (완료 포함, priority는 B열 별도 관리)
-          const missingKeys = allNewTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
+          const ticketMap = new Map(allNewTickets.map(t => [t.key, t.status]));
 
+          // 1. 시트에 없는 티켓 추가 (완료 포함 전체)
+          const missingKeys = allNewTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
           if (missingKeys.length > 0) {
             try {
               const appendRes = await fetch("/api/sheet-append", {
@@ -680,29 +681,37 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ keys: missingKeys }),
               });
-              const appendData = await appendRes.json();
               if (appendRes.ok) {
+                missingKeys.forEach(k => sheetKeySet.add(k)); // 새로 추가된 키 반영
                 setSheetSyncMsg(`시트에 ${missingKeys.length}개 티켓 추가됨`);
                 setTimeout(() => setSheetSyncMsg(null), 4000);
               } else {
-                console.error("[sheet-append]", appendData);
+                console.error("[sheet-append]", await appendRes.json());
               }
-            } catch (e) {
-              console.error("[sheet-append]", e);
+            } catch (e) { console.error("[sheet-append]", e); }
+          }
+
+          // 2. 우선순위 재정렬 (완료 → "완료", 활성 → 재번호)
+          const rebalanced = computeRebalance(rawPri, allNewTickets);
+
+          // 3. 시트에 있지만 B열이 아직 "완료"가 아닌 완료 티켓 → "완료" 기입
+          const completedUpdate: Record<string, string> = {};
+          for (const key of sheetKeySet) {
+            const status = ticketMap.get(key);
+            if (status && DONE_PRIORITY_STATUSES.has(status) && rawPri[key] !== "완료") {
+              completedUpdate[key] = "완료";
             }
           }
 
-          // 우선순위 재정렬
-          const rebalanced = computeRebalance(rawPri, allNewTickets);
-          if (rebalanced) {
-            setPriorities(rebalanced.newState);
+          const sheetUpdate = { ...(rebalanced?.sheetUpdate ?? {}), ...completedUpdate };
+          setPriorities(rebalanced?.newState ?? rawPri);
+
+          if (Object.keys(sheetUpdate).length > 0) {
             fetch("/api/sheet-priorities", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ priorities: rebalanced.sheetUpdate }),
+              body: JSON.stringify({ priorities: sheetUpdate }),
             }).catch(() => {});
-          } else {
-            setPriorities(rawPri);
           }
         } else {
           setPriorities(rawPri);
