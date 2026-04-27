@@ -1199,7 +1199,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   async function addEtr(ticketKey: string, etrKey: string) {
     const trimmed = etrKey.trim().toUpperCase();
     if (!trimmed) return;
-    if (!/^[A-Z]+-\d+$/.test(trimmed)) { setEtrError("올바른 형식이 아닙니다. 예: ETR-123"); return; }
+    if (!/^[A-Z]+-\d+$/.test(trimmed)) { setEtrError("올바른 형식이 아닙니다. 예: ETR-123, OPS-456"); return; }
     const current = etrMap[ticketKey] ?? { source: "ETR" as const };
     const prevTickets = current.etrTickets ?? [];
     if (prevTickets.some(t => t.key === trimmed)) { setEtrError("이미 연결된 티켓입니다."); return; }
@@ -1654,12 +1654,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     src === "자체발의" ? "bg-indigo-600 text-white border-indigo-600" :
                     src === "ELT"     ? "bg-amber-500 text-white border-amber-500" :
                                         "bg-blue-600 text-white border-blue-600";
+                  const label =
+                    src === "자체발의" ? "자체발의" :
+                    src === "ELT"     ? "ELT 요구사항" :
+                                        "외부 부서 요청";
                   return (
                     <button
                       key={src}
                       onClick={() => setEtrSource(selected.key, src)}
                       className={`flex-1 py-1.5 px-2 rounded-lg font-medium border transition-colors ${active ? activeColor : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
-                    >{src === "ELT" ? "ELT 요구사항" : src}</button>
+                    >{label}</button>
                   );
                 })}
               </div>
@@ -1697,14 +1701,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       ))}
                     </div>
                   ) : (
-                    <p className="text-orange-400 mb-2">ETR 티켓 추가 필요</p>
+                    <p className="text-orange-400 mb-2">외부 요청 티켓 연결 필요</p>
                   )}
 
                   {/* 티켓 추가 입력 */}
                   <div className="flex gap-1.5">
                     <input
                       type="text"
-                      placeholder="예: ETR-123"
+                      placeholder="예: ETR-123, OPS-456"
                       value={etrInput}
                       onChange={(e) => { setEtrInput(e.target.value.toUpperCase()); setEtrError(null); }}
                       onKeyDown={(e) => e.key === "Enter" && addEtr(selected.key, etrInput)}
