@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@/auth";
 
-const APPS_SCRIPT_URL =
-  "https://script.google.com/a/macros/29cm.co.kr/s/AKfycbxksQwQg3U1CzyLn4ihgUzpI-aWJAF9QVABefVWKkYC-ykdvXr7o3pWQ2lEuKmwCcs/exec";
+const SPREADSHEET_ID = "1uCR-MCNpXO9b8iXIFZMgQIG-z54rzbVi4AN_1TtiSMw";
 
 export async function POST(req: NextRequest) {
+  const session = await auth();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const accessToken = (session as any)?.accessToken as string | undefined;
+  if (!accessToken) {
+    return NextResponse.json({ error: "인증 필요 — 재로그인 후 시도해주세요" }, { status: 401 });
+  }
+
   let body: { keys?: string[] };
   try {
     body = await req.json();
@@ -17,13 +24,22 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const res = await fetch(APPS_SCRIPT_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ keys }),
-    });
+    const res = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${SPREADSHEET_ID}/values/A:A:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ values: keys.map((k) => [k]) }),
+      }
+    );
     const data = await res.json();
-    return NextResponse.json(data);
+    if (!res.ok) {
+      throw new Error(data.error?.message ?? JSON.stringify(data));
+    }
+    return NextResponse.json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[sheet-append]", msg);
