@@ -670,9 +670,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         // 토큰 없으면 시트 연동 스킵
         if (!priData.error) {
-          // 완료 제외한 활성 티켓 중 시트에 없는 것만 추가
-          const activeTickets = allNewTickets.filter(t => !DONE_PRIORITY_STATUSES.has(t.status));
-          const missingKeys = activeTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
+          // 대시보드 전체 티켓 중 시트에 없는 것만 추가 (완료 포함, priority는 B열 별도 관리)
+          const missingKeys = allNewTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
 
           if (missingKeys.length > 0) {
             try {
@@ -1144,9 +1143,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const p = getPlanningVal(planning[t.key]);
       const bothDone = p.design === "완료" && p.dev === "완료";
       const isTicketDone = doneStatuses.includes(t.status);
-      if (bothDone && !isTicketDone) counts["진행 중"]++;
-      if (!bothDone) counts["플래닝 대기·검토"]++;
-      if (isTicketDone) counts["완료"]++;
+      if (isTicketDone) { counts["완료"]++; continue; }
+      if (bothDone) counts["진행 중"]++;
+      else counts["플래닝 대기·검토"]++;
     }
     return counts;
   }, [tickets, planning]); // eslint-disable-line react-hooks/exhaustive-deps
