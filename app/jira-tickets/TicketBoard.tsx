@@ -840,6 +840,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, [tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 상세 패널 열림/닫힘 시 좌측 사이드바 토글
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent("detail-panel", { detail: { open: !!selected } }));
+  }, [selected]);
+
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
     fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-etr")
@@ -1726,6 +1731,71 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
 
             <div className="border-t border-gray-200 pt-4">
+              {/* 메모 */}
+              <div className="mb-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">메모</p>
+
+                {(planningNotes[selected.key] ?? []).length > 0 ? (() => {
+                  type Group = { author: string; date: string; items: { text: string; idx: number }[] };
+                  const groups: Group[] = [];
+                  (planningNotes[selected.key] ?? []).forEach((note, idx) => {
+                    const day = note.date.slice(0, 10);
+                    const last = groups[groups.length - 1];
+                    if (last && last.author === note.author && last.date === day) {
+                      last.items.push({ text: note.text, idx });
+                    } else {
+                      groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
+                    }
+                  });
+                  return (
+                    <div className="space-y-2 mb-2">
+                      {groups.map((g, gi) => (
+                        <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
+                          <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
+                            <span className="text-xs font-medium text-gray-600">{g.author}</span>
+                            <span className="text-xs text-gray-400">{g.date}</span>
+                          </div>
+                          <div className="divide-y divide-gray-50">
+                            {g.items.map(({ text, idx }) => (
+                              <div key={idx} className="group flex items-start gap-2 px-3 py-2">
+                                <p className="flex-1 text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                <button
+                                  onClick={() => deletePlanningNote(selected.key, idx)}
+                                  className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+                                >삭제</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })() : (
+                  <p className="text-xs text-gray-300 italic mb-2">등록된 메모가 없습니다</p>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <textarea
+                    value={noteInput}
+                    onChange={(e) => setNoteInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        addPlanningNote(selected.key, noteInput);
+                        setNoteInput("");
+                      }
+                    }}
+                    placeholder="메모를 입력하세요 (⌘+Enter로 등록)"
+                    rows={2}
+                    className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                  />
+                  <button
+                    onClick={() => { addPlanningNote(selected.key, noteInput); setNoteInput(""); }}
+                    disabled={!noteInput.trim()}
+                    className="self-end text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
+                  >등록</button>
+                </div>
+              </div>
+
               {/* 주요 내용 요약 */}
               <div className="mb-4">
                 {/* 헤더 */}
@@ -1896,75 +1966,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   })}
                 </div>
 
-                {/* 플래닝 코멘트 */}
-                <div className="mt-3">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">플래닝 코멘트</p>
-
-                  {/* 작성자+날짜 기준 그룹핑 */}
-                  {(planningNotes[selected.key] ?? []).length > 0 ? (() => {
-                    // 같은 author + 같은 날짜(YYYY-MM-DD)끼리 묶기
-                    type Group = { author: string; date: string; items: { text: string; idx: number }[] };
-                    const groups: Group[] = [];
-                    (planningNotes[selected.key] ?? []).forEach((note, idx) => {
-                      const day = note.date.slice(0, 10);
-                      const last = groups[groups.length - 1];
-                      if (last && last.author === note.author && last.date === day) {
-                        last.items.push({ text: note.text, idx });
-                      } else {
-                        groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
-                      }
-                    });
-                    return (
-                      <div className="space-y-3 mb-3">
-                        {groups.map((g, gi) => (
-                          <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
-                            {/* 그룹 헤더 */}
-                            <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
-                              <span className="text-xs font-medium text-gray-600">{g.author}</span>
-                              <span className="text-xs text-gray-400">{g.date}</span>
-                            </div>
-                            {/* 내용 */}
-                            <div className="divide-y divide-gray-50">
-                              {g.items.map(({ text, idx }) => (
-                                <div key={idx} className="group flex items-start gap-2 px-3 py-2">
-                                  <p className="flex-1 text-xs text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
-                                  <button
-                                    onClick={() => deletePlanningNote(selected.key, idx)}
-                                    className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
-                                  >삭제</button>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    );
-                  })() : (
-                    <p className="text-xs text-gray-300 italic mb-2">등록된 코멘트가 없습니다</p>
-                  )}
-
-                  {/* 새 코멘트 입력 */}
-                  <div className="flex flex-col gap-1.5">
-                    <textarea
-                      value={noteInput}
-                      onChange={(e) => setNoteInput(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                          addPlanningNote(selected.key, noteInput);
-                          setNoteInput("");
-                        }
-                      }}
-                      placeholder="논의 내용을 입력하세요 (⌘+Enter로 등록)"
-                      rows={2}
-                      className="w-full text-xs text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
-                    />
-                    <button
-                      onClick={() => { addPlanningNote(selected.key, noteInput); setNoteInput(""); }}
-                      disabled={!noteInput.trim()}
-                      className="self-end text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
-                    >등록</button>
-                  </div>
-                </div>
                   </>
                 )}
               </div>
