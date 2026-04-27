@@ -689,9 +689,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
 
         // 구글 시트 A열에 추가 (실패해도 티켓 추가에 영향 없음)
-        fetch("/api/sheet-append", {
+        fetch("https://script.google.com/a/macros/29cm.co.kr/s/AKfycbxksQwQg3U1CzyLn4ihgUzpI-aWJAF9QVABefVWKkYC-ykdvXr7o3pWQ2lEuKmwCcs/exec", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          mode: "no-cors",
+          headers: { "Content-Type": "text/plain" },
           body: JSON.stringify({ keys: [trimmed] }),
         }).catch(() => {});
 
@@ -801,9 +802,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
 
       // 구글 시트 A열에 일괄 추가
-      fetch("/api/sheet-append", {
+      fetch("https://script.google.com/a/macros/29cm.co.kr/s/AKfycbxksQwQg3U1CzyLn4ihgUzpI-aWJAF9QVABefVWKkYC-ykdvXr7o3pWQ2lEuKmwCcs/exec", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        mode: "no-cors",
+        headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({ keys: fetched.map(t => t.key) }),
       }).catch(() => {});
     }
