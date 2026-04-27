@@ -1,12 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import Anthropic from "@anthropic-ai/sdk";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 const FETCH_TIMEOUT_MS = 15_000;
-const GEMINI_API_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -41,7 +40,7 @@ function adfToText(node: unknown): string {
 /** Confluence storage XML → plain text */
 function storageToText(html: string): string {
   return html
-    .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, "") // 매크로 제거
+    .replace(/<ac:structured-macro[^>]*>[\s\S]*?<\/ac:structured-macro>/g, "")
     .replace(/<ac:[^>]*\/>/g, "")
     .replace(/<ac:[^>]*>[\s\S]*?<\/ac:[^>]*>/g, "")
     .replace(/<h([1-6])[^>]*>/g, "\n## ")
@@ -74,26 +73,26 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "유효하지 않은 티켓 키" }, { status: 400 });
   }
 
-  const email    = process.env.JIRA_EMAIL;
-  const token    = process.env.JIRA_API_TOKEN;
-  const geminiKey = process.env.GEMINI_API_KEY;
+  const email       = process.env.JIRA_EMAIL;
+  const token       = process.env.JIRA_API_TOKEN;
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
 
-  if (!email || !token) return NextResponse.json({ error: "JIRA 환경변수 누락" }, { status: 500 });
-  if (!geminiKey)       return NextResponse.json({ error: "GEMINI_API_KEY 누락" }, { status: 500 });
+  if (!email || !token)  return NextResponse.json({ error: "JIRA 환경변수 누락" }, { status: 500 });
+  if (!anthropicKey)     return NextResponse.json({ error: "ANTHROPIC_API_KEY 누락" }, { status: 500 });
 
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const jiraHeaders = { Authorization: `Basic ${auth}`, Accept: "application/json" };
 
   // ── 1. JIRA 티켓 상세 조회 ──────────────────────────────────────────────
-  let ticketSummary    = "";
+  let ticketSummary     = "";
   let ticketDescription = "";
-  let ticketAssignee   = "";
-  let ticketType       = "";
-  let ticketPriority   = "";
-  let ticketLabels: string[] = [];
+  let ticketAssignee    = "";
+  let ticketType        = "";
+  let ticketPriority    = "";
+  let ticketLabels: string[]     = [];
   let ticketComponents: string[] = [];
-  let ticketEta        = "";
-  let parentSummary    = "";
+  let ticketEta         = "";
+  let parentSummary     = "";
   let twoPagerUrl: string | null = null;
 
   try {
@@ -125,10 +124,8 @@ export async function GET(request: NextRequest) {
           ? ((f.parent as Record<string, unknown>).fields as Record<string, unknown>).summary as string ?? ""
           : "";
 
-        // description — 최대 5,000자
         ticketDescription = adfToText(f.description).slice(0, 5000).trim();
 
-        // 2-Pager / PRD URL (customfield_10070)
         const prd = f.customfield_10070;
         if (prd) {
           if (typeof prd === "string") twoPagerUrl = prd;
@@ -137,7 +134,6 @@ export async function GET(request: NextRequest) {
             twoPagerUrl = (p.url ?? p.href ?? p.link) as string | null;
           }
         }
-        // Epic link (customfield_10014)
         if (!twoPagerUrl && typeof f.customfield_10014 === "string") {
           twoPagerUrl = f.customfield_10014;
         }
@@ -145,7 +141,7 @@ export async function GET(request: NextRequest) {
     }
   } catch {}
 
-  // ── 2. JIRA Remote Links → Confluence URL 수집 (PRD 여부 태깅) ───────────
+  // ── 2. JIRA Remote Links → Confluence URL 수집 ──────────────────────────
   const PRD_TITLE_KEYWORDS = ["prd", "2-pager", "2pager", "기획서", "기획안", "요구사항", "spec", "제품 요구"];
 
   type LinkedDoc = { url: string; title: string; isPrd: boolean };
@@ -175,13 +171,13 @@ export async function GET(request: NextRequest) {
   } catch {}
 
   // ── 3. Confluence 본문 조회 — PRD(최대 8,000자) / 기타(최대 3,000자) ────
-  let prdDoc:  { title: string; content: string } | null = null;
+  let prdDoc: { title: string; content: string } | null = null;
   const suppDocs: { title: string; content: string }[] = [];
 
   for (const doc of linkedDocs.slice(0, 4)) {
     const pageId = extractConfluencePageId(doc.url);
     if (!pageId) continue;
-    const limit  = (doc.isPrd && !prdDoc) ? 8000 : 3000;
+    const limit = (doc.isPrd && !prdDoc) ? 8000 : 3000;
     try {
       const res = await fetchWithTimeout(
         `${JIRA_HOST}/wiki/rest/api/content/${pageId}?expand=body.storage`,
@@ -208,18 +204,18 @@ export async function GET(request: NextRequest) {
     `- 티켓: ${key} (${ticketType})`,
     `- 제목: ${ticketSummary}`,
     `- 담당자: ${ticketAssignee || "-"}`,
-    ticketPriority          ? `- 우선순위: ${ticketPriority}`                        : "",
-    ticketEta               ? `- 목표일(ETA): ${ticketEta}`                          : "",
-    parentSummary           ? `- 상위 과제: ${parentSummary}`                        : "",
-    ticketLabels.length     > 0 ? `- 레이블: ${ticketLabels.join(", ")}`              : "",
-    ticketComponents.length > 0 ? `- 컴포넌트: ${ticketComponents.join(", ")}`        : "",
-    prdDoc                  ? `- PRD/2-Pager: ${prdDoc.title} (연결됨)`              : "",
+    ticketPriority          ? `- 우선순위: ${ticketPriority}`               : "",
+    ticketEta               ? `- 목표일(ETA): ${ticketEta}`                 : "",
+    parentSummary           ? `- 상위 과제: ${parentSummary}`               : "",
+    ticketLabels.length     > 0 ? `- 레이블: ${ticketLabels.join(", ")}`    : "",
+    ticketComponents.length > 0 ? `- 컴포넌트: ${ticketComponents.join(", ")}` : "",
+    prdDoc                  ? `- PRD/2-Pager: ${prdDoc.title} (연결됨)`     : "",
   ].filter(Boolean).join("\n");
 
   const contextParts = [
     `## 과제 정보\n${metaLines}`,
     ticketDescription ? `## JIRA 설명\n${ticketDescription}` : "",
-    prdDoc   ? `## PRD / 2-Pager: ${prdDoc.title}\n${prdDoc.content}`                                     : "",
+    prdDoc ? `## PRD / 2-Pager: ${prdDoc.title}\n${prdDoc.content}` : "",
     suppDocs.length > 0
       ? `## 기타 연결 문서\n${suppDocs.map(d => `### ${d.title}\n${d.content}`).join("\n\n")}`
       : "",
@@ -231,8 +227,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: "요약할 내용이 없습니다." }, { status: 422 });
   }
 
-  // ── 5. Gemini 요약 생성 ────────────────────────────────────────────────────
-  const systemInstruction = `당신은 29CM Commerce Core 팀 대시보드를 위해 과제 요약을 작성하는 PM 어시스턴트입니다.
+  // ── 5. Claude 요약 생성 ──────────────────────────────────────────────────
+  const systemPrompt = `당신은 29CM Commerce Core 팀 대시보드를 위해 과제 요약을 작성하는 PM 어시스턴트입니다.
 
 목적: 팀원이 처음 보는 과제를 10초 이내에 핵심 파악할 수 있도록 돕는 것.
 독자: Commerce Core 팀 PM 및 개발자 (도메인 맥락을 이미 알고 있음).
@@ -240,7 +236,7 @@ export async function GET(request: NextRequest) {
 
   const hasPrd = !!prdDoc;
 
-  const prompt = `아래 JIRA 티켓 정보를 분석해 과제 요약을 작성하라.
+  const userPrompt = `아래 JIRA 티켓 정보를 분석해 과제 요약을 작성하라.
 
 ${context}
 
@@ -281,53 +277,26 @@ PRD 핵심:
 - [1단계] bullet 앞에 제목·레이블·서론·결론 출력 금지
 - [2단계]의 "PRD 핵심:" 헤더 외의 추가 제목·레이블 출력 금지`;
 
-  const geminiBody = JSON.stringify({
-    systemInstruction: { parts: [{ text: systemInstruction }] },
-    contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { maxOutputTokens: 1500, temperature: 0.35, topP: 0.9 },
-  });
-  const geminiReqOpts = { method: "POST", headers: { "Content-Type": "application/json" }, body: geminiBody };
-  const RETRY_STATUSES = new Set([429, 500, 503]);
-  const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
-
-  let res!: Response;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (attempt > 0) await delay(attempt * 2000);
-    try {
-      res = await fetchWithTimeout(`${GEMINI_API_URL}?key=${geminiKey}`, geminiReqOpts);
-      if (!RETRY_STATUSES.has(res.status)) break;
-      console.warn(`[ai-summary] Gemini ${res.status}, retry ${attempt + 1}/3`);
-    } catch (e) {
-      if (attempt === 2) throw e;
-      console.warn(`[ai-summary] fetch error on attempt ${attempt + 1}, retrying`);
-    }
-  }
-
   try {
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("[ai-summary] Gemini error:", res.status, errText);
-      const isTransient = RETRY_STATUSES.has(res.status);
-      return NextResponse.json(
-        { error: isTransient ? "Gemini API가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요." : `AI 요약 실패: ${res.status}` },
-        { status: 500 }
-      );
-    }
+    const client = new Anthropic({ apiKey: anthropicKey, maxRetries: 3 });
+    const message = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1500,
+      system: systemPrompt,
+      messages: [{ role: "user", content: userPrompt }],
+    });
 
-    const data = await res.json() as Record<string, unknown>;
-    const parts = ((data.candidates as Array<Record<string, unknown>>)?.[0]
-      ?.content as Record<string, unknown>)
-      ?.parts as Array<Record<string, unknown>> | undefined;
-    const text = parts?.[0]?.text as string | undefined;
+    const block = message.content[0];
+    const text = block.type === "text" ? block.text.trim() : "";
 
     if (!text) {
       return NextResponse.json({ error: "요약 결과가 없습니다." }, { status: 500 });
     }
 
-    return NextResponse.json({ summary: text.trim(), key });
+    return NextResponse.json({ summary: text, key });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    console.error("[ai-summary] fetch error:", msg);
+    console.error("[ai-summary] Claude error:", msg);
     return NextResponse.json({ error: `AI 요약 실패: ${msg}` }, { status: 500 });
   }
 }
