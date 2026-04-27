@@ -84,28 +84,12 @@ export type Ticket = {
   storyPoints?: number;
 };
 
-// Gantt 전체 범위: 2026-01-01 ~ 2026-06-30
-const G_FULL_START = new Date("2026-01-01").getTime();
-const G_END        = new Date("2026-06-30").getTime();
-
-const MONTH_DATES = [
-  { label: "1월", ms: new Date("2026-01-01").getTime() },
-  { label: "2월", ms: new Date("2026-02-01").getTime() },
-  { label: "3월", ms: new Date("2026-03-01").getTime() },
-  { label: "4월", ms: new Date("2026-04-01").getTime() },
-  { label: "5월", ms: new Date("2026-05-01").getTime() },
-  { label: "6월", ms: new Date("2026-06-01").getTime() },
-];
-
 // 오늘 자정 기준 ms
 const TODAY_MS = (() => {
   const d = new Date();
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 })();
-
-// 기본 뷰: 오늘 기준 2주 전부터
-const DEFAULT_VIEW_START = Math.max(G_FULL_START, TODAY_MS - 14 * 86400000);
 
 const Q1Q2_KEYS = new Set([
   "TM-1241", "TM-1846", "TM-1869", "TM-1871", "TM-1886",
@@ -156,8 +140,8 @@ const TODAY_LABEL = (() => {
   return `${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
 })();
 
-function makeViewFns(viewStart: number) {
-  const span = G_END - viewStart;
+function makeViewFns(viewStart: number, viewEnd: number) {
+  const span = viewEnd - viewStart;
   function pct(ms: number) {
     return Math.max(0, Math.min(100, ((ms - viewStart) / span) * 100));
   }
@@ -165,7 +149,7 @@ function makeViewFns(viewStart: number) {
   function barLeft(s: string) { return pct(Math.max(viewStart, new Date(s).getTime())); }
   function barWidth(s: string, e: string) {
     const sMs = Math.max(viewStart, new Date(s).getTime());
-    const eMs = Math.min(G_END, new Date(e).getTime());
+    const eMs = Math.min(viewEnd, new Date(e).getTime());
     return eMs <= sMs ? 0 : Math.max(0.3, ((eMs - sMs) / span) * 100);
   }
   return { pct, datePct, barLeft, barWidth };
@@ -183,15 +167,51 @@ function calcDuration(start: string, end: string): number {
 }
 
 function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
-  const [showFull, setShowFull] = useState(false);
+  // 뷰 시작: 이번 달 1일
+  const viewStart = (() => {
+    const d = new Date();
+    d.setDate(1); d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  })();
 
-  const viewStart = showFull ? G_FULL_START : DEFAULT_VIEW_START;
-  const { pct, barLeft, barWidth } = makeViewFns(viewStart);
+  // 뷰 종료: roles 중 가장 먼 end 종료월 vs 현재월+2 중 큰 것
+  const viewEnd = (() => {
+    const minEnd = new Date();
+    minEnd.setMonth(minEnd.getMonth() + 3);
+    minEnd.setDate(0); // 3개월 후 말일 (현재월 포함 3개월)
+    minEnd.setHours(23, 59, 59, 999);
+    let ms = minEnd.getTime();
+    for (const r of roles ?? []) {
+      if (r.end) {
+        const endMs = new Date(r.end).getTime();
+        if (endMs > ms) {
+          const d = new Date(r.end);
+          d.setMonth(d.getMonth() + 1);
+          d.setDate(0); // 해당 월 말일
+          d.setHours(23, 59, 59, 999);
+          ms = d.getTime();
+        }
+      }
+    }
+    return ms;
+  })();
+
+  // 월 레이블 동적 생성
+  const monthDates = (() => {
+    const months: { label: string; ms: number }[] = [];
+    const cur = new Date(viewStart);
+    cur.setDate(1);
+    while (cur.getTime() <= viewEnd) {
+      months.push({ label: `${cur.getMonth() + 1}월`, ms: cur.getTime() });
+      cur.setMonth(cur.getMonth() + 1);
+    }
+    return months;
+  })();
+
+  const { pct, barLeft, barWidth } = makeViewFns(viewStart, viewEnd);
   const todayPct = pct(TODAY_MS);
 
-  const visibleMonths = MONTH_DATES.filter(m => m.ms >= viewStart && m.ms <= G_END);
-
-  // 뷰 밖(과거)에 완전히 잘린 바 개수
+  // 뷰 시작 이전에 완전히 끝난 바 개수
   const hiddenCount = (roles ?? []).filter(r => r.end && new Date(r.end).getTime() < viewStart).length;
 
   return (
@@ -200,7 +220,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
       <div className="flex mb-0.5">
         <div className="w-36 shrink-0" />
         <div className="flex-1 relative h-5">
-          {visibleMonths.map((m) => (
+          {monthDates.map((m) => (
             <span
               key={m.label}
               className="absolute text-xs text-gray-500 -translate-x-1/2"
@@ -212,20 +232,22 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
         </div>
       </div>
 
-      {/* 오늘 날짜 레이블 — 월 헤더 아래 별도 행 */}
-      <div className="flex mb-2">
-        <div className="w-36 shrink-0" />
-        <div className="flex-1 relative h-6">
-          <span
-            className="absolute -translate-x-1/2"
-            style={{ left: `${todayPct}%` }}
-          >
-            <span className="text-xs font-semibold text-red-500 whitespace-nowrap bg-red-50 border border-red-100 px-1.5 py-0.5 rounded">
-              오늘 {TODAY_LABEL}
+      {/* 오늘 날짜 레이블 — 일정이 있을 때만 표시 */}
+      {roles && roles.length > 0 && (
+        <div className="flex mb-2">
+          <div className="w-36 shrink-0" />
+          <div className="flex-1 relative h-6">
+            <span
+              className="absolute -translate-x-1/2"
+              style={{ left: `${todayPct}%` }}
+            >
+              <span className="text-xs font-semibold text-red-500 whitespace-nowrap bg-red-50 border border-red-100 px-1.5 py-0.5 rounded">
+                오늘 {TODAY_LABEL}
+              </span>
             </span>
-          </span>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 롤 바 목록 */}
       <div className="relative">
@@ -299,22 +321,9 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
         )}
       </div>
 
-      {/* 이전 일정 collapse 토글 */}
-      <button
-        onClick={() => setShowFull(v => !v)}
-        className="mt-2 flex items-center gap-1 text-xs text-gray-400 hover:text-gray-600 transition-colors"
-      >
-        <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          {showFull
-            ? <path d="M5 15l7-7 7 7" strokeLinecap="round" strokeLinejoin="round"/>
-            : <path d="M19 9l-7 7-7-7" strokeLinecap="round" strokeLinejoin="round"/>
-          }
-        </svg>
-        {showFull
-          ? "최근 일정으로 돌아가기"
-          : `이전 일정 전체 보기${hiddenCount > 0 ? ` (${hiddenCount}건 숨김)` : ""}`
-        }
-      </button>
+      {hiddenCount > 0 && (
+        <p className="mt-2 text-xs text-gray-400">{hiddenCount}건의 완료된 이전 일정이 있습니다</p>
+      )}
     </div>
   );
 }
@@ -329,6 +338,18 @@ const STATUS_OPTIONS: RoleSchedule["status"][] = ["예정", "진행중", "완료
 function newRow(): RoleSchedule {
   return { role: "기획", person: "", start: "", end: "", status: "예정" };
 }
+
+type EtrTicketInfo = {
+  key: string;
+  summary?: string;
+  requestDept?: string;
+};
+
+type TicketRequestInfo = {
+  source: "자체발의" | "ELT" | "ETR";
+  etrStatus?: "추가완료" | "추가필요";
+  etrTickets?: EtrTicketInfo[];
+};
 
 type TrackState = "대기중" | "검토중" | "완료";
 const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료"];
@@ -396,10 +417,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [priorities, setPriorities] = useState<Record<string, string>>({});
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
-  const [planningTab, setPlanningTab] = useState("전체");
+  const [planningTab, setPlanningTab] = useState("진행 중");
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
   const [noteInput, setNoteInput]   = useState("");
+  const [planningOpen, setPlanningOpen] = useState(true);
+
+  // 요구사항 출처 (key → TicketRequestInfo)
+  const [etrMap, setEtrMap]       = useState<Record<string, TicketRequestInfo>>({});
+  const [etrInput, setEtrInput]   = useState("");
+  const [etrError, setEtrError]   = useState<string | null>(null);
+  const [etrLoading, setEtrLoading] = useState<Set<string>>(new Set());
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("default");
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기">("전체");
@@ -739,12 +767,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-custom-keys,cc-custom-tickets,cc-planning-notes")
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-etr")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])  setPlanning(data["cc-planning"]);
         if (data["cc-schedules"]) setSchedules(data["cc-schedules"]);
         if (data["cc-memos"])     setMemos(data["cc-memos"]);
+        if (data["cc-etr"])       setEtrMap(data["cc-etr"]);
         if (data["cc-planning-notes"]) {
           setPlanningNotes(data["cc-planning-notes"]);
           try { localStorage.setItem("cc-planning-notes", JSON.stringify(data["cc-planning-notes"])); } catch {}
@@ -810,6 +839,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           if (m) setMemos(JSON.parse(m));
           const n = localStorage.getItem("cc-planning-notes");
           if (n) setPlanningNotes(JSON.parse(n));
+          const etr = localStorage.getItem("cc-etr");
+          if (etr) setEtrMap(JSON.parse(etr));
           const ck = localStorage.getItem("cc-custom-keys");
           if (ck) setCustomKeys(new Set(JSON.parse(ck)));
           const ct = localStorage.getItem("cc-custom-tickets");
@@ -870,12 +901,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   const planningCounts = useMemo(() => {
-    const counts: Record<string, number> = { "전체": tickets.length, "Design 대기·검토": 0, "Dev 대기·검토": 0, "모두 완료": 0 };
+    const doneStatuses = ["론치완료", "완료", "배포완료"];
+    const counts: Record<string, number> = { "전체": tickets.length, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0 };
     for (const t of tickets) {
       const p = getPlanningVal(planning[t.key]);
-      if (p.design !== "완료") counts["Design 대기·검토"]++;
-      if (p.dev !== "완료") counts["Dev 대기·검토"]++;
-      if (p.design === "완료" && p.dev === "완료") counts["모두 완료"]++;
+      const bothDone = p.design === "완료" && p.dev === "완료";
+      const isTicketDone = doneStatuses.includes(t.status);
+      if (bothDone && !isTicketDone) counts["진행 중"]++;
+      if (!bothDone) counts["플래닝 대기·검토"]++;
+      if (isTicketDone) counts["완료"]++;
     }
     return counts;
   }, [tickets, planning]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -911,9 +945,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       if (planningTab !== "전체") {
         const p = getPlanningVal(planning[t.key]);
-        if (planningTab === "Design 대기·검토" && p.design === "완료") return false;
-        if (planningTab === "Dev 대기·검토" && p.dev === "완료") return false;
-        if (planningTab === "모두 완료" && !(p.design === "완료" && p.dev === "완료")) return false;
+        const bothDone = p.design === "완료" && p.dev === "완료";
+        const isTicketDone = ["론치완료", "완료", "배포완료"].includes(t.status);
+        if (planningTab === "진행 중" && !(bothDone && !isTicketDone)) return false;
+        if (planningTab === "플래닝 대기·검토" && bothDone) return false;
+        if (planningTab === "완료" && !isTicketDone) return false;
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
@@ -1015,13 +1051,78 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }).catch(() => {});
   }
 
+  function saveEtr(updated: Record<string, TicketRequestInfo>) {
+    setEtrMap(updated);
+    try { localStorage.setItem("cc-etr", JSON.stringify(updated)); } catch {}
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-etr", value: updated }),
+    }).catch(() => {});
+  }
+
+  function setEtrSource(ticketKey: string, source: TicketRequestInfo["source"]) {
+    const current = etrMap[ticketKey];
+    saveEtr({
+      ...etrMap,
+      [ticketKey]: {
+        ...current,
+        source,
+        etrStatus: source === "ETR" ? (current?.etrStatus ?? "추가필요") : undefined,
+        etrTickets: source === "ETR" ? (current?.etrTickets ?? []) : undefined,
+      },
+    });
+  }
+
+  function setEtrStatus(ticketKey: string, status: "추가완료" | "추가필요") {
+    const current = etrMap[ticketKey] ?? { source: "ETR" as const };
+    saveEtr({ ...etrMap, [ticketKey]: { ...current, etrStatus: status } });
+  }
+
+  async function addEtr(ticketKey: string, etrKey: string) {
+    const trimmed = etrKey.trim().toUpperCase();
+    if (!trimmed) return;
+    if (!/^[A-Z]+-\d+$/.test(trimmed)) { setEtrError("올바른 형식이 아닙니다. 예: ETR-123"); return; }
+    const current = etrMap[ticketKey] ?? { source: "ETR" as const };
+    const prevTickets = current.etrTickets ?? [];
+    if (prevTickets.some(t => t.key === trimmed)) { setEtrError("이미 연결된 티켓입니다."); return; }
+    setEtrError(null);
+    setEtrInput("");
+    setEtrLoading(prev => new Set([...prev, trimmed]));
+    try {
+      const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(trimmed)}`);
+      const data = await res.json();
+      const info: EtrTicketInfo = data.ticket
+        ? { key: trimmed, summary: data.ticket.summary, requestDept: data.ticket.requestDept }
+        : { key: trimmed };
+      const updated: TicketRequestInfo = { ...current, source: "ETR", etrStatus: "추가완료", etrTickets: [...prevTickets, info] };
+      saveEtr({ ...etrMap, [ticketKey]: updated });
+    } catch {
+      saveEtr({ ...etrMap, [ticketKey]: { ...current, source: "ETR", etrTickets: [...prevTickets, { key: trimmed }] } });
+    } finally {
+      setEtrLoading(prev => { const n = new Set(prev); n.delete(trimmed); return n; });
+    }
+  }
+
+  function removeEtr(ticketKey: string, etrKey: string) {
+    const current = etrMap[ticketKey];
+    if (!current) return;
+    saveEtr({ ...etrMap, [ticketKey]: { ...current, etrTickets: (current.etrTickets ?? []).filter(t => t.key !== etrKey) } });
+  }
+
   function handleSelect(t: Ticket) {
     const isSame = selected?.key === t.key;
     setSelected(isSame ? null : t);
     setEditMode(false);
     setMemoEditMode(false);
     setNoteInput("");
-    if (!isSame) setMemoText(getMemoText(t.key));
+    setEtrInput("");
+    setEtrError(null);
+    if (!isSame) {
+      setMemoText(getMemoText(t.key));
+      const p = getPlanningVal(planning[t.key]);
+      setPlanningOpen(!(p.design === "완료" && p.dev === "완료"));
+    }
   }
 
   if (fetching && tickets.length === 0) {
@@ -1082,23 +1183,26 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
         )}
 
-        {/* 플래닝 탭 */}
-        <div className="flex gap-1 mb-5 bg-white rounded-xl border border-gray-200 p-1">
-          {(["전체", "Design 대기·검토", "Dev 대기·검토", "모두 완료"] as const).map((tab) => {
-            const active = planningTab === tab;
-            const activeColor =
-              tab === "모두 완료"        ? "bg-green-600" :
-              tab === "Design 대기·검토" ? "bg-violet-600" :
-              tab === "Dev 대기·검토"    ? "bg-blue-600" :
-              "bg-gray-900";
+        {/* 과제 상태 탭 */}
+        <div className="flex gap-1.5 mb-5">
+          {([
+            { key: "전체",           label: "전체",           desc: "모든 과제",                   activeCls: "bg-gray-800 text-white",   inactiveCls: "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50" },
+            { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중",        activeCls: "bg-blue-600 text-white",   inactiveCls: "bg-white border border-blue-200 text-blue-600 hover:bg-blue-50" },
+            { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중", activeCls: "bg-amber-500 text-white",   inactiveCls: "bg-white border border-amber-200 text-amber-600 hover:bg-amber-50" },
+            { key: "완료",           label: "완료",           desc: "론치·배포 완료",               activeCls: "bg-green-600 text-white",  inactiveCls: "bg-white border border-green-200 text-green-600 hover:bg-green-50" },
+          ] as const).map(({ key, label, desc, activeCls, inactiveCls }) => {
+            const active = planningTab === key;
             return (
               <button
-                key={tab}
-                onClick={() => setPlanningTab(tab)}
-                className={`flex-1 py-2 px-3 rounded-lg text-sm font-medium transition-colors ${active ? `${activeColor} text-white` : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"}`}
+                key={key}
+                onClick={() => setPlanningTab(key)}
+                title={desc}
+                className={`flex-1 py-2.5 px-3 rounded-xl text-sm font-semibold transition-all shadow-sm ${active ? activeCls : inactiveCls}`}
               >
-                {tab}
-                <span className="ml-1.5 text-xs opacity-75">({planningCounts[tab] ?? 0})</span>
+                {label}
+                <span className={`ml-1.5 text-xs font-normal ${active ? "opacity-80" : "opacity-60"}`}>
+                  ({planningCounts[key] ?? 0})
+                </span>
               </button>
             );
           })}
@@ -1206,10 +1310,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <span className="flex-1 min-w-0">제목</span>
             <span className="w-20 shrink-0 text-center">레벨</span>
             <span className="w-16 shrink-0 text-center">프로젝트</span>
-            <span className="w-16 shrink-0 text-center">담당자</span>
-            <span className="w-24 shrink-0 text-center">상태</span>
-            <span className="w-24 shrink-0 text-center">시작일</span>
-            <span className="w-24 shrink-0 text-center">ETA</span>
+            <span className="w-20 shrink-0 text-center">담당자</span>
+            <span className="w-28 shrink-0 text-center">상태</span>
+            <span className="w-28 shrink-0 text-center">시작일</span>
+            <span className="w-28 shrink-0 text-center">ETA</span>
             <span className="w-6 shrink-0" />
           </div>
 
@@ -1270,16 +1374,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </span>
                     </span>
                     <span className="w-16 shrink-0 text-xs text-gray-500 text-center">{t.project}</span>
-                    <span className="w-16 shrink-0 text-xs text-gray-700 text-center truncate">{t.assignee}</span>
-                    <span className="w-24 shrink-0 flex justify-center">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
+                    <span className="w-20 shrink-0 text-sm font-semibold text-gray-900 text-center truncate">{t.assignee}</span>
+                    <span className="w-28 shrink-0 flex justify-center">
+                      <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-semibold ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
                         {t.status}
                       </span>
                     </span>
-                    <span className={`w-24 shrink-0 text-xs text-center ${t.startDate ? "text-gray-700" : "text-gray-400"}`}>
+                    <span className={`w-28 shrink-0 text-sm font-medium text-center ${t.startDate ? "text-gray-900" : "text-gray-300"}`}>
                       {t.startDate ? formatDateWithDay(t.startDate) : "미정"}
                     </span>
-                    <span className={`w-24 shrink-0 text-xs text-center ${!t.eta || t.eta === "-" ? "text-gray-400" : "text-gray-700"}`}>
+                    <span className={`w-28 shrink-0 text-sm font-medium text-center ${!t.eta || t.eta === "-" ? "text-gray-300" : "text-gray-900"}`}>
                       {!t.eta || t.eta === "-" ? "미정" : formatDateWithDay(t.eta)}
                     </span>
                     <button
@@ -1289,12 +1393,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     >×</button>
                   </div>
 
-                  {/* 펼침: Gantt */}
-                  {isSelected && (
-                    <div className="px-4 pb-4 border-t border-indigo-100">
-                      <GanttChart roles={getRoles(t)} />
-                    </div>
-                  )}
                 </div>
               );
             })
@@ -1414,6 +1512,85 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
             </div>
 
+            {/* 요구사항 출처 */}
+            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5 mb-4 text-xs">
+              <p className="font-semibold text-gray-500 uppercase tracking-wide mb-2">요구사항 출처</p>
+
+              {/* 출처 선택 */}
+              <div className="flex gap-1.5 mb-3">
+                {(["자체발의", "ELT", "ETR"] as const).map(src => {
+                  const active = etrMap[selected.key]?.source === src;
+                  const activeColor =
+                    src === "자체발의" ? "bg-indigo-600 text-white border-indigo-600" :
+                    src === "ELT"     ? "bg-amber-500 text-white border-amber-500" :
+                                        "bg-blue-600 text-white border-blue-600";
+                  return (
+                    <button
+                      key={src}
+                      onClick={() => setEtrSource(selected.key, src)}
+                      className={`flex-1 py-1.5 px-2 rounded-lg font-medium border transition-colors ${active ? activeColor : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+                    >{src === "ELT" ? "ELT 요구사항" : src}</button>
+                  );
+                })}
+              </div>
+
+              {/* ETR 선택 시 하위 영역 */}
+              {etrMap[selected.key]?.source === "ETR" && (
+                <>
+                  {/* 연결된 ETR 티켓 목록 */}
+                  {(etrMap[selected.key]?.etrTickets ?? []).length > 0 ? (
+                    <div className="space-y-1.5 mb-2">
+                      {(etrMap[selected.key]?.etrTickets ?? []).map(t => (
+                        <div key={t.key} className="flex items-start gap-2 bg-white border border-gray-200 rounded px-2 py-1.5">
+                          <a
+                            href={`${JIRA_BASE}${t.key}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono text-blue-500 hover:underline shrink-0 mt-0.5"
+                          >{t.key}</a>
+                          <div className="flex-1 min-w-0">
+                            {t.requestDept && (
+                              <span className="inline-block text-gray-400 mr-1">[{t.requestDept}]</span>
+                            )}
+                            {t.summary && (
+                              <span className="text-gray-600 break-words">{t.summary}</span>
+                            )}
+                            {!t.requestDept && !t.summary && (
+                              <span className="text-gray-300 italic">정보 없음</span>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => removeEtr(selected.key, t.key)}
+                            className="text-gray-300 hover:text-red-400 transition-colors shrink-0 mt-0.5"
+                          >×</button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-orange-400 mb-2">ETR 티켓 추가 필요</p>
+                  )}
+
+                  {/* 티켓 추가 입력 */}
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      placeholder="예: ETR-123"
+                      value={etrInput}
+                      onChange={(e) => { setEtrInput(e.target.value.toUpperCase()); setEtrError(null); }}
+                      onKeyDown={(e) => e.key === "Enter" && addEtr(selected.key, etrInput)}
+                      className="flex-1 border border-gray-200 rounded px-2 py-1 font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                    />
+                    <button
+                      onClick={() => addEtr(selected.key, etrInput)}
+                      disabled={!etrInput.trim() || etrLoading.size > 0}
+                      className="px-2.5 py-1 rounded font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-40 transition-colors"
+                    >{etrLoading.size > 0 ? "조회중…" : "연결"}</button>
+                  </div>
+                  {etrError && <p className="mt-1 text-red-500">{etrError}</p>}
+                </>
+              )}
+            </div>
+
             <div className="border-t border-gray-200 pt-4">
               {/* 주요 내용 요약 */}
               <div className="mb-4">
@@ -1469,15 +1646,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               {/* 플래닝 상태 */}
               <div className="border-t border-gray-100 pt-4 mb-4">
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">플래닝 상태</p>
-                  {(() => {
-                    const p = getPlanningVal(planning[selected.key]);
-                    return p.design === "완료" && p.dev === "완료" && getRoles(selected).length === 0
-                      ? <span className="text-xs font-medium text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">일정 등록 필요</span>
-                      : null;
-                  })()}
-                </div>
+                <button
+                  onClick={() => setPlanningOpen(o => !o)}
+                  className="flex items-center justify-between w-full mb-2 group"
+                >
+                  <div className="flex items-center gap-2">
+                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">플래닝 상태</p>
+                    {(() => {
+                      const p = getPlanningVal(planning[selected.key]);
+                      const allDone = p.design === "완료" && p.dev === "완료";
+                      if (allDone && getRoles(selected).length === 0)
+                        return <span className="text-xs font-medium text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">일정 등록 필요</span>;
+                      if (allDone)
+                        return <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 px-1.5 py-0.5 rounded">플래닝 완료</span>;
+                      return null;
+                    })()}
+                  </div>
+                  <svg
+                    className={`w-3.5 h-3.5 text-gray-400 transition-transform ${planningOpen ? "rotate-180" : ""}`}
+                    viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                  >
+                    <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+
+                {planningOpen && (
+                  <>
                 <div className="space-y-1.5">
                   {(["design", "dev"] as const).map((track) => {
                     const p = getPlanningVal(planning[selected.key]);
@@ -1574,6 +1768,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     >등록</button>
                   </div>
                 </div>
+                  </>
+                )}
               </div>
 
               <div className="border-t border-gray-200 pt-4">
@@ -1581,26 +1777,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
                   <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">작업별 일정</p>
-                  {(() => {
-                    const p = getPlanningVal(planning[selected.key]);
-                    const designDone = p.design === "완료";
-                    const devDone = p.dev === "완료";
-                    if (designDone && devDone) return null;
-                    return (
-                      <div className="flex gap-1">
-                        {!designDone && (
-                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
-                            Design
-                          </span>
-                        )}
-                        {!devDone && (
-                          <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
-                            Dev
-                          </span>
-                        )}
-                      </div>
-                    );
-                  })()}
                 </div>
                 {!editMode ? (
                   <button
@@ -1616,6 +1792,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
                 )}
               </div>
+
+              {/* 플래닝 완료 + 일정 미등록 안내 */}
+              {(() => {
+                const p = getPlanningVal(planning[selected.key]);
+                if (p.design === "완료" && p.dev === "완료" && getRoles(selected).length === 0 && !editMode) {
+                  return (
+                    <div className="flex items-center justify-between bg-orange-50 border border-orange-200 rounded-lg px-3 py-2.5 mb-3 text-xs">
+                      <span className="text-orange-700">플래닝이 완료됐어요. 작업별 일정을 입력해주세요.</span>
+                      <button
+                        onClick={startEdit}
+                        className="ml-3 shrink-0 px-2.5 py-1 rounded-lg bg-orange-500 text-white font-medium hover:bg-orange-600 transition-colors"
+                      >일정 입력</button>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
 
               {/* 편집 모드 */}
               {editMode ? (
