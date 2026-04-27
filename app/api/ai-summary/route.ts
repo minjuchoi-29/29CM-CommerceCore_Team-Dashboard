@@ -281,7 +281,7 @@ PRD 핵심:
   const geminiBody = JSON.stringify({
     systemInstruction: { parts: [{ text: systemInstruction }] },
     contents: [{ role: "user", parts: [{ text: prompt }] }],
-    generationConfig: { maxOutputTokens: 1500, temperature: 0.35, topP: 0.9 },
+    generationConfig: { maxOutputTokens: 4096, temperature: 0.35, topP: 0.9 },
   });
   const geminiReqOpts = { method: "POST", headers: { "Content-Type": "application/json" }, body: geminiBody };
   const RETRY_STATUSES = new Set([429, 500, 503]);
