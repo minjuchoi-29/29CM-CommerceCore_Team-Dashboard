@@ -281,28 +281,37 @@ PRD 핵심:
 - [1단계] bullet 앞에 제목·레이블·서론·결론 출력 금지
 - [2단계]의 "PRD 핵심:" 헤더 외의 추가 제목·레이블 출력 금지`;
 
-  try {
-    const res = await fetchWithTimeout(
-      `${GEMINI_API_URL}?key=${geminiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          systemInstruction: { parts: [{ text: systemInstruction }] },
-          contents: [{ role: "user", parts: [{ text: prompt }] }],
-          generationConfig: {
-            maxOutputTokens: 1500,
-            temperature: 0.35,
-            topP: 0.9,
-          },
-        }),
-      }
-    );
+  const geminiBody = JSON.stringify({
+    systemInstruction: { parts: [{ text: systemInstruction }] },
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: { maxOutputTokens: 1500, temperature: 0.35, topP: 0.9 },
+  });
+  const geminiReqOpts = { method: "POST", headers: { "Content-Type": "application/json" }, body: geminiBody };
+  const RETRY_STATUSES = new Set([429, 500, 503]);
+  const delay = (ms: number) => new Promise(r => setTimeout(r, ms));
 
+  let res!: Response;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) await delay(attempt * 2000);
+    try {
+      res = await fetchWithTimeout(`${GEMINI_API_URL}?key=${geminiKey}`, geminiReqOpts);
+      if (!RETRY_STATUSES.has(res.status)) break;
+      console.warn(`[ai-summary] Gemini ${res.status}, retry ${attempt + 1}/3`);
+    } catch (e) {
+      if (attempt === 2) throw e;
+      console.warn(`[ai-summary] fetch error on attempt ${attempt + 1}, retrying`);
+    }
+  }
+
+  try {
     if (!res.ok) {
       const errText = await res.text();
       console.error("[ai-summary] Gemini error:", res.status, errText);
-      return NextResponse.json({ error: `AI 요약 실패: ${res.status}` }, { status: 500 });
+      const isTransient = RETRY_STATUSES.has(res.status);
+      return NextResponse.json(
+        { error: isTransient ? "Gemini API가 일시적으로 응답하지 않습니다. 잠시 후 다시 시도해 주세요." : `AI 요약 실패: ${res.status}` },
+        { status: 500 }
+      );
     }
 
     const data = await res.json() as Record<string, unknown>;
