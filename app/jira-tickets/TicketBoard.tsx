@@ -688,6 +688,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setNewlyAddedKeys(new Set([trimmed]));
         setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
 
+        // 구글 시트 A열에 추가 (실패해도 티켓 추가에 영향 없음)
+        fetch("/api/sheet-append", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ keys: [trimmed] }),
+        }).catch(() => {});
+
         // 메모가 없을 때만 AI 요약 1회 생성
         const memoVal = memos[trimmed];
         const hasMemo = typeof memoVal === "string" ? !!memoVal.trim() : !!memoVal?.text?.trim();
@@ -792,6 +799,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setPlanningTab("플래닝 대기·검토");
       setNewlyAddedKeys(new Set(fetched.map(t => t.key)));
       setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
+
+      // 구글 시트 A열에 일괄 추가
+      fetch("/api/sheet-append", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ keys: fetched.map(t => t.key) }),
+      }).catch(() => {});
     }
     if (errors.length > 0) setAddKeyError(`추가 실패: ${errors.join(", ")}`);
   }
