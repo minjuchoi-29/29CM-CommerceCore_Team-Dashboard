@@ -388,6 +388,47 @@ function HealthBadge({ value }: { value: string }) {
   );
 }
 
+const DONE_PRIORITY_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
+
+/**
+ * 완료/삭제된 티켓의 우선순위 공백을 메워 1부터 순차 재배열.
+ * 변경이 없으면 null 반환.
+ * @returns { newState } - 로컬 state 반영용 (active만 포함)
+ *          { sheetUpdate } - 시트 일괄 반영용 (active + 클리어 대상 포함)
+ */
+function computeRebalance(
+  rawPriorities: Record<string, string>,
+  tickets: Ticket[]
+): { newState: Record<string, string>; sheetUpdate: Record<string, string> } | null {
+  const ticketMap = new Map(tickets.map(t => [t.key, t.status]));
+
+  const active = Object.entries(rawPriorities)
+    .filter(([key]) => {
+      const s = ticketMap.get(key);
+      return s !== undefined && !DONE_PRIORITY_STATUSES.has(s);
+    })
+    .map(([key, p]) => ({ key, p: parseInt(p) || 999 }))
+    .sort((a, b) => a.p - b.p);
+
+  const toClean = Object.keys(rawPriorities).filter(key => {
+    const s = ticketMap.get(key);
+    return s !== undefined && DONE_PRIORITY_STATUSES.has(s);
+  });
+
+  const activeChanged = active.some(({ key, p }, idx) =>
+    rawPriorities[key] !== String(idx + 1) || p !== idx + 1
+  );
+  if (!activeChanged && toClean.length === 0) return null;
+
+  const newState: Record<string, string> = {};
+  active.forEach(({ key }, idx) => { newState[key] = String(idx + 1); });
+
+  const sheetUpdate: Record<string, string> = { ...newState };
+  toClean.forEach(key => { sheetUpdate[key] = ""; });
+
+  return { newState, sheetUpdate };
+}
+
 export default function TicketBoard({ userName = "알 수 없음" }: { userName?: string }) {
   const [tickets, setTickets]       = useState<Ticket[]>([]);
   const [fetching, setFetching]     = useState(true);
@@ -615,11 +656,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         );
       } catch {}
 
-      // 시트 우선순위 + 공유 KV 데이터 (planning, schedules, memos) 함께 갱신
-      fetch("/api/sheet-priorities")
-        .then(r => r.json())
-        .then(d => { if (d.priorities) setPriorities(d.priorities); })
-        .catch(() => {});
+      // 시트 우선순위 갱신 + 완료 전환 티켓 재정렬
+      try {
+        const priRes = await fetch("/api/sheet-priorities");
+        const priData = await priRes.json();
+        const rawPri: Record<string, string> = priData.priorities ?? {};
+        setPriorityError(priData.error ?? null);
+        const allNewTickets = [...(data.tickets as Ticket[]), ...freshCustom];
+        const rebalanced = computeRebalance(rawPri, allNewTickets);
+        if (rebalanced) {
+          setPriorities(rebalanced.newState);
+          fetch("/api/sheet-priorities", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ priorities: rebalanced.sheetUpdate }),
+          }).catch(() => {});
+        } else {
+          setPriorities(rawPri);
+        }
+      } catch {};
       fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos")
         .then(r => r.json())
         .then(d => {
@@ -813,6 +868,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 사용자 추가 티켓 제거
   function removeTicket(key: string) {
+    // 우선순위 재정렬: 삭제 티켓 아래 번호를 -1씩 당김
+    const deletedP = parseInt(priorities[key] ?? "");
+    if (deletedP > 0) {
+      const shifted: Record<string, string> = {};
+      Object.entries(priorities).forEach(([k, v]) => {
+        if (k === key) return;
+        const p = parseInt(v);
+        shifted[k] = p > deletedP ? String(p - 1) : v;
+      });
+      setPriorities(shifted);
+      fetch("/api/sheet-priorities", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priorities: { ...shifted, [key]: "" } }),
+      }).catch(() => {});
+    }
+
     setTickets(prev => prev.filter(t => t.key !== key));
     const newCustomKeys = new Set([...customKeys].filter(k => k !== key));
     setCustomKeys(newCustomKeys);
@@ -1055,9 +1127,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return [...set].sort((a, b) => a.localeCompare(b, "ko"));
   }, [tickets]);
 
-  const DONE_STATUSES      = ["론치완료", "완료", "배포완료"];
+  const DONE_STATUSES      = [...DONE_PRIORITY_STATUSES];
   const INPROGRESS_STATUSES = ["개발중", "In Progress", "QA중"];
   const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
+
+  // 완료 티켓의 우선순위는 의미 없으므로 진행중·대기 티켓만 남김
+  const activePriorities = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(priorities).filter(([key]) => {
+        const t = tickets.find(t => t.key === key);
+        return !t || !DONE_PRIORITY_STATUSES.has(t.status);
+      })
+    );
+  }, [priorities, tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // statusTab 제외한 필터 (카운트 계산용)
   const preFiltered = useMemo(() => {
@@ -1108,7 +1190,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
     if (sortBy === "priority") {
       result.sort((a: Ticket, b: Ticket) =>
-        parseInt(priorities[a.key] ?? "999") - parseInt(priorities[b.key] ?? "999")
+        parseInt(activePriorities[a.key] ?? "999") - parseInt(activePriorities[b.key] ?? "999")
       );
     } else if (sortBy === "startDate") {
       result.sort((a: Ticket, b: Ticket) => dateVal(a.startDate) - dateVal(b.startDate));
@@ -1365,13 +1447,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </svg>
               {fetching ? "Syncing…" : "Jira Sync"}
             </button>
-            <button
-              onClick={() => fetch("/api/sheet-priorities").then(r => r.json()).then(d => { if (d.priorities) setPriorities(d.priorities); setPriorityError(d.error ?? null); }).catch(() => {})}
-              title="구글 시트에서 우선순위 즉시 갱신"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors"
-            >
-              우선순위 새로고침
-            </button>
           </div>
         </div>
         {fetchError && (
@@ -1550,9 +1625,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         추가됨
                       </span>
                     )}
-                    {priorities[t.key] && (
+                    {activePriorities[t.key] && (
                       <span className="shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
-                        P{priorities[t.key]}
+                        P{activePriorities[t.key]}
                       </span>
                     )}
                     {(() => {
