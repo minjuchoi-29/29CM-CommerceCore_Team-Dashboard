@@ -11,7 +11,7 @@ export async function GET() {
   const accessToken = (session as any)?.accessToken as string | undefined;
 
   if (!accessToken) {
-    return NextResponse.json({ priorities: {}, planning: {} });
+    return NextResponse.json({ priorities: {}, planning: {}, error: "no_token" });
   }
 
   try {
@@ -21,8 +21,9 @@ export async function GET() {
     );
 
     if (!res.ok) {
-      console.error("[sheet-priorities]", await res.text());
-      return NextResponse.json({ priorities: {}, planning: {} });
+      const errText = await res.text();
+      console.error("[sheet-priorities] Sheets API error:", res.status, errText);
+      return NextResponse.json({ priorities: {}, planning: {}, error: `sheets_${res.status}` });
     }
 
     const data = await res.json();
@@ -39,6 +40,6 @@ export async function GET() {
     return NextResponse.json({ priorities, planning: {} });
   } catch (e) {
     console.error("[sheet-priorities]", e);
-    return NextResponse.json({ priorities: {}, planning: {} });
+    return NextResponse.json({ priorities: {}, planning: {}, error: "fetch_error" });
   }
 }

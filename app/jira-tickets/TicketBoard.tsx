@@ -424,6 +424,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 시트 우선순위 (key → priority 문자열)
   const [priorities, setPriorities] = useState<Record<string, string>>({});
+  const [priorityError, setPriorityError] = useState<string | null>(null);
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
   const [planningTab, setPlanningTab] = useState("진행 중");
@@ -841,18 +842,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 마운트 시 자동 로드
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
-  // 시트 우선순위 로드 (마운트 + 탭 복귀 시 갱신)
+  // 시트 우선순위 로드 (마운트 + 탭 복귀 + 30초 폴링)
   useEffect(() => {
     function fetchPriorities() {
       fetch("/api/sheet-priorities")
         .then(r => r.json())
-        .then(d => { if (d.priorities) setPriorities(d.priorities); })
+        .then(d => {
+          if (d.priorities) setPriorities(d.priorities);
+          setPriorityError(d.error ?? null);
+        })
         .catch(() => {});
     }
     fetchPriorities();
+    const interval = setInterval(fetchPriorities, 30_000);
     function onVisible() { if (document.visibilityState === "visible") fetchPriorities(); }
     document.addEventListener("visibilitychange", onVisible);
-    return () => document.removeEventListener("visibilitychange", onVisible);
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   // tickets 갱신 시 선택된 티켓도 최신 데이터로 동기화
@@ -1444,6 +1452,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${sortBy === key ? `${color} text-white` : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
               >{label}</button>
             ))}
+            <button
+              onClick={() => fetch("/api/sheet-priorities").then(r => r.json()).then(d => { if (d.priorities) setPriorities(d.priorities); setPriorityError(d.error ?? null); }).catch(() => {})}
+              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
+              title="시트 우선순위 새로고침"
+            >↻</button>
+            {priorityError && (
+              <span className="text-xs text-red-400">
+                {priorityError === "no_token" ? "재로그인 필요" : `시트 오류(${priorityError})`}
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-gray-500 w-14 shrink-0">검색</span>
