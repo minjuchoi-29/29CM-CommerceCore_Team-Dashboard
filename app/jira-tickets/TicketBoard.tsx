@@ -1369,28 +1369,43 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 과제 상태 탭 */}
-        <div className="flex gap-1.5 mb-5">
-          {([
-            { key: "전체",           label: "전체",           desc: "모든 과제",                   activeCls: "bg-gray-800 text-white",   inactiveCls: "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50" },
-            { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중",        activeCls: "bg-blue-600 text-white",   inactiveCls: "bg-white border border-blue-200 text-blue-600 hover:bg-blue-50" },
-            { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중", activeCls: "bg-amber-500 text-white",   inactiveCls: "bg-white border border-amber-200 text-amber-600 hover:bg-amber-50" },
-            { key: "완료",           label: "완료",           desc: "론치·배포 완료",               activeCls: "bg-green-600 text-white",  inactiveCls: "bg-white border border-green-200 text-green-600 hover:bg-green-50" },
-          ] as const).map(({ key, label, desc, activeCls, inactiveCls }) => {
-            const active = planningTab === key;
-            return (
-              <button
-                key={key}
-                onClick={() => setPlanningTab(key)}
-                title={desc}
-                className={`flex-1 py-2.5 px-3 rounded-xl text-sm font-semibold transition-all shadow-sm ${active ? activeCls : inactiveCls}`}
-              >
-                {label}
-                <span className={`ml-1.5 text-xs font-normal ${active ? "opacity-80" : "opacity-60"}`}>
-                  ({planningCounts[key] ?? 0})
-                </span>
-              </button>
-            );
-          })}
+        <div className="flex items-center gap-2 mb-5">
+          <div className="flex flex-1 gap-1.5">
+            {([
+              { key: "전체",           label: "전체",           desc: "모든 과제",                   activeCls: "bg-gray-800 text-white",   inactiveCls: "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50" },
+              { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중",        activeCls: "bg-blue-600 text-white",   inactiveCls: "bg-white border border-blue-200 text-blue-600 hover:bg-blue-50" },
+              { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중", activeCls: "bg-amber-500 text-white",   inactiveCls: "bg-white border border-amber-200 text-amber-600 hover:bg-amber-50" },
+              { key: "완료",           label: "완료",           desc: "론치·배포 완료",               activeCls: "bg-green-600 text-white",  inactiveCls: "bg-white border border-green-200 text-green-600 hover:bg-green-50" },
+            ] as const).map(({ key, label, desc, activeCls, inactiveCls }) => {
+              const active = planningTab === key;
+              return (
+                <button
+                  key={key}
+                  onClick={() => setPlanningTab(key)}
+                  title={desc}
+                  className={`flex-1 py-2.5 px-3 rounded-xl text-sm font-semibold transition-all shadow-sm ${active ? activeCls : inactiveCls}`}
+                >
+                  {label}
+                  <span className={`ml-1.5 text-xs font-normal ${active ? "opacity-80" : "opacity-60"}`}>
+                    ({planningCounts[key] ?? 0})
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {priorityError && (
+              <span className="text-xs text-red-400">
+                {priorityError === "no_token" ? "재로그인 필요" : `시트 오류(${priorityError})`}
+              </span>
+            )}
+            <button
+              onClick={() => fetch("/api/sheet-priorities").then(r => r.json()).then(d => { if (d.priorities) setPriorities(d.priorities); setPriorityError(d.error ?? null); }).catch(() => {})}
+              className="px-3 py-2 rounded-xl text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 transition-colors shadow-sm whitespace-nowrap"
+            >
+              우선순위 새로고침
+            </button>
+          </div>
         </div>
 
         {/* 요약 카드 */}
@@ -1452,16 +1467,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${sortBy === key ? `${color} text-white` : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
               >{label}</button>
             ))}
-            <button
-              onClick={() => fetch("/api/sheet-priorities").then(r => r.json()).then(d => { if (d.priorities) setPriorities(d.priorities); setPriorityError(d.error ?? null); }).catch(() => {})}
-              className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 transition-colors"
-              title="시트 우선순위 새로고침"
-            >↻</button>
-            {priorityError && (
-              <span className="text-xs text-red-400">
-                {priorityError === "no_token" ? "재로그인 필요" : `시트 오류(${priorityError})`}
-              </span>
-            )}
           </div>
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-gray-500 w-14 shrink-0">검색</span>
