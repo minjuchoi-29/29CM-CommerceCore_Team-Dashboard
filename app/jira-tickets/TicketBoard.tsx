@@ -656,13 +656,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         );
       } catch {}
 
-      // 시트 우선순위 갱신 + 완료 전환 티켓 재정렬
+      // 시트 우선순위 갱신 + 완료 전환 재정렬 + 누락 티켓 시트 추가
       try {
         const priRes = await fetch("/api/sheet-priorities");
         const priData = await priRes.json();
         const rawPri: Record<string, string> = priData.priorities ?? {};
+        const sheetKeySet = new Set<string>(priData.sheetKeys ?? []);
         setPriorityError(priData.error ?? null);
+
         const allNewTickets = [...(data.tickets as Ticket[]), ...freshCustom];
+
+        // 대시보드에 있지만 시트 A열에 없는 티켓 → 추가
+        const missingKeys = allNewTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
+        if (missingKeys.length > 0) {
+          fetch("/api/sheet-append", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ keys: missingKeys }),
+          }).catch(() => {});
+        }
+
+        // 우선순위 재정렬
         const rebalanced = computeRebalance(rawPri, allNewTickets);
         if (rebalanced) {
           setPriorities(rebalanced.newState);

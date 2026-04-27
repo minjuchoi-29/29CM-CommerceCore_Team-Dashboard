@@ -31,13 +31,17 @@ export async function GET() {
 
     // 첫 행은 헤더(key, priority) — 건너뜀
     const priorities: Record<string, string> = {};
+    const sheetKeys: string[] = [];
     for (let i = 1; i < rows.length; i++) {
       const key = rows[i][0]?.trim();
       const priority = rows[i][1]?.trim();
-      if (key && priority) priorities[key] = priority;
+      if (key) {
+        sheetKeys.push(key);
+        if (priority) priorities[key] = priority;
+      }
     }
 
-    return NextResponse.json({ priorities, planning: {} });
+    return NextResponse.json({ priorities, sheetKeys, planning: {} });
   } catch (e) {
     console.error("[sheet-priorities]", e);
     return NextResponse.json({ priorities: {}, planning: {}, error: "fetch_error" });
