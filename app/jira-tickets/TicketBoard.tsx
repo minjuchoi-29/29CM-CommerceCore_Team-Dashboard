@@ -692,6 +692,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         fetch("https://script.google.com/a/macros/29cm.co.kr/s/AKfycbxksQwQg3U1CzyLn4ihgUzpI-aWJAF9QVABefVWKkYC-ykdvXr7o3pWQ2lEuKmwCcs/exec", {
           method: "POST",
           mode: "no-cors",
+          credentials: "include",
           headers: { "Content-Type": "text/plain" },
           body: JSON.stringify({ keys: [trimmed] }),
         }).catch(() => {});
@@ -805,6 +806,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       fetch("https://script.google.com/a/macros/29cm.co.kr/s/AKfycbxksQwQg3U1CzyLn4ihgUzpI-aWJAF9QVABefVWKkYC-ykdvXr7o3pWQ2lEuKmwCcs/exec", {
         method: "POST",
         mode: "no-cors",
+        credentials: "include",
         headers: { "Content-Type": "text/plain" },
         body: JSON.stringify({ keys: fetched.map(t => t.key) }),
       }).catch(() => {});
