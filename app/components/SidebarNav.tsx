@@ -20,7 +20,23 @@ export default function SidebarNav({ user, logoutAction }: Props) {
     return () => window.removeEventListener("detail-panel", handler);
   }, []);
 
-  if (!visible) return null;
+  if (!visible) {
+    return (
+      <aside className="w-10 min-h-screen bg-white border-r border-gray-200 flex flex-col items-center shrink-0">
+        {user && (
+          <form action={logoutAction} className="mt-auto pb-4">
+            <button
+              type="submit"
+              title="로그아웃"
+              className="w-8 h-8 flex items-center justify-center rounded-lg text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-colors text-xs"
+            >
+              ↩
+            </button>
+          </form>
+        )}
+      </aside>
+    );
+  }
 
   return (
     <aside className="w-52 min-h-screen bg-white border-r border-gray-200 flex flex-col shrink-0">
