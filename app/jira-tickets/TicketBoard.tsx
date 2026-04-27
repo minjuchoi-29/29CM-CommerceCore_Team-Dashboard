@@ -841,12 +841,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 마운트 시 자동 로드
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
-  // 시트 우선순위 로드
+  // 시트 우선순위 로드 (마운트 + 탭 복귀 시 갱신)
   useEffect(() => {
-    fetch("/api/sheet-priorities")
-      .then(r => r.json())
-      .then(d => { if (d.priorities) setPriorities(d.priorities); })
-      .catch(() => {});
+    function fetchPriorities() {
+      fetch("/api/sheet-priorities")
+        .then(r => r.json())
+        .then(d => { if (d.priorities) setPriorities(d.priorities); })
+        .catch(() => {});
+    }
+    fetchPriorities();
+    function onVisible() { if (document.visibilityState === "visible") fetchPriorities(); }
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
   }, []);
 
   // tickets 갱신 시 선택된 티켓도 최신 데이터로 동기화
