@@ -449,6 +449,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [statuses, setStatuses]     = useState<Set<string>>(new Set());
   const [levels, setLevels]         = useState<Set<string>>(new Set());
   const [domainFilter, setDomainFilter] = useState<Set<string>>(new Set());
+  const [targetFilter, setTargetFilter] = useState<Set<string>>(new Set());
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
   const [search, setSearch]         = useState("");
 
@@ -1172,6 +1173,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return [...set].sort((a, b) => a === "기타" ? 1 : b === "기타" ? -1 : a.localeCompare(b, "ko"));
   }, [tickets]);
 
+  const allTargets = useMemo(() => {
+    const set = new Set(tickets.map((t) => extractTarget(t.summary)).filter(Boolean) as string[]);
+    return [...set].sort();
+  }, [tickets]);
+
   const allAssignees = useMemo(() => {
     const set = new Set(tickets.map((t) => t.assignee).filter(Boolean));
     return [...set].sort((a, b) => a.localeCompare(b, "ko"));
@@ -1217,6 +1223,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
       if (domainFilter.size > 0 && !domainFilter.has(extractDomain(t.summary))) return false;
+      if (targetFilter.size > 0 && !targetFilter.has(extractTarget(t.summary) ?? "")) return false;
       if (projects.size > 0 && !projects.has(t.project)) return false;
       if (statuses.size > 0 && !Array.from(statuses).some((s) => matchStatus(t.status, s))) return false;
       if (search) {
@@ -1225,7 +1232,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       return true;
     });
-  }, [tickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const done       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
   const inProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
@@ -1563,7 +1570,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             { label: "프로젝트", items: ALL_PROJECTS, state: projects,    setState: setProjects,     activeColor: "bg-gray-800 text-white" },
             { label: "상태",    items: ALL_STATUSES, state: statuses,     setState: setStatuses,     activeColor: "bg-blue-600 text-white" },
             { label: "담당자",  items: allAssignees,  state: assigneeFilter, setState: setAssigneeFilter, activeColor: "bg-pink-600 text-white" },
-            { label: "도메인",  items: allDomains,   state: domainFilter, setState: setDomainFilter, activeColor: "bg-teal-600 text-white" },
+            { label: "도메인",  items: allDomains,   state: domainFilter,   setState: setDomainFilter,   activeColor: "bg-teal-600 text-white" },
+            { label: "대상",    items: allTargets,   state: targetFilter,   setState: setTargetFilter,   activeColor: "bg-violet-600 text-white" },
           ].map(({ label, items, state, setState, activeColor }) => (
             <div key={label} className="flex flex-wrap items-center gap-1.5">
               <span className="text-xs text-gray-500 w-14 shrink-0">{label}</span>
@@ -1703,11 +1711,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         </span>
                       );
                     })()}
-                    {extractTarget(t.summary) && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-500 border border-violet-200 shrink-0">
-                        {extractTarget(t.summary)}
-                      </span>
-                    )}
                     <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
                     <span className="w-20 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>

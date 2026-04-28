@@ -383,11 +383,6 @@ export default function MonthlyProgressPage() {
                               </span>
                             </div>
                             <p className="text-sm text-gray-800 leading-snug line-clamp-2" title={t.summary}>
-                              {extractTarget(t.summary) && (
-                                <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-500 border border-violet-200 align-middle">
-                                  {extractTarget(t.summary)}
-                                </span>
-                              )}
                               {stripDomain(t.summary)}
                             </p>
                             <div className="flex items-center gap-2 mt-1">
