@@ -44,13 +44,23 @@ type Ticket = {
   storyPoints?: number;
 };
 
-function extractDomain(summary: string): string {
+const TARGET_LABELS = new Set(["29CM", "29Connect"]);
+
+function extractTarget(summary: string): string | null {
   const m = summary.match(/^\[([^\]]+)\]/);
+  return m && TARGET_LABELS.has(m[1]) ? m[1] : null;
+}
+
+function extractDomain(summary: string): string {
+  const s = summary.replace(/^\[(29CM|29Connect)\]\s*/, "");
+  const m = s.match(/^\[([^\]]+)\]/);
   return m ? m[1] : "기타";
 }
 
 function stripDomain(summary: string): string {
-  return summary.replace(/^\[[^\]]+\]\s*/, "");
+  return summary
+    .replace(/^\[(29CM|29Connect)\]\s*/, "")
+    .replace(/^\[[^\]]+\]\s*/, "");
 }
 
 function isCompleted(status: string): boolean {
@@ -373,6 +383,11 @@ export default function MonthlyProgressPage() {
                               </span>
                             </div>
                             <p className="text-sm text-gray-800 leading-snug line-clamp-2" title={t.summary}>
+                              {extractTarget(t.summary) && (
+                                <span className="inline-block mr-1.5 px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-500 border border-violet-200 align-middle">
+                                  {extractTarget(t.summary)}
+                                </span>
+                              )}
                               {stripDomain(t.summary)}
                             </p>
                             <div className="flex items-center gap-2 mt-1">

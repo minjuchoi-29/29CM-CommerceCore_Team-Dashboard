@@ -118,8 +118,16 @@ const ALL_PROJECTS = ["TM", "CMALL", "M29CMCCF", "EF"];
 const ALL_STATUSES = ["론치완료/완료", "개발중", "QA중", "SUGGESTED", "HOLD/Postponed", "기타"];
 const ALL_LEVELS   = ["Initiative", "Epic", "Dev"];
 
-function extractDomain(summary: string): string {
+const TARGET_LABELS = new Set(["29CM", "29Connect"]);
+
+function extractTarget(summary: string): string | null {
   const m = summary.match(/^\[([^\]]+)\]/);
+  return m && TARGET_LABELS.has(m[1]) ? m[1] : null;
+}
+
+function extractDomain(summary: string): string {
+  const s = summary.replace(/^\[(29CM|29Connect)\]\s*/, "");
+  const m = s.match(/^\[([^\]]+)\]/);
   return m ? m[1] : "기타";
 }
 
@@ -1695,6 +1703,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         </span>
                       );
                     })()}
+                    {extractTarget(t.summary) && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-violet-50 text-violet-500 border border-violet-200 shrink-0">
+                        {extractTarget(t.summary)}
+                      </span>
+                    )}
                     <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
                     <span className="w-20 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
