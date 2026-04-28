@@ -51,6 +51,12 @@ export default function SidebarNav({ user, logoutAction }: Props) {
         >
           전체 과제 보기
         </Link>
+        <Link
+          href="/monthly"
+          className="px-3 py-2 rounded-lg text-sm font-medium text-gray-600 hover:bg-gray-100 transition-colors"
+        >
+          월별 진행 현황
+        </Link>
       </nav>
 
       {user && (
