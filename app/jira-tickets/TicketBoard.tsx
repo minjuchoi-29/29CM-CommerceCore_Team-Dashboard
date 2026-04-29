@@ -2131,11 +2131,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     {(() => {
                       const cur = getCurrentMemo(selected.key)!;
                       const lines = cur.text.split("\n");
-                      const needsCollapse = lines.length > 3 || cur.text.length > 180;
+                      const needsCollapse = lines.length > 3;
+                      const displayText = needsCollapse && memoCollapsed
+                        ? lines.slice(0, 3).join("\n")
+                        : cur.text;
                       return (
                         <div className="overflow-visible">
-                          <div className={`text-sm text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1 ${needsCollapse && memoCollapsed ? "line-clamp-3" : ""}`}>
-                            {cur.text}
+                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1">
+                            {displayText}
                           </div>
                           {needsCollapse && (
                             <button
