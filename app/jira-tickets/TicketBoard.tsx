@@ -564,7 +564,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
       const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
       // localStorage에서 읽은 것도 병합 (KV에 없는 경우 fallback)
-      for (const t of localExtra) if (!extraByKey.has(t.key)) extraByKey.set(t.key, t);
+      for (const t of localExtra) if (!extraByKey.has(t.key) && !jiraKeys.has(t.key)) extraByKey.set(t.key, t);
       return [...data.tickets, ...extraByKey.values()];
     });
     setSyncedAt(at);
@@ -603,7 +603,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             const jiraKeys = new Set(cached.tickets.map((t: Ticket) => t.key));
             const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
             const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
-            for (const t of localExtra) if (!extraByKey.has(t.key)) extraByKey.set(t.key, t);
+            for (const t of localExtra) if (!extraByKey.has(t.key) && !jiraKeys.has(t.key)) extraByKey.set(t.key, t);
             return [...cached.tickets, ...extraByKey.values()];
           });
           setSyncedAt(new Date(cached.fetchedAt));
@@ -1253,19 +1253,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
   }
 
+  const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
+  const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료"]);
+
+  // key 기준 중복 제거 (배치 + 커스텀 동시 로드 시 race condition 방어)
+  const dedupedTickets = useMemo(() => {
+    const seen = new Set<string>();
+    return tickets.filter(t => {
+      if (seen.has(t.key)) return false;
+      seen.add(t.key);
+      return true;
+    });
+  }, [tickets]);
+
   const planningCounts = useMemo(() => {
-    const doneStatuses = ["론치완료", "완료", "배포완료"];
-    const counts: Record<string, number> = { "전체": tickets.length, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0 };
-    for (const t of tickets) {
+    const counts: Record<string, number> = { "전체": dedupedTickets.length, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0 };
+    for (const t of dedupedTickets) {
       const p = getPlanningVal(planning[t.key]);
       const bothDone = p.design === "완료" && p.dev === "완료";
-      const isTicketDone = doneStatuses.includes(t.status);
+      const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
+      const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
       if (isTicketDone) { counts["완료"]++; continue; }
-      if (bothDone) counts["진행 중"]++;
+      if (bothDone || isJiraActive) counts["진행 중"]++;
       else counts["플래닝 대기·검토"]++;
     }
     return counts;
-  }, [tickets, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dedupedTickets, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const allDomains = useMemo(() => {
     const set = new Set(tickets.map((t) => extractDomain(t.summary)));
@@ -1298,7 +1311,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // statusTab 제외한 필터 (카운트 계산용)
   const preFiltered = useMemo(() => {
-    return tickets.filter((t: Ticket) => {
+    return dedupedTickets.filter((t: Ticket) => {
       if (quarters.size > 0) {
         const isQ2   = Q2_KEYS.has(t.key);
         const isQ1Q2 = Q1Q2_KEYS.has(t.key);
@@ -1314,9 +1327,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       if (planningTab !== "전체") {
         const p = getPlanningVal(planning[t.key]);
         const bothDone = p.design === "완료" && p.dev === "완료";
-        const isTicketDone = ["론치완료", "완료", "배포완료"].includes(t.status);
-        if (planningTab === "진행 중" && !(bothDone && !isTicketDone)) return false;
-        if (planningTab === "플래닝 대기·검토" && bothDone) return false;
+        const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
+        const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
+        if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone)) return false;
+        if (planningTab === "플래닝 대기·검토" && (bothDone || isJiraActive)) return false;
         if (planningTab === "완료" && !isTicketDone) return false;
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
@@ -1331,7 +1345,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       return true;
     });
-  }, [tickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const done       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
   const inProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
@@ -1883,6 +1897,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const isSelected = selected?.key === t.key;
               const isNew = newlyAddedKeys.has(t.key);
               const isDuplicate = duplicateKeys.has(t.key);
+              const tp = getPlanningVal(planning[t.key]);
+              const planningComplete = tp.design === "완료" && tp.dev === "완료";
+              const ticketDone = ["론치완료", "완료", "배포완료"].includes(t.status);
+              const showAgenda = !planningComplete && !ticketDone;
               return (
                 <div
                   key={t.key}
@@ -1894,13 +1912,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="flex items-center px-4 py-3 cursor-pointer"
                     onClick={() => handleSelect(t)}
                   >
-                    <button
-                      onClick={(e) => { e.stopPropagation(); toggleAgenda(t.key); }}
-                      title={agenda.has(t.key) ? "아젠다에서 제거" : "아젠다에 추가"}
-                      className={`w-6 shrink-0 flex items-center justify-center text-base transition-all rounded ${agenda.has(t.key) ? "opacity-100" : "opacity-20 hover:opacity-60"}`}
-                    >
-                      {agenda.has(t.key) ? "🗓" : "🗓"}
-                    </button>
+                    {showAgenda ? (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleAgenda(t.key); }}
+                        title={agenda.has(t.key) ? "아젠다에서 제거" : "아젠다에 추가"}
+                        className={`w-6 shrink-0 flex items-center justify-center text-base transition-all rounded ${agenda.has(t.key) ? "opacity-100" : "opacity-20 hover:opacity-60"}`}
+                      >
+                        🗓
+                      </button>
+                    ) : (
+                      <span className="w-6 shrink-0" />
+                    )}
                     <span className="w-8 shrink-0 text-center text-xs text-gray-300 font-mono">{idx + 1}</span>
                     <a
                       href={`${JIRA_BASE}${t.key}`}
