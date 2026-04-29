@@ -40,7 +40,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const key = searchParams.get("key")?.trim().toUpperCase() ?? "";
 
-  if (!key || !/^[A-Z]+-\d+$/.test(key)) {
+  if (!key || !/^[A-Z][A-Z0-9]*-\d+$/.test(key)) {
     return NextResponse.json(
       { error: "유효하지 않은 티켓 키입니다. 예: TM-1234" },
       { status: 400 }

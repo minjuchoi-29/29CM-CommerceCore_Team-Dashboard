@@ -115,7 +115,7 @@ const Q2_KEYS = new Set([
 ]);
 
 const ALL_QUARTERS = ["Y26Q1", "Q1+Q2", "Y26Q2"];
-const ALL_PROJECTS = ["TM", "CMALL", "M29CMCCF", "EF"];
+const ALL_PROJECTS = ["TM", "CMALL", "M29CMCCF", "M29COMCO", "M29CMOD", "EF"];
 const ALL_STATUSES = ["론치완료/완료", "개발중", "QA중", "SUGGESTED", "HOLD/Postponed", "기타"];
 const ALL_LEVELS   = ["Initiative", "Epic", "Dev"];
 
@@ -754,7 +754,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   async function addTicket(key: string) {
     const trimmed = key.trim().toUpperCase();
     if (!trimmed) return;
-    if (!/^[A-Z]+-\d+$/.test(trimmed)) {
+    if (!/^[A-Z][A-Z0-9]*-\d+$/.test(trimmed)) {
       setAddKeyError("올바른 형식이 아닙니다. 예: TM-1234");
       return;
     }
@@ -859,7 +859,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (keys.length === 0) return;
     if (keys.length === 1) return addTicket(keys[0]);
 
-    const invalid = keys.filter(k => !/^[A-Z]+-\d+$/.test(k));
+    const invalid = keys.filter(k => !/^[A-Z][A-Z0-9]*-\d+$/.test(k));
     if (invalid.length > 0) {
       setAddKeyError(`형식 오류: ${invalid.join(", ")} (예: TM-1234)`);
       return;
@@ -1482,7 +1482,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   async function addEtr(ticketKey: string, etrKey: string) {
     const trimmed = etrKey.trim().toUpperCase();
     if (!trimmed) return;
-    if (!/^[A-Z]+-\d+$/.test(trimmed)) { setEtrError("올바른 형식이 아닙니다. 예: ETR-123, OPS-456"); return; }
+    if (!/^[A-Z][A-Z0-9]*-\d+$/.test(trimmed)) { setEtrError("올바른 형식이 아닙니다. 예: ETR-123, OPS-456"); return; }
     const current = etrMap[ticketKey] ?? { source: "ETR" as const };
     const prevTickets = current.etrTickets ?? [];
     if (prevTickets.some(t => t.key === trimmed)) { setEtrError("이미 연결된 티켓입니다."); return; }
