@@ -32,6 +32,9 @@ const ROLE_COLOR: Record<string, string> = {
   "FE-DFE":  "bg-cyan-400",
   "Mobile":  "bg-teal-400",
   "QA":      "bg-emerald-500",
+  "Kick-Off": "bg-indigo-600",
+  "Release":  "bg-orange-500",
+  "Launch":   "bg-green-600",
   // legacy keys (backward compat)
   "개발BE":  "bg-blue-500",
   "개발FE":  "bg-cyan-500",
@@ -43,6 +46,8 @@ type RoleSchedule = {
   start: string;
   end: string;
   status: "완료" | "진행중" | "예정";
+  detail?: string;
+  detailPerson?: string;
 };
 
 type MemoEntry = {
@@ -276,7 +281,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           <div key={`${r.role}-${r.person}`} className="mb-2.5">
             <div className="flex items-center mb-0.5">
               <div className="w-36 shrink-0 flex items-center gap-1.5">
-                <span className="text-xs font-medium text-gray-600 w-14 shrink-0">{r.role}</span>
+                <span className={`text-xs font-medium w-14 shrink-0 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-600 font-semibold" : "text-gray-600"}`}>{r.role}</span>
                 <span className="text-xs text-gray-500 truncate">{r.person}</span>
               </div>
               <div className="flex-1 relative h-5 bg-gray-100 rounded-sm overflow-hidden">
@@ -318,6 +323,17 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                 </span>
               )}
             </div>
+            {r.detail && (
+              <div className="flex items-center mt-0.5">
+                <div className="w-36 shrink-0 flex items-center gap-1 pl-1">
+                  <span className="text-gray-300 text-xs">└</span>
+                  <span className="text-xs text-gray-500 truncate">{r.detail}</span>
+                  {r.detailPerson && (
+                    <span className="text-xs text-gray-400 truncate">· {r.detailPerson}</span>
+                  )}
+                </div>
+              </div>
+            )}
             {r.start && r.end && (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
@@ -344,10 +360,12 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
   );
 }
 
+const MILESTONE_ROLES = ["Kick-Off", "Release", "Launch"];
 const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "BE-메가존", "FE-CFE", "FE-DFE", "FE-Sotatek", "Mobile", "QA"];
+const ALL_PRESET_ROLES = [...MILESTONE_ROLES, ...PRESET_ROLES];
 
 function isCustomRole(role: string) {
-  return !PRESET_ROLES.includes(role);
+  return !ALL_PRESET_ROLES.includes(role);
 }
 const STATUS_OPTIONS: RoleSchedule["status"][] = ["예정", "진행중", "완료"];
 
@@ -489,6 +507,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [ticketNotes, setTicketNotes]     = useState<Record<string, PlanningNote[]>>({});
   const [ticketNoteInput, setTicketNoteInput] = useState("");
   const [planningOpen, setPlanningOpen] = useState(true);
+  const [agenda, setAgenda] = useState<Set<string>>(new Set());
+  const [agendaView, setAgendaView] = useState(false);
 
   // 요구사항 출처 (key → TicketRequestInfo)
   const [etrMap, setEtrMap]       = useState<Record<string, TicketRequestInfo>>({});
@@ -1067,7 +1087,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr")
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -1075,6 +1095,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (data["cc-memos"])      setMemos(data["cc-memos"]);
         if (data["cc-memos-v2"])   setMemoHistory(data["cc-memos-v2"]);
         if (data["cc-etr"])        setEtrMap(data["cc-etr"]);
+        if (data["cc-agenda"])     setAgenda(new Set(data["cc-agenda"] as string[]));
         if (data["cc-planning-notes"]) {
           setPlanningNotes(data["cc-planning-notes"]);
           try { localStorage.setItem("cc-planning-notes", JSON.stringify(data["cc-planning-notes"])); } catch {}
@@ -1451,6 +1472,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }).catch(() => {});
   }
 
+  function saveAgenda(updated: Set<string>) {
+    setAgenda(updated);
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-agenda", value: [...updated] }),
+    }).catch(() => {});
+  }
+  function toggleAgenda(key: string) {
+    const updated = new Set(agenda);
+    if (updated.has(key)) updated.delete(key);
+    else updated.add(key);
+    saveAgenda(updated);
+  }
+
   function saveEtr(updated: Record<string, TicketRequestInfo>) {
     setEtrMap(updated);
     try { localStorage.setItem("cc-etr", JSON.stringify(updated)); } catch {}
@@ -1619,6 +1655,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           })}
         </div>
 
+        {/* 아젠다 미팅 서브 뷰 토글 */}
+        {agenda.size > 0 && (
+          <div className="flex items-center gap-2 mb-4 p-2.5 bg-orange-50 border border-orange-200 rounded-xl">
+            <span className="text-xs text-orange-600 font-medium mr-1">미팅 모드:</span>
+            <button
+              onClick={() => setAgendaView(false)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${!agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white border border-orange-200 text-orange-600 hover:bg-orange-50"}`}
+            >
+              플래닝 현황
+            </button>
+            <button
+              onClick={() => setAgendaView(true)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white border border-orange-200 text-orange-600 hover:bg-orange-50"}`}
+            >
+              🗓 아젠다 미팅
+              <span className="ml-1 opacity-80">({agenda.size})</span>
+            </button>
+            {agendaView && (
+              <button
+                onClick={() => { saveAgenda(new Set()); setAgendaView(false); }}
+                className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-red-200 text-red-500 hover:bg-red-50 transition-all"
+              >
+                미팅 종료 ✕
+              </button>
+            )}
+          </div>
+        )}
+
         {/* 요약 카드 */}
         <div className="grid grid-cols-4 gap-3 mb-5">
           {([
@@ -1717,10 +1781,89 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
         </div>
 
+        {/* 아젠다 미팅 뷰 */}
+        {agendaView && (
+          <div className="bg-white rounded-xl border border-orange-200 overflow-hidden mb-4">
+            <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex items-center gap-2">
+              <span className="text-sm font-bold text-orange-700">🗓 아젠다 미팅</span>
+              <span className="text-xs text-orange-500">— 논의할 티켓을 순서대로 확인하고 플래닝 상태를 업데이트하세요</span>
+            </div>
+            {tickets.filter(t => agenda.has(t.key)).length === 0 ? (
+              <div className="py-10 text-center text-sm text-gray-400">아젠다에 등록된 티켓이 없습니다.</div>
+            ) : (
+              tickets.filter(t => agenda.has(t.key)).map((t, idx) => {
+                const p = getPlanningVal(planning[t.key]);
+                const isDiscussed = p.design === "완료" && p.dev === "완료";
+                return (
+                  <div key={t.key} className={`border-b border-orange-100 last:border-0 transition-colors ${isDiscussed ? "bg-green-50" : "bg-white"}`}>
+                    <div className="flex items-start gap-3 px-4 py-3">
+                      <span className="shrink-0 w-5 text-center text-xs text-orange-400 font-mono mt-1">{idx + 1}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap mb-2">
+                          <a
+                            href={`${JIRA_BASE}${t.key}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono text-xs text-blue-500 hover:underline shrink-0"
+                          >
+                            {t.key}
+                          </a>
+                          <span className="text-sm font-medium text-gray-800 truncate">{t.summary}</span>
+                          {isDiscussed && (
+                            <span className="shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700 border border-green-200">논의 완료</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <span className="text-xs text-gray-500">디자인</span>
+                          <div className="flex gap-1">
+                            {TRACK_STATES.map(s => (
+                              <button
+                                key={s}
+                                onClick={() => savePlanning(t.key, "design", s)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${p.design === s
+                                  ? s === "완료" ? "bg-green-500 text-white border-green-500" : s === "검토중" ? "bg-violet-500 text-white border-violet-500" : "bg-gray-500 text-white border-gray-500"
+                                  : "bg-white text-gray-400 border-gray-200 hover:border-gray-400"}`}
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                          <span className="text-xs text-gray-500 ml-2">개발</span>
+                          <div className="flex gap-1">
+                            {TRACK_STATES.map(s => (
+                              <button
+                                key={s}
+                                onClick={() => savePlanning(t.key, "dev", s)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${p.dev === s
+                                  ? s === "완료" ? "bg-green-500 text-white border-green-500" : s === "검토중" ? "bg-blue-500 text-white border-blue-500" : "bg-gray-500 text-white border-gray-500"
+                                  : "bg-white text-gray-400 border-gray-200 hover:border-gray-400"}`}
+                              >
+                                {s}
+                              </button>
+                            ))}
+                          </div>
+                          <button
+                            onClick={() => toggleAgenda(t.key)}
+                            className="ml-auto shrink-0 text-xs text-gray-300 hover:text-orange-400 transition-colors"
+                            title="아젠다에서 제거"
+                          >
+                            ✕ 제거
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+
         {/* 티켓 목록 */}
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           {/* 헤더 */}
           <div className="flex items-center px-4 py-2.5 bg-gray-50 border-b border-gray-200 text-xs text-gray-600 font-semibold">
+            <span className="w-6 shrink-0 text-center" title="아젠다 체크">🗓</span>
             <span className="w-8 shrink-0 text-center">#</span>
             <span className="w-32 shrink-0">티켓</span>
             <span className="flex-1 min-w-0">제목</span>
@@ -1751,6 +1894,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="flex items-center px-4 py-3 cursor-pointer"
                     onClick={() => handleSelect(t)}
                   >
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleAgenda(t.key); }}
+                      title={agenda.has(t.key) ? "아젠다에서 제거" : "아젠다에 추가"}
+                      className={`w-6 shrink-0 flex items-center justify-center text-base transition-all rounded ${agenda.has(t.key) ? "opacity-100" : "opacity-20 hover:opacity-60"}`}
+                    >
+                      {agenda.has(t.key) ? "🗓" : "🗓"}
+                    </button>
                     <span className="w-8 shrink-0 text-center text-xs text-gray-300 font-mono">{idx + 1}</span>
                     <a
                       href={`${JIRA_BASE}${t.key}`}
@@ -2398,15 +2548,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             value={custom ? "직접입력" : row.role}
                             onChange={(e) => {
                               setEditError(null);
-                              if (e.target.value === "직접입력") updateRow(i, "role", "");
-                              else updateRow(i, "role", e.target.value);
+                              if (e.target.value === "직접입력") {
+                                updateRow(i, "role", "");
+                              } else {
+                                updateRow(i, "role", e.target.value);
+                              }
                             }}
                             className={`text-xs text-gray-900 border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 bg-white shrink-0 w-24`}
                           >
-                            {PRESET_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                            <optgroup label="마일스톤">
+                              {MILESTONE_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                            </optgroup>
+                            <optgroup label="팀 작업">
+                              {PRESET_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
+                            </optgroup>
                             <option value="직접입력">직접입력</option>
                           </select>
-                          {/* 직접입력 시: 작업명만 입력 */}
+                          {/* 직접입력 시: 작업명 입력 */}
                           {custom && (
                             <input
                               value={row.role}
@@ -2434,6 +2592,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           <button onClick={() => { setEditError(null); setEditRows(prev => prev.filter((_, idx) => idx !== i)); }}
                             className="text-gray-300 hover:text-red-400 text-base leading-none shrink-0">×</button>
                         </div>
+                        {/* 상세 작업 (프리셋 선택 시에만 표시) */}
+                        {!custom && (
+                          <div className="flex items-center gap-1.5 pl-1 border-l-2 border-gray-200">
+                            <span className="text-gray-300 text-xs shrink-0">└</span>
+                            <input
+                              value={row.detail ?? ""}
+                              onChange={(e) => updateRow(i, "detail", e.target.value)}
+                              placeholder="상세 작업명 (선택)"
+                              className="text-xs text-gray-900 border border-gray-200 rounded px-1.5 py-1 flex-1 min-w-0 placeholder:text-gray-400 bg-white"
+                            />
+                            <input
+                              value={row.detailPerson ?? ""}
+                              onChange={(e) => updateRow(i, "detailPerson", e.target.value)}
+                              placeholder="담당자 (선택)"
+                              className="text-xs text-gray-900 border border-gray-200 rounded px-1.5 py-1 w-20 shrink-0 placeholder:text-gray-400 bg-white"
+                            />
+                          </div>
+                        )}
                         <div className="flex items-center gap-1.5">
                           <span className="text-xs text-gray-500 w-6 shrink-0">시작</span>
                           <input
