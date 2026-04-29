@@ -464,6 +464,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [memos, setMemos]           = useState<Record<string, MemoEntry | string>>({});
   const [memoHistory, setMemoHistory] = useState<Record<string, MemoVersion[]>>({});
   const [memoEditMode, setMemoEditMode] = useState(false);
+  const [memoCollapsed, setMemoCollapsed] = useState(true);
   const [memoText, setMemoText]     = useState("");
   const [memoHistoryOpen, setMemoHistoryOpen] = useState(false);
 
@@ -1491,6 +1492,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setSelected(isSame ? null : t);
     setEditMode(false);
     setMemoEditMode(false);
+    setMemoCollapsed(true);
     setMemoHistoryOpen(false);
     setRegenError(null);
     setNoteInput("");
@@ -2125,14 +2127,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
                 ) : getCurrentMemo(selected.key) ? (
                   <>
-                    {/* 현재 버전 — overflow-visible 보장 */}
+                    {/* 현재 버전 */}
                     {(() => {
                       const cur = getCurrentMemo(selected.key)!;
+                      const lines = cur.text.split("\n");
+                      const needsCollapse = lines.length > 3 || cur.text.length > 180;
                       return (
                         <div className="overflow-visible">
-                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1.5 overflow-visible">
+                          <div className={`text-sm text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1 ${needsCollapse && memoCollapsed ? "line-clamp-3" : ""}`}>
                             {cur.text}
                           </div>
+                          {needsCollapse && (
+                            <button
+                              onClick={() => setMemoCollapsed(c => !c)}
+                              className="text-xs text-indigo-400 hover:text-indigo-600 mb-1.5 transition-colors"
+                            >
+                              {memoCollapsed ? "더 보기 ▾" : "접기 ▴"}
+                            </button>
+                          )}
                           <div className="flex items-center justify-between">
                             <span className="text-xs text-gray-400 flex items-center gap-1">
                               {cur.isAI && <span className="px-1 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">AI</span>}
