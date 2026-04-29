@@ -17,6 +17,13 @@ function extractUrl(val: unknown): string | undefined {
   }
   return undefined;
 }
+
+/** customfield_10067 (요청부문 multiselect) 값 배열을 문자열로 변환 */
+function extractMultiSelect(val: unknown): string | undefined {
+  if (!Array.isArray(val) || val.length === 0) return undefined;
+  const values = (val as Array<Record<string, unknown>>).map(v => v.value).filter(Boolean);
+  return values.length > 0 ? values.join(", ") : undefined;
+}
 const FETCH_TIMEOUT_MS = 15_000;
 
 async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
@@ -57,9 +64,10 @@ export async function GET(request: Request) {
     "priority", "parent",
     "customfield_10015", // Start date
     "customfield_10036", // Story Points
+    "customfield_10067", // 요청부문 (multiselect)
     "customfield_10070", // 2-Pager/PRD Link
     "customfield_10071", // Health Check
-    "customfield_14402", // Main Subject (요청부문)
+    "customfield_14402", // Main Subject
   ].join(",");
 
   const searchUrl =
@@ -115,6 +123,7 @@ export async function GET(request: Request) {
       twoPagerUrl: extractUrl(f.customfield_10070),
       healthCheck: f.customfield_10071?.value ?? undefined,
       requestDept: f.customfield_14402?.value ?? undefined,
+      bodyRequestDept: extractMultiSelect(f.customfield_10067),
       requestPriority: f.priority?.name ?? undefined,
       parent: f.parent?.key ?? undefined,
       ...override,

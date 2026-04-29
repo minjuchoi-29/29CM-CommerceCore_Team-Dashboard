@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -89,6 +89,7 @@ export type Ticket = {
   parent?: string;
   healthCheck?: string;
   storyPoints?: number;
+  bodyRequestDept?: string;
 };
 
 // 오늘 자정 기준 ms
@@ -478,6 +479,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
   const [planningTab, setPlanningTab] = useState("진행 중");
+  const [kvLoaded, setKvLoaded]     = useState(false);
+  const planningMigratedRef         = useRef(false);
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
   const [noteInput, setNoteInput]         = useState("");
@@ -770,6 +773,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setCustomKeys(newCustomKeys);
         setTickets(prev => [...prev, newTicket]);
 
+        // 완료 상태 티켓은 플래닝 자동 완료 처리
+        if (["론치완료", "완료", "배포완료"].includes(newTicket.status)) {
+          const updatedPlanning = { ...planning, [trimmed]: { design: "완료" as TrackState, dev: "완료" as TrackState } };
+          setPlanning(updatedPlanning);
+          fetch("/api/kv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: "cc-planning", value: updatedPlanning }),
+          }).catch(() => {});
+        }
+
         const newCustomKeysArr = [...newCustomKeys];
         const currentCustomTickets = tickets.filter(t => customKeys.has(t.key));
         const newCustomTickets = [...currentCustomTickets.filter(t => t.key !== trimmed), newTicket];
@@ -875,6 +889,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const newCustomKeys = new Set([...customKeys, ...fetched.map(t => t.key)]);
       setCustomKeys(newCustomKeys);
       setTickets(prev => [...prev, ...fetched]);
+
+      // 완료 상태 티켓은 플래닝 자동 완료 처리
+      const doneTickets = fetched.filter(t => ["론치완료", "완료", "배포완료"].includes(t.status));
+      if (doneTickets.length > 0) {
+        const updatedPlanning = { ...planning };
+        for (const t of doneTickets) {
+          updatedPlanning[t.key] = { design: "완료" as TrackState, dev: "완료" as TrackState };
+        }
+        setPlanning(updatedPlanning);
+        fetch("/api/kv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-planning", value: updatedPlanning }),
+        }).catch(() => {});
+      }
 
       const newCustomKeysArr = [...newCustomKeys];
       const currentCustomTickets = tickets.filter(t => customKeys.has(t.key));
@@ -999,6 +1028,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     window.dispatchEvent(new CustomEvent("detail-panel", { detail: { open: !!selected } }));
   }, [selected]);
 
+  // KV + 티켓 로드 완료 후 1회: 진행중/완료 티켓 중 플래닝 미설정 항목을 자동으로 완료 처리
+  useEffect(() => {
+    if (!kvLoaded || fetching || tickets.length === 0 || planningMigratedRef.current) return;
+    planningMigratedRef.current = true;
+
+    const AUTO_DONE = new Set(["론치완료", "완료", "배포완료", "개발중", "In Progress", "QA중"]);
+    const updates: Record<string, { design: TrackState; dev: TrackState }> = {};
+    for (const t of tickets) {
+      if (AUTO_DONE.has(t.status) && !planning[t.key]) {
+        updates[t.key] = { design: "완료", dev: "완료" };
+      }
+    }
+    if (Object.keys(updates).length === 0) return;
+
+    const updatedPlanning = { ...planning, ...updates };
+    setPlanning(updatedPlanning);
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-planning", value: updatedPlanning }),
+    }).catch(() => {});
+  }, [kvLoaded, fetching, tickets, planning]);
+
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
     fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr")
@@ -1067,8 +1119,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             }
           } catch {}
         }
+        setKvLoaded(true);
       })
       .catch(() => {
+        setKvLoaded(true);
         try {
           const p = localStorage.getItem("cc-planning");
           if (p) setPlanning(JSON.parse(p));
@@ -1814,7 +1868,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {/* 추가 메타 정보 */}
             <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-sm">
               {[
-                { label: "요청부문",      value: selected.requestDept },
+                { label: "Main Subject",  value: selected.requestDept },
+                { label: "요청부문",      value: selected.bodyRequestDept },
                 { label: "요청 우선순위", value: selected.requestPriority },
                 { label: "Story Points",  value: selected.storyPoints?.toString() },
               ].map(({ label, value }) => (
