@@ -507,6 +507,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [addKeyError, setAddKeyError]     = useState<string | null>(null);
   const [addKeyProgress, setAddKeyProgress] = useState<{ current: number; total: number } | null>(null);
   const [newlyAddedKeys, setNewlyAddedKeys] = useState<Set<string>>(new Set());
+  const [duplicateKeys, setDuplicateKeys] = useState<Set<string>>(new Set());
   const [customKeys, setCustomKeys]       = useState<Set<string>>(new Set());
   const isResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -758,7 +759,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       return;
     }
     if (tickets.some(t => t.key === trimmed) || customKeys.has(trimmed)) {
-      setAddKeyError("이미 등록된 티켓입니다.");
+      setAddKeyError(`${trimmed}은(는) 이미 등록되어 있습니다.`);
+      setAddKeyInput("");
+      setDuplicateKeys(new Set([trimmed]));
+      setTimeout(() => setDuplicateKeys(new Set()), 3000);
       return;
     }
     setAddKeyLoading(true);
@@ -860,9 +864,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setAddKeyError(`형식 오류: ${invalid.join(", ")} (예: TM-1234)`);
       return;
     }
+    const dupKeys = keys.filter(k => tickets.some(t => t.key === k) || customKeys.has(k));
     const newKeys = keys.filter(k => !tickets.some(t => t.key === k) && !customKeys.has(k));
+
+    if (dupKeys.length > 0) {
+      setDuplicateKeys(new Set(dupKeys));
+      setTimeout(() => setDuplicateKeys(new Set()), 3000);
+    }
+
     if (newKeys.length === 0) {
-      setAddKeyError("입력된 티켓이 이미 모두 등록돼 있습니다.");
+      setAddKeyError(`이미 등록된 티켓입니다: ${dupKeys.join(", ")}`);
+      setAddKeyInput("");
       return;
     }
 
@@ -945,6 +957,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }).catch(() => {});
     }
     if (errors.length > 0) setAddKeyError(`추가 실패: ${errors.join(", ")}`);
+    else if (dupKeys.length > 0) setAddKeyError(`이미 등록된 티켓 제외: ${dupKeys.join(", ")}`);
   }
 
   // 사용자 추가 티켓 제거
@@ -1164,6 +1177,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }, 100);
     return () => clearTimeout(timer);
   }, [newlyAddedKeys]);
+
+  useEffect(() => {
+    if (duplicateKeys.size === 0) return;
+    const firstKey = [...duplicateKeys][0];
+    const timer = setTimeout(() => {
+      document.querySelector(`[data-ticket-key="${firstKey}"]`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 100);
+    return () => clearTimeout(timer);
+  }, [duplicateKeys]);
 
   function getRoles(t: Ticket): RoleSchedule[] {
     return schedules[t.key] ?? t.roles ?? [];
@@ -1716,11 +1739,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             filtered.map((t, idx) => {
               const isSelected = selected?.key === t.key;
               const isNew = newlyAddedKeys.has(t.key);
+              const isDuplicate = duplicateKeys.has(t.key);
               return (
                 <div
                   key={t.key}
                   data-ticket-key={t.key}
-                  className={`border-b border-gray-100 last:border-0 transition-colors duration-700 ${isSelected ? "bg-indigo-50" : isNew ? "bg-emerald-50" : "hover:bg-gray-50"}`}
+                  className={`border-b border-gray-100 last:border-0 transition-colors duration-700 ${isSelected ? "bg-indigo-50" : isNew ? "bg-emerald-50" : isDuplicate ? "bg-amber-50 ring-1 ring-inset ring-amber-200" : "hover:bg-gray-50"}`}
                 >
                   {/* 메인 행 */}
                   <div
