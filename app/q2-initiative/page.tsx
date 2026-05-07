@@ -3,7 +3,7 @@ import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
-const TICKET_CACHE_KEY = "cc-tickets-v1";
+const TICKET_CACHE_KEY = "cc-tickets-v2";
 
 const STATUS_COLOR: Record<string, string> = {
   "론치완료": "bg-green-100 text-green-700",

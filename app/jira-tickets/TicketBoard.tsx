@@ -551,7 +551,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [sidebarWidth]);
 
   // localStorage 클라이언트 캐시 키 / 최대 보존 시간
-  const TICKET_CACHE_KEY = "cc-tickets-v1";
+  const TICKET_CACHE_KEY = "cc-tickets-v2";
   const CACHE_MAX_MS = 12 * 60 * 60 * 1000; // 12시간
 
   // API에서 받은 데이터를 상태 + localStorage에 저장 (사용자 추가 티켓 병합)
