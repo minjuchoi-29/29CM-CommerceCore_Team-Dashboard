@@ -57,16 +57,16 @@ export const TICKET_OVERRIDES: Record<string, Partial<Omit<Ticket, "key">>> = {
   // ─────────────────────────────────────────────────────────────────
   "TM-2727": {
     roles: [
-      { role: "요구사항 분석", person: "김지영",            start: "2026-04-09", end: "2026-04-13", status: "완료" },
-      { role: "상세플래닝",   person: "김지영",            start: "2026-04-14", end: "2026-04-27", status: "완료" },
-      { role: "디자인",        person: "김다운",            start: "2026-04-09", end: "2026-04-27", status: "완료" },
-      { role: "Kick-Off",      person: "-",                 start: "2026-04-27", end: "2026-04-27", status: "완료" },
-      { role: "BE-SP",         person: "양유림 / 정다해",   start: "2026-04-28", end: "2026-05-26", status: "진행중" },
-      { role: "BE-PP",         person: "이승만",            start: "2026-04-28", end: "2026-05-26", status: "진행중" },
-      { role: "BE-CE",         person: "이정기",            start: "2026-04-28", end: "2026-05-26", status: "진행중" },
-      { role: "FE-DFE",        person: "윤해용 / 이하영",  start: "2026-04-28", end: "2026-05-26", status: "진행중" },
-      { role: "QA",            person: "강보민",            start: "2026-05-12", end: "2026-05-26", status: "예정" },
-      { role: "배포",          person: "-",                 start: "2026-05-26", end: "2026-05-26", status: "예정" },
+      { role: "기획",    person: "김지영",           detail: "요구사항 분석",  start: "2026-04-09", end: "2026-04-13", status: "완료" },
+      { role: "기획",    person: "김지영",           detail: "상세플래닝 진행", start: "2026-04-14", end: "2026-04-14", status: "완료" },
+      { role: "디자인",  person: "김다운",           start: "2026-04-09", end: "2026-04-14", status: "완료" },
+      { role: "Kick-Off", person: "-",               start: "2026-04-27", end: "2026-04-27", status: "완료" },
+      { role: "BE-SP",   person: "양유림 / 정다해",  start: "2026-04-28", end: "2026-05-26", status: "진행중" },
+      { role: "BE-PP",   person: "이승만",           start: "2026-04-28", end: "2026-05-26", status: "진행중" },
+      { role: "BE-CE",   person: "이정기",           start: "2026-04-28", end: "2026-05-26", status: "진행중" },
+      { role: "FE-DFE",  person: "윤해용 / 이하영", start: "2026-04-28", end: "2026-05-26", status: "진행중" },
+      { role: "QA",      person: "강보민",           start: "2026-05-12", end: "2026-05-26", status: "예정" },
+      { role: "배포",    person: "-",                start: "2026-05-26", end: "2026-05-26", status: "예정" },
     ],
   },
 
