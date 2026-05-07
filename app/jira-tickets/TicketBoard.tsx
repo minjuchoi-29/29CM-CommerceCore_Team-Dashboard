@@ -34,8 +34,6 @@ const ROLE_COLOR: Record<string, string> = {
   "FE-외주": "bg-sky-400",
   "Mobile":  "bg-teal-400",
   "QA":      "bg-emerald-500",
-  "BE-외주": "bg-sky-600",
-  "FE-외주": "bg-sky-400",
   "DA":      "bg-amber-500",
   "배포":    "bg-rose-400",
   "CSE":     "bg-teal-600",
