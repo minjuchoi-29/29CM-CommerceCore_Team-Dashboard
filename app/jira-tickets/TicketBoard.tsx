@@ -23,7 +23,9 @@ const STATUS_COLOR: Record<string, string> = {
 };
 
 const ROLE_COLOR: Record<string, string> = {
-  "기획":    "bg-indigo-400",
+  "기획":          "bg-indigo-400",
+  "요구사항 분석": "bg-indigo-300",
+  "상세플래닝":    "bg-indigo-500",
   "디자인":  "bg-violet-400",
   "BE-SP":   "bg-blue-600",
   "BE-PP":   "bg-blue-400",
