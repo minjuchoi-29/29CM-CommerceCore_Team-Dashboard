@@ -2755,7 +2755,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <input
                               type="date"
                               value={row.start}
-                              onChange={(e) => { setEditError(null); updateRow(i, "start", e.target.value); }}
+                              onChange={(e) => {
+                                setEditError(null);
+                                const newStart = e.target.value;
+                                setEditRows(prev => prev.map((r, idx) => {
+                                  if (idx !== i) return r;
+                                  // 종료일이 비어있거나 시작일보다 이전이면 종료일도 동기화
+                                  const newEnd = (!r.end || r.end < newStart) ? newStart : r.end;
+                                  return { ...r, start: newStart, end: newEnd };
+                                }));
+                              }}
                               className={`text-xs text-gray-900 border ${errStart ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
                             />
                             <span className="text-xs text-gray-400 shrink-0">~</span>
@@ -2766,6 +2775,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               onChange={(e) => { setEditError(null); updateRow(i, "end", e.target.value); }}
                               className={`text-xs text-gray-900 border ${errEnd ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
                             />
+                            <label className="flex items-center gap-1 text-xs text-gray-400 shrink-0 cursor-pointer select-none hover:text-gray-600">
+                              <input
+                                type="checkbox"
+                                checked={!!row.start && row.end === row.start}
+                                onChange={(e) => { if (e.target.checked && row.start) updateRow(i, "end", row.start); }}
+                                className="w-3 h-3 accent-indigo-500"
+                              />
+                              동일
+                            </label>
                           </div>
                         )}
                       </div>
