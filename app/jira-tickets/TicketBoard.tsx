@@ -2638,7 +2638,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
                   >편집</button>
                 ) : (
-                  <div className="flex gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+                      <button
+                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => (a.start || "").localeCompare(b.start || "")))}
+                        className="px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+                      >오래된순</button>
+                      <button
+                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => (b.start || "").localeCompare(a.start || "")))}
+                        className="px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors border-l border-gray-200"
+                      >최신순</button>
+                    </div>
                     <button onClick={saveEdit}
                       className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium">저장</button>
                     <button onClick={() => { setEditMode(false); setEditError(null); }}
@@ -2791,7 +2801,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   })}
                   <button
                     onClick={() => setEditRows(prev => [...prev, newRow()])}
-                    className="w-full text-xs text-gray-400 hover:text-gray-600 border border-dashed border-gray-200 rounded-lg py-1.5 hover:border-gray-300 transition-colors"
+                    className="w-full text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 rounded-lg py-2 transition-colors"
                   >+ 작업 추가</button>
                   {editError && (
                     <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{editError}</p>
