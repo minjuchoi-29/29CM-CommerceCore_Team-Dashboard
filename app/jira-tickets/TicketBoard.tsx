@@ -332,8 +332,8 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5">
             <div className="flex items-center mb-0.5">
               <div className="w-36 shrink-0 flex items-center gap-1.5">
-                <span className={`text-xs font-medium w-14 shrink-0 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-600 font-semibold" : "text-gray-600"}`}>{r.role}</span>
-                <span className="text-xs text-gray-500 truncate">{r.person}</span>
+                <span className={`text-sm font-medium w-14 shrink-0 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-500 font-semibold" : "text-gray-400"}`}>{r.role}</span>
+                <span className="text-sm text-gray-500 truncate">{r.person}</span>
               </div>
               <div className="flex-1 relative h-5 bg-gray-100 rounded-sm overflow-hidden">
                 {/* 오늘 세로선 */}
@@ -356,7 +356,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                   />
                 )}
               </div>
-              <span className={`ml-2 text-xs w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : r.status === "확인필요" ? "text-purple-500" : "text-gray-400"}`}>
+              <span className={`ml-2 text-xs w-16 shrink-0 whitespace-nowrap ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : r.status === "확인필요" ? "text-purple-500" : "text-gray-400"}`}>
                 {r.status}
               </span>
               {overdue && (
@@ -385,10 +385,10 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
             {r.detail && (
               <div className="flex items-center mt-0.5">
                 <div className="w-36 shrink-0 flex items-center gap-1 pl-1">
-                  <span className="text-gray-300 text-xs">└</span>
-                  <span className="text-xs text-gray-500 truncate">{r.detail}</span>
+                  <span className="text-gray-500 text-sm">└</span>
+                  <span className="text-sm text-gray-500">{r.detail}</span>
                   {r.detailPerson && (
-                    <span className="text-xs text-gray-400 truncate">· {r.detailPerson}</span>
+                    <span className="text-sm text-gray-400">· {r.detailPerson}</span>
                   )}
                 </div>
               </div>
@@ -396,17 +396,17 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
             {r.status === "미정" ? (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
-                <span className="text-xs text-orange-400 italic">기간 산정중</span>
+                <span className="text-sm text-orange-400 italic">기간 산정중</span>
               </div>
             ) : r.status === "확인필요" && !r.start ? (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
-                <span className="text-xs text-purple-400 italic">담당 PM이 현황 확인 후 업데이트 필요</span>
+                <span className="text-sm text-purple-400 italic">담당 PM이 현황 확인 후 업데이트 필요</span>
               </div>
             ) : r.start && r.end && (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
-                <span className="text-xs text-gray-500">
+                <span className="text-sm text-gray-500 whitespace-nowrap">
                   {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
                   <span className="ml-1.5 text-gray-400">({calcWorkingDays(r.start, r.end)}영업일)</span>
                 </span>
@@ -423,24 +423,28 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
       </div>
 
       {pastDoneRoles.length > 0 && (
-        <div className="mt-2 border-t border-gray-800 pt-2">
+        <div className="mt-3 border-t border-gray-800 pt-2">
           <button
             onClick={() => setShowPastDone(v => !v)}
-            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-300 transition-colors"
           >
             <span>{showPastDone ? "▾" : "▸"}</span>
             <span>이전 완료 일정 {pastDoneRoles.length}건</span>
           </button>
           {showPastDone && (
-            <div className="mt-1.5 space-y-0.5 pl-1">
+            <div className="mt-2 pl-1">
               {pastDoneRoles.map((r, i) => (
-                <div key={`past-${r.role}-${r.person}-${i}`} className="flex items-center gap-2 text-xs text-gray-500">
-                  <span className="w-20 shrink-0 font-medium text-gray-400 truncate">{r.role}</span>
-                  <span className="w-16 shrink-0 truncate">{r.person}</span>
-                  <span className="text-gray-600">
+                <div key={`past-${r.role}-${r.person}-${i}`} className="flex items-baseline gap-3 py-1 text-sm">
+                  <span className="w-20 shrink-0 font-medium text-gray-300">{r.role}</span>
+                  <span className="w-20 shrink-0 text-gray-400">{r.person}</span>
+                  <span className="w-52 shrink-0 whitespace-nowrap text-gray-500">
                     {r.start && r.end ? `${r.start} ~ ${r.end}` : ""}
                   </span>
-                  {r.detail && <span className="text-gray-600 truncate">· {r.detail}</span>}
+                  {r.detail && (
+                    <span className="text-gray-500 min-w-0" title={r.detail}>
+                      · {r.detail}
+                    </span>
+                  )}
                 </div>
               ))}
             </div>
