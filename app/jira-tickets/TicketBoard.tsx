@@ -50,7 +50,7 @@ type RoleSchedule = {
   person: string;
   start: string;
   end: string;
-  status: "완료" | "진행중" | "예정" | "미정";
+  status: "완료" | "진행중" | "예정" | "미정" | "확인필요";
   detail?: string;
   detailPerson?: string;
 };
@@ -330,14 +330,18 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                   <div className="absolute inset-0 flex items-center justify-center">
                     <span className="text-xs text-gray-400 italic">기간 산정중</span>
                   </div>
+                ) : r.status === "확인필요" && !r.start ? (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-xs text-purple-400 italic">PM 확인 필요</span>
+                  </div>
                 ) : barWidth(r.start, r.end) > 0 && (
                   <div
-                    className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : ""}`}
+                    className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : r.status === "확인필요" ? "opacity-50 border border-purple-300" : ""}`}
                     style={{ left: `${barLeft(r.start)}%`, width: `${barWidth(r.start, r.end)}%` }}
                   />
                 )}
               </div>
-              <span className={`ml-2 text-xs w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : "text-gray-400"}`}>
+              <span className={`ml-2 text-xs w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : r.status === "확인필요" ? "text-purple-500" : "text-gray-400"}`}>
                 {r.status}
               </span>
               {overdue && (
@@ -379,6 +383,11 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                 <div className="w-36 shrink-0" />
                 <span className="text-xs text-orange-400 italic">기간 산정중</span>
               </div>
+            ) : r.status === "확인필요" && !r.start ? (
+              <div className="flex items-center">
+                <div className="w-36 shrink-0" />
+                <span className="text-xs text-purple-400 italic">담당 PM이 현황 확인 후 업데이트 필요</span>
+              </div>
             ) : r.start && r.end && (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
@@ -412,7 +421,7 @@ const ALL_PRESET_ROLES = [...MILESTONE_ROLES, ...PRESET_ROLES];
 function isCustomRole(role: string) {
   return !ALL_PRESET_ROLES.includes(role);
 }
-const STATUS_OPTIONS: RoleSchedule["status"][] = ["미정", "예정", "진행중", "완료"];
+const STATUS_OPTIONS: RoleSchedule["status"][] = ["확인필요", "미정", "예정", "진행중", "완료"];
 
 function newRow(): RoleSchedule {
   return { role: "기획", person: "", start: "", end: "", status: "예정" };
