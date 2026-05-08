@@ -224,6 +224,8 @@ function calcWorkingDays(start: string, end: string): number {
 }
 
 function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
+  const [showPastDone, setShowPastDone] = useState(false);
+
   // 뷰 시작: 이번 달 1일
   const viewStart = (() => {
     const d = new Date();
@@ -268,8 +270,21 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
   const { pct, barLeft, barWidth } = makeViewFns(viewStart, viewEnd);
   const todayPct = pct(TODAY_MS);
 
-  // 뷰 시작 이전에 완전히 끝난 바 개수
-  const hiddenCount = (roles ?? []).filter(r => r.end && new Date(r.end).getTime() < viewStart).length;
+  // 시작일 오름차순 → 동일 시 종료일 오름차순 정렬 (빈 날짜는 맨 뒤)
+  const sortedRoles = [...(roles ?? [])].sort((a, b) => {
+    const aS = a.start ? new Date(a.start).getTime() : Infinity;
+    const bS = b.start ? new Date(b.start).getTime() : Infinity;
+    if (aS !== bS) return aS - bS;
+    const aE = a.end ? new Date(a.end).getTime() : Infinity;
+    const bE = b.end ? new Date(b.end).getTime() : Infinity;
+    return aE - bE;
+  });
+
+  // 현재 뷰에서 안 보이는 과거 완료 항목 분리
+  const isPastDone = (r: RoleSchedule) =>
+    r.status === "완료" && !!r.end && new Date(r.end).getTime() < viewStart;
+  const pastDoneRoles  = sortedRoles.filter(isPastDone);
+  const visibleRoles   = sortedRoles.filter(r => !isPastDone(r));
 
   return (
     <div className="mt-3">
@@ -308,13 +323,13 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
 
       {/* 롤 바 목록 */}
       <div className="relative">
-        {roles && roles.length > 0 ? roles.map((r) => {
+        {visibleRoles.length > 0 ? visibleRoles.map((r, i) => {
           const endMs   = r.end   ? new Date(r.end).getTime()   : null;
           const startMs = r.start ? new Date(r.start).getTime() : null;
           const overdue   = endMs   !== null && endMs   < TODAY_MS && r.status !== "완료";
           const notStarted = startMs !== null && startMs < TODAY_MS && r.status === "예정";
           return (
-          <div key={`${r.role}-${r.person}`} className="mb-2.5">
+          <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5">
             <div className="flex items-center mb-0.5">
               <div className="w-36 shrink-0 flex items-center gap-1.5">
                 <span className={`text-xs font-medium w-14 shrink-0 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-600 font-semibold" : "text-gray-600"}`}>{r.role}</span>
@@ -407,8 +422,30 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
         )}
       </div>
 
-      {hiddenCount > 0 && (
-        <p className="mt-2 text-xs text-gray-400">{hiddenCount}건의 완료된 이전 일정이 있습니다</p>
+      {pastDoneRoles.length > 0 && (
+        <div className="mt-2 border-t border-gray-800 pt-2">
+          <button
+            onClick={() => setShowPastDone(v => !v)}
+            className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            <span>{showPastDone ? "▾" : "▸"}</span>
+            <span>이전 완료 일정 {pastDoneRoles.length}건</span>
+          </button>
+          {showPastDone && (
+            <div className="mt-1.5 space-y-0.5 pl-1">
+              {pastDoneRoles.map((r, i) => (
+                <div key={`past-${r.role}-${r.person}-${i}`} className="flex items-center gap-2 text-xs text-gray-500">
+                  <span className="w-20 shrink-0 font-medium text-gray-400 truncate">{r.role}</span>
+                  <span className="w-16 shrink-0 truncate">{r.person}</span>
+                  <span className="text-gray-600">
+                    {r.start && r.end ? `${r.start} ~ ${r.end}` : ""}
+                  </span>
+                  {r.detail && <span className="text-gray-600 truncate">· {r.detail}</span>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
