@@ -439,13 +439,16 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                 <div key={`past-${r.role}-${r.person}-${i}`} className="flex items-baseline gap-3 py-1 text-sm">
                   <div className="w-24 shrink-0 flex items-center gap-1.5">
                     <span className={`inline-block w-2 h-2 rounded-sm shrink-0 mt-0.5 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
-                    <span className="font-medium text-gray-300 truncate">{r.role}</span>
+                    <span className="font-medium text-gray-100 truncate">{r.role}</span>
                   </div>
                   <span className="w-20 shrink-0 text-gray-400 truncate">{r.person}</span>
                   <span className="w-64 shrink-0 whitespace-nowrap text-gray-500">
-                    {r.start && r.end
-                      ? `${formatDateWithDay(r.start)} ~ ${formatDateWithDay(r.end)} (${calcWorkingDays(r.start, r.end)}영업일)`
-                      : ""}
+                    {r.start && r.end ? (
+                      <>
+                        {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
+                        <span className="ml-1.5 text-xs text-gray-600">{calcWorkingDays(r.start, r.end)}영업일</span>
+                      </>
+                    ) : ""}
                   </span>
                   {r.detail && (
                     <span className="text-gray-500 min-w-0" title={r.detail}>
