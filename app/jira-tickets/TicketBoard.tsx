@@ -50,7 +50,7 @@ type RoleSchedule = {
   person: string;
   start: string;
   end: string;
-  status: "완료" | "진행중" | "예정";
+  status: "완료" | "진행중" | "예정" | "미정";
   detail?: string;
   detailPerson?: string;
 };
@@ -187,9 +187,40 @@ function formatDateWithDay(dateStr: string): string {
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
 }
 
-function calcDuration(start: string, end: string): number {
+// 한국 공휴일 (2025~2026)
+const KR_HOLIDAYS = new Set([
+  // 2025
+  "2025-01-01","2025-01-28","2025-01-29","2025-01-30",
+  "2025-03-01","2025-05-05","2025-05-06","2025-06-06",
+  "2025-08-15","2025-10-03","2025-10-05","2025-10-06","2025-10-07","2025-10-08","2025-10-09",
+  "2025-12-25",
+  // 2026
+  "2026-01-01","2026-02-17","2026-02-18","2026-02-19",
+  "2026-03-01","2026-03-02","2026-05-05","2026-05-25","2026-06-06",
+  "2026-08-15","2026-08-17","2026-09-24","2026-09-25","2026-09-26",
+  "2026-10-03","2026-10-09","2026-12-25",
+]);
+
+function isWorkingDay(date: Date): boolean {
+  const day = date.getDay(); // 0=일, 6=토
+  if (day === 0 || day === 6) return false;
+  const iso = date.toISOString().slice(0, 10);
+  if (KR_HOLIDAYS.has(iso)) return false;
+  return true;
+}
+
+function calcWorkingDays(start: string, end: string): number {
   if (!start || !end) return 0;
-  return Math.round((new Date(end).getTime() - new Date(start).getTime()) / 86400000) + 1;
+  const s = new Date(start + "T00:00:00");
+  const e = new Date(end + "T00:00:00");
+  if (s > e) return 0;
+  let count = 0;
+  const cur = new Date(s);
+  while (cur <= e) {
+    if (isWorkingDay(cur)) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
 }
 
 function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
@@ -295,14 +326,18 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                   className="absolute top-0 bottom-0 w-px bg-red-400 z-10"
                   style={{ left: `${todayPct}%` }}
                 />
-                {barWidth(r.start, r.end) > 0 && (
+                {r.status === "미정" ? (
+                  <div className="absolute inset-0 flex items-center justify-center">
+                    <span className="text-xs text-gray-400 italic">기간 산정중</span>
+                  </div>
+                ) : barWidth(r.start, r.end) > 0 && (
                   <div
                     className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : ""}`}
                     style={{ left: `${barLeft(r.start)}%`, width: `${barWidth(r.start, r.end)}%` }}
                   />
                 )}
               </div>
-              <span className={`ml-2 text-xs w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : "text-gray-400"}`}>
+              <span className={`ml-2 text-xs w-10 shrink-0 ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : "text-gray-400"}`}>
                 {r.status}
               </span>
               {overdue && (
@@ -339,12 +374,17 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                 </div>
               </div>
             )}
-            {r.start && r.end && (
+            {r.status === "미정" ? (
+              <div className="flex items-center">
+                <div className="w-36 shrink-0" />
+                <span className="text-xs text-orange-400 italic">기간 산정중</span>
+              </div>
+            ) : r.start && r.end && (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
                 <span className="text-xs text-gray-500">
                   {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
-                  <span className="ml-1.5 text-gray-400">({calcDuration(r.start, r.end)}일)</span>
+                  <span className="ml-1.5 text-gray-400">({calcWorkingDays(r.start, r.end)}영업일)</span>
                 </span>
               </div>
             )}
@@ -372,7 +412,7 @@ const ALL_PRESET_ROLES = [...MILESTONE_ROLES, ...PRESET_ROLES];
 function isCustomRole(role: string) {
   return !ALL_PRESET_ROLES.includes(role);
 }
-const STATUS_OPTIONS: RoleSchedule["status"][] = ["예정", "진행중", "완료"];
+const STATUS_OPTIONS: RoleSchedule["status"][] = ["미정", "예정", "진행중", "완료"];
 
 function newRow(): RoleSchedule {
   return { role: "기획", person: "", start: "", end: "", status: "예정" };
@@ -1239,13 +1279,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   function saveEdit() {
     if (!selected) return;
-    const invalid = editRows.find(r => !r.role || !r.person || !r.start || !r.end);
+    const invalid = editRows.find(r => {
+      if (!r.role || !r.person) return true;
+      // 미정 상태는 날짜 불필요
+      if (r.status === "미정") return false;
+      return !r.start || !r.end;
+    });
     if (invalid) {
       const missing: string[] = [];
       if (!invalid.role)   missing.push("작업명");
       if (!invalid.person) missing.push("담당자명");
-      if (!invalid.start)  missing.push("시작일");
-      if (!invalid.end)    missing.push("종료일");
+      if (invalid.status !== "미정") {
+        if (!invalid.start) missing.push("시작일");
+        if (!invalid.end)   missing.push("종료일");
+      }
       setEditError(`필수 항목을 입력해주세요: ${missing.join(", ")}`);
       return;
     }
@@ -2563,8 +2610,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const custom    = isCustomRole(row.role);
                     const errRole   = !!editError && !row.role;
                     const errPerson = !!editError && !row.person;
-                    const errStart  = !!editError && !row.start;
-                    const errEnd    = !!editError && !row.end;
+                    const errStart  = !!editError && row.status !== "미정" && !row.start;
+                    const errEnd    = !!editError && row.status !== "미정" && !row.end;
                     const errBorder = "border-red-400";
                     const okBorder  = "border-gray-300";
                     return (
@@ -2637,23 +2684,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             />
                           </div>
                         )}
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs text-gray-500 w-6 shrink-0">시작</span>
-                          <input
-                            type="date"
-                            value={row.start}
-                            onChange={(e) => { setEditError(null); updateRow(i, "start", e.target.value); }}
-                            className={`text-xs text-gray-900 border ${errStart ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
-                          />
-                          <span className="text-xs text-gray-400 shrink-0">~</span>
-                          <input
-                            type="date"
-                            value={row.end}
-                            min={row.start || undefined}
-                            onChange={(e) => { setEditError(null); updateRow(i, "end", e.target.value); }}
-                            className={`text-xs text-gray-900 border ${errEnd ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
-                          />
-                        </div>
+                        {row.status === "미정" ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-orange-400 italic">기간 산정중 — 날짜 확정 후 상태를 변경해주세요</span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-gray-500 w-6 shrink-0">시작</span>
+                            <input
+                              type="date"
+                              value={row.start}
+                              onChange={(e) => { setEditError(null); updateRow(i, "start", e.target.value); }}
+                              className={`text-xs text-gray-900 border ${errStart ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
+                            />
+                            <span className="text-xs text-gray-400 shrink-0">~</span>
+                            <input
+                              type="date"
+                              value={row.end}
+                              min={row.start || undefined}
+                              onChange={(e) => { setEditError(null); updateRow(i, "end", e.target.value); }}
+                              className={`text-xs text-gray-900 border ${errEnd ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
+                            />
+                          </div>
+                        )}
                       </div>
                     );
                   })}
