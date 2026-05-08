@@ -54,6 +54,7 @@ type RoleSchedule = {
   status: "완료" | "진행중" | "예정" | "미정" | "확인필요";
   detail?: string;
   detailPerson?: string;
+  vacationDays?: number;
 };
 
 type MemoEntry = {
@@ -197,7 +198,7 @@ const KR_HOLIDAYS = new Set([
   "2025-12-25",
   // 2026
   "2026-01-01","2026-02-17","2026-02-18","2026-02-19",
-  "2026-03-01","2026-03-02","2026-05-01","2026-05-05","2026-05-25","2026-06-06",
+  "2026-03-01","2026-03-02","2026-05-01","2026-05-05","2026-05-06","2026-05-25","2026-06-06",
   "2026-08-15","2026-08-17","2026-09-24","2026-09-25","2026-09-26",
   "2026-10-03","2026-10-09","2026-12-25",
 ]);
@@ -395,7 +396,14 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                 ) : r.start && r.end && (
                   <p className="text-xs text-gray-500 whitespace-nowrap mt-0.5">
                     {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
-                    <span className="ml-1.5 text-gray-400">{calcWorkingDays(r.start, r.end)}영업일</span>
+                    {(() => {
+                      const total = calcWorkingDays(r.start, r.end);
+                      const vac = r.vacationDays ?? 0;
+                      const net = Math.max(0, total - vac);
+                      return vac > 0
+                        ? <><span className="ml-1.5 text-gray-400">{net}영업일</span><span className="ml-1 text-orange-400 text-[10px]">(-{vac}휴가)</span></>
+                        : <span className="ml-1.5 text-gray-400">{total}영업일</span>;
+                    })()}
                   </p>
                 )}
               </div>
@@ -436,7 +444,14 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                       {r.start && r.end ? (
                         <>
                           {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
-                          <span className="ml-1.5 text-xs text-gray-400">{calcWorkingDays(r.start, r.end)}영업일</span>
+                          {(() => {
+                            const total = calcWorkingDays(r.start, r.end);
+                            const vac = r.vacationDays ?? 0;
+                            const net = Math.max(0, total - vac);
+                            return vac > 0
+                              ? <><span className="ml-1.5 text-xs text-gray-400">{net}영업일</span><span className="ml-1 text-orange-400 text-[10px]">(-{vac}휴가)</span></>
+                              : <span className="ml-1.5 text-xs text-gray-400">{total}영업일</span>;
+                          })()}
                         </>
                       ) : ""}
                     </span>
@@ -2296,71 +2311,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
 
             <div className="border-t border-gray-200 pt-4">
-              {/* 메모 */}
-              <div className="mb-4">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">메모</p>
-
-                {(ticketNotes[selected.key] ?? []).length > 0 ? (() => {
-                  type Group = { author: string; date: string; items: { text: string; idx: number }[] };
-                  const groups: Group[] = [];
-                  (ticketNotes[selected.key] ?? []).forEach((note, idx) => {
-                    const day = note.date.slice(0, 10);
-                    const last = groups[groups.length - 1];
-                    if (last && last.author === note.author && last.date === day) {
-                      last.items.push({ text: note.text, idx });
-                    } else {
-                      groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
-                    }
-                  });
-                  return (
-                    <div className="space-y-2 mb-2">
-                      {groups.map((g, gi) => (
-                        <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
-                          <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
-                            <span className="text-xs font-medium text-gray-600">{g.author}</span>
-                            <span className="text-xs text-gray-400">{g.date}</span>
-                          </div>
-                          <div className="divide-y divide-gray-50">
-                            {g.items.map(({ text, idx }) => (
-                              <div key={idx} className="group flex items-start gap-2 px-3 py-2">
-                                <p className="flex-1 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
-                                <button
-                                  onClick={() => deleteTicketNote(selected.key, idx)}
-                                  className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
-                                >삭제</button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })() : (
-                  <p className="text-xs text-gray-300 italic mb-2">등록된 메모가 없습니다</p>
-                )}
-
-                <div className="flex flex-col gap-1.5">
-                  <textarea
-                    value={ticketNoteInput}
-                    onChange={(e) => setTicketNoteInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        addTicketNote(selected.key, ticketNoteInput);
-                        setTicketNoteInput("");
-                      }
-                    }}
-                    placeholder="메모를 입력하세요 (⌘+Enter로 등록)"
-                    rows={2}
-                    className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
-                  />
-                  <button
-                    onClick={() => { addTicketNote(selected.key, ticketNoteInput); setTicketNoteInput(""); }}
-                    disabled={!ticketNoteInput.trim()}
-                    className="self-end text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
-                  >등록</button>
-                </div>
-              </div>
-
               {/* 주요 내용 요약 */}
               <div className="mb-4">
                 {/* 헤더 */}
@@ -2487,6 +2437,71 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 ) : (
                   <p className="text-xs text-gray-300 italic">입력된 내용이 없습니다</p>
                 )}
+              </div>
+
+              {/* 메모 */}
+              <div className="mb-4 border-t border-gray-200 pt-4">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">메모</p>
+
+                {(ticketNotes[selected.key] ?? []).length > 0 ? (() => {
+                  type Group = { author: string; date: string; items: { text: string; idx: number }[] };
+                  const groups: Group[] = [];
+                  (ticketNotes[selected.key] ?? []).forEach((note, idx) => {
+                    const day = note.date.slice(0, 10);
+                    const last = groups[groups.length - 1];
+                    if (last && last.author === note.author && last.date === day) {
+                      last.items.push({ text: note.text, idx });
+                    } else {
+                      groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
+                    }
+                  });
+                  return (
+                    <div className="space-y-2 mb-2">
+                      {groups.map((g, gi) => (
+                        <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
+                          <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
+                            <span className="text-xs font-medium text-gray-600">{g.author}</span>
+                            <span className="text-xs text-gray-400">{g.date}</span>
+                          </div>
+                          <div className="divide-y divide-gray-50">
+                            {g.items.map(({ text, idx }) => (
+                              <div key={idx} className="group flex items-start gap-2 px-3 py-2">
+                                <p className="flex-1 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                <button
+                                  onClick={() => deleteTicketNote(selected.key, idx)}
+                                  className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+                                >삭제</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })() : (
+                  <p className="text-xs text-gray-300 italic mb-2">등록된 메모가 없습니다</p>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <textarea
+                    value={ticketNoteInput}
+                    onChange={(e) => setTicketNoteInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        addTicketNote(selected.key, ticketNoteInput);
+                        setTicketNoteInput("");
+                      }
+                    }}
+                    placeholder="메모를 입력하세요 (⌘+Enter로 등록)"
+                    rows={2}
+                    className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                  />
+                  <button
+                    onClick={() => { addTicketNote(selected.key, ticketNoteInput); setTicketNoteInput(""); }}
+                    disabled={!ticketNoteInput.trim()}
+                    className="self-end text-xs bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
+                  >등록</button>
+                </div>
               </div>
 
               {/* 플래닝 상태 */}
@@ -2794,6 +2809,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               />
                               동일
                             </label>
+                            <label className="flex items-center gap-1 text-xs text-orange-400 shrink-0 whitespace-nowrap bg-orange-50 border border-orange-200 rounded-md px-2 py-0.5">
+                              🏖 휴가
+                              <input
+                                type="number"
+                                min={0}
+                                max={99}
+                                value={row.vacationDays ?? ""}
+                                onChange={(e) => {
+                                  const v = e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value, 10));
+                                  setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, vacationDays: v } : r));
+                                }}
+                                placeholder="0"
+                                className="w-10 text-xs text-orange-900 border border-orange-200 rounded px-1.5 py-0.5 text-center placeholder:text-orange-200 bg-white"
+                              />
+                              일
+                            </label>
                           </div>
                         )}
                       </div>
@@ -2806,6 +2837,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {editError && (
                     <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{editError}</p>
                   )}
+                  <div className="flex justify-end items-center gap-2 pt-1 border-t border-gray-100">
+                    <button onClick={saveEdit}
+                      className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium">저장</button>
+                    <button onClick={() => { setEditMode(false); setEditError(null); }}
+                      className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
+                  </div>
                 </div>
               ) : (
                 /* 뷰 모드: Gantt */
