@@ -31,7 +31,8 @@ const ROLE_COLOR: Record<string, string> = {
   "BE-외주": "bg-sky-600",
   "FE-CFE":  "bg-cyan-500",
   "FE-DFE":  "bg-cyan-400",
-  "FE-외주": "bg-sky-400",
+  "FE-외주":    "bg-sky-400",
+  "FE-Sotatek": "bg-sky-400",
   "Mobile":  "bg-teal-400",
   "QA":      "bg-emerald-500",
   "DA":      "bg-amber-500",
@@ -332,6 +333,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5">
             <div className="flex items-center mb-0.5">
               <div className="w-36 shrink-0 flex items-center gap-1.5">
+                <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
                 <span className={`text-sm font-medium w-14 shrink-0 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-500 font-semibold" : "text-gray-400"}`}>{r.role}</span>
                 <span className="text-sm text-gray-500 truncate">{r.person}</span>
               </div>
@@ -435,10 +437,15 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
             <div className="mt-2 pl-1">
               {pastDoneRoles.map((r, i) => (
                 <div key={`past-${r.role}-${r.person}-${i}`} className="flex items-baseline gap-3 py-1 text-sm">
-                  <span className="w-20 shrink-0 font-medium text-gray-300">{r.role}</span>
-                  <span className="w-20 shrink-0 text-gray-400">{r.person}</span>
-                  <span className="w-52 shrink-0 whitespace-nowrap text-gray-500">
-                    {r.start && r.end ? `${r.start} ~ ${r.end}` : ""}
+                  <div className="w-24 shrink-0 flex items-center gap-1.5">
+                    <span className={`inline-block w-2 h-2 rounded-sm shrink-0 mt-0.5 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
+                    <span className="font-medium text-gray-300 truncate">{r.role}</span>
+                  </div>
+                  <span className="w-20 shrink-0 text-gray-400 truncate">{r.person}</span>
+                  <span className="w-64 shrink-0 whitespace-nowrap text-gray-500">
+                    {r.start && r.end
+                      ? `${formatDateWithDay(r.start)} ~ ${formatDateWithDay(r.end)} (${calcWorkingDays(r.start, r.end)}영업일)`
+                      : ""}
                   </span>
                   {r.detail && (
                     <span className="text-gray-500 min-w-0" title={r.detail}>
@@ -585,7 +592,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [summaryLoading, setSummaryLoading] = useState<Set<string>>(new Set());
 
   // 우측 사이드바 너비 (드래그 리사이즈)
-  const [sidebarWidth, setSidebarWidth] = useState(480);
+  const [sidebarWidth, setSidebarWidth] = useState(700);
 
   // 시트 우선순위 (key → priority 문자열)
   const [priorities, setPriorities] = useState<Record<string, string>>({});
@@ -2100,12 +2107,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       {/* ── 우측 상세 패널 ── */}
       {selected && (
-        <div className="shrink-0 sticky top-0 h-screen overflow-y-auto border-l border-gray-200 bg-white relative" style={{ width: sidebarWidth }}>
-          {/* 드래그 핸들 */}
+        <div className="shrink-0 sticky top-0 h-screen border-l border-gray-200 bg-white relative flex flex-col" style={{ width: sidebarWidth }}>
+          {/* 드래그 핸들 — overflow 컨테이너 바깥에 위치해 전체 높이 활성화 */}
           <div
             onMouseDown={isResizing}
             className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-indigo-300 active:bg-indigo-400 transition-colors z-10"
           />
+          <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-5">
             {/* 헤더 */}
             <div className="flex justify-between items-start mb-4">
@@ -2782,6 +2790,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
             </div>
           </div>
+          </div>{/* overflow-y-auto */}
         </div>
       )}
     </div>
