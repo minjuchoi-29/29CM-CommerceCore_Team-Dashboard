@@ -1327,15 +1327,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (!selected) return;
     const invalid = editRows.find(r => {
       if (!r.role || !r.person) return true;
-      // 미정 상태는 날짜 불필요
-      if (r.status === "미정") return false;
+      // 미정/확인필요 상태는 날짜 불필요
+      if (r.status === "미정" || r.status === "확인필요") return false;
       return !r.start || !r.end;
     });
     if (invalid) {
       const missing: string[] = [];
       if (!invalid.role)   missing.push("작업명");
       if (!invalid.person) missing.push("담당자명");
-      if (invalid.status !== "미정") {
+      if (invalid.status !== "미정" && invalid.status !== "확인필요") {
         if (!invalid.start) missing.push("시작일");
         if (!invalid.end)   missing.push("종료일");
       }
