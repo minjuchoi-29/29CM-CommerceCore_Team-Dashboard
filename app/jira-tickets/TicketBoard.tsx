@@ -1,5 +1,5 @@
 "use client";
-import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "react";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -197,7 +197,7 @@ const KR_HOLIDAYS = new Set([
   "2025-12-25",
   // 2026
   "2026-01-01","2026-02-17","2026-02-18","2026-02-19",
-  "2026-03-01","2026-03-02","2026-05-05","2026-05-25","2026-06-06",
+  "2026-03-01","2026-03-02","2026-05-01","2026-05-05","2026-05-25","2026-06-06",
   "2026-08-15","2026-08-17","2026-09-24","2026-09-25","2026-09-26",
   "2026-10-03","2026-10-09","2026-12-25",
 ]);
@@ -291,7 +291,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
     <div className="mt-3">
       {/* 월 헤더 */}
       <div className="flex mb-0.5">
-        <div className="w-36 shrink-0" />
+        <div className="w-52 shrink-0" />
         <div className="flex-1 relative h-5">
           {monthDates.map((m) => (
             <span
@@ -308,14 +308,14 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
       {/* 오늘 날짜 레이블 — 일정이 있을 때만 표시 */}
       {roles && roles.length > 0 && (
         <div className="flex mb-2">
-          <div className="w-36 shrink-0" />
+          <div className="w-52 shrink-0" />
           <div className="flex-1 relative h-6">
             <span
               className="absolute -translate-x-1/2"
               style={{ left: `${todayPct}%` }}
             >
               <span className="text-xs font-semibold text-red-500 whitespace-nowrap bg-red-50 border border-red-100 px-1.5 py-0.5 rounded">
-                오늘 {TODAY_LABEL}
+                📍 {TODAY_LABEL}
               </span>
             </span>
           </div>
@@ -331,94 +331,80 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           const notStarted = startMs !== null && startMs < TODAY_MS && r.status === "예정";
           return (
           <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5">
-            <div className="flex items-center mb-0.5">
-              <div className="w-36 shrink-0 flex items-center gap-1.5">
-                <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
-                <span className={`text-sm font-medium w-14 shrink-0 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-500 font-semibold" : "text-gray-400"}`}>{r.role}</span>
-                <span className="text-sm text-gray-500 truncate">{r.person}</span>
-              </div>
-              <div className="flex-1 relative h-5 bg-gray-100 rounded-sm overflow-hidden">
-                {/* 오늘 세로선 */}
-                <div
-                  className="absolute top-0 bottom-0 w-px bg-red-400 z-10"
-                  style={{ left: `${todayPct}%` }}
-                />
-                {r.status === "미정" ? (
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="text-xs text-gray-400 italic">기간 산정중</span>
-                  </div>
-                ) : r.status === "확인필요" && !r.start ? (
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <span className="text-xs text-purple-400 italic">PM 확인 필요</span>
-                  </div>
-                ) : barWidth(r.start, r.end) > 0 && (
-                  <div
-                    className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : r.status === "확인필요" ? "opacity-50 border border-purple-300" : ""}`}
-                    style={{ left: `${barLeft(r.start)}%`, width: `${barWidth(r.start, r.end)}%` }}
-                  />
+            <div className="flex items-start">
+              {/* 좌측: role + person, 세부작업 */}
+              <div className="w-48 shrink-0 pt-0.5">
+                <div className="flex items-center gap-1.5">
+                  <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
+                  <span className={`text-sm font-medium shrink-0 whitespace-nowrap w-20 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-500 font-semibold" : "text-gray-400"}`}>{r.role}</span>
+                  <span className="text-sm text-gray-500 whitespace-nowrap" title={r.person}>{r.person}</span>
+                </div>
+                {r.detail && (
+                  <p className="text-xs text-gray-400 mt-0.5 pl-3.5 leading-snug" title={`${r.detail}${r.detailPerson ? ` · ${r.detailPerson}` : ""}`}>
+                    {r.detail}
+                    {r.detailPerson && <span className="ml-1 text-gray-300">· {r.detailPerson}</span>}
+                  </p>
                 )}
               </div>
-              <span className={`ml-2 text-xs w-16 shrink-0 whitespace-nowrap ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : r.status === "확인필요" ? "text-purple-500" : "text-gray-400"}`}>
-                {r.status}
-              </span>
-              {overdue && (
-                <span className="relative ml-1 shrink-0 group">
-                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-600 border border-red-200 cursor-default">
-                    기한 초과
+              {/* 우측: 바 + 날짜 */}
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center">
+                  <div className="flex-1 relative h-5 bg-gray-100 rounded-sm overflow-hidden">
+                    <div className="absolute top-0 bottom-0 w-px bg-red-400 z-10" style={{ left: `${todayPct}%` }} />
+                    {r.status === "미정" ? (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-xs text-gray-400 italic">기간 산정중</span>
+                      </div>
+                    ) : r.status === "확인필요" && !r.start ? (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-xs text-purple-400 italic">PM 확인 필요</span>
+                      </div>
+                    ) : barWidth(r.start, r.end) > 0 && (
+                      <div
+                        className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : r.status === "확인필요" ? "opacity-50 border border-purple-300" : ""}`}
+                        style={{ left: `${barLeft(r.start)}%`, width: `${barWidth(r.start, r.end)}%` }}
+                      />
+                    )}
+                  </div>
+                  <span className={`ml-2 text-xs w-16 shrink-0 whitespace-nowrap ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : r.status === "확인필요" ? "text-purple-500" : "text-gray-400"}`}>
+                    {r.status}
                   </span>
-                  <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 w-40 rounded-lg bg-gray-900 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 whitespace-normal text-center">
-                    종료일이 지났으나 완료 처리되지 않았습니다
-                    <span className="absolute top-full right-3 border-4 border-transparent border-t-gray-900" />
-                  </span>
-                </span>
-              )}
-              {!overdue && notStarted && (
-                <span className="relative ml-1 shrink-0 group">
-                  <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-600 border border-orange-200 cursor-default">
-                    시작 확인
-                  </span>
-                  <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 w-40 rounded-lg bg-gray-900 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 whitespace-normal text-center">
-                    시작일이 지났으나 아직 예정 상태입니다
-                    <span className="absolute top-full right-3 border-4 border-transparent border-t-gray-900" />
-                  </span>
-                </span>
-              )}
-            </div>
-            {r.status === "미정" ? (
-              <div className="flex items-center">
-                <div className="w-36 shrink-0" />
-                <span className="text-sm text-orange-400 italic">기간 산정중</span>
-              </div>
-            ) : r.status === "확인필요" && !r.start ? (
-              <div className="flex items-center">
-                <div className="w-36 shrink-0" />
-                <span className="text-sm text-purple-400 italic">담당 PM이 현황 확인 후 업데이트 필요</span>
-              </div>
-            ) : r.start && r.end && (
-              <div className="flex items-center">
-                <div className="w-36 shrink-0" />
-                <span className="text-sm text-gray-500 whitespace-nowrap">
-                  {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
-                  <span className="ml-1.5 text-xs text-gray-400">{calcWorkingDays(r.start, r.end)}영업일</span>
-                </span>
-              </div>
-            )}
-            {r.detail && (
-              <div className="flex items-center mt-0.5">
-                <div className="w-36 shrink-0 flex items-center gap-1 pl-1">
-                  <span className="text-gray-500 text-sm">└</span>
-                  <span className="text-sm text-gray-500">{r.detail}</span>
-                  {r.detailPerson && (
-                    <span className="text-sm text-gray-400">· {r.detailPerson}</span>
+                  {overdue && (
+                    <span className="relative ml-1 shrink-0 group">
+                      <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-600 border border-red-200 cursor-default">기한 초과</span>
+                      <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 w-40 rounded-lg bg-gray-900 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 whitespace-normal text-center">
+                        종료일이 지났으나 완료 처리되지 않았습니다
+                        <span className="absolute top-full right-3 border-4 border-transparent border-t-gray-900" />
+                      </span>
+                    </span>
+                  )}
+                  {!overdue && notStarted && (
+                    <span className="relative ml-1 shrink-0 group">
+                      <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-orange-100 text-orange-600 border border-orange-200 cursor-default">시작 확인</span>
+                      <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 w-40 rounded-lg bg-gray-900 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 whitespace-normal text-center">
+                        시작일이 지났으나 아직 예정 상태입니다
+                        <span className="absolute top-full right-3 border-4 border-transparent border-t-gray-900" />
+                      </span>
+                    </span>
                   )}
                 </div>
+                {r.status === "미정" ? (
+                  <p className="text-xs text-orange-400 italic mt-0.5">기간 산정중</p>
+                ) : r.status === "확인필요" && !r.start ? (
+                  <p className="text-xs text-purple-400 italic mt-0.5">담당 PM이 현황 확인 후 업데이트 필요</p>
+                ) : r.start && r.end && (
+                  <p className="text-xs text-gray-500 whitespace-nowrap mt-0.5">
+                    {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
+                    <span className="ml-1.5 text-gray-400">{calcWorkingDays(r.start, r.end)}영업일</span>
+                  </p>
+                )}
               </div>
-            )}
+            </div>
           </div>
           );
         }) : (
           <div className="flex items-center">
-            <div className="w-36 shrink-0" />
+            <div className="w-52 shrink-0" />
             <p className="text-xs text-gray-500 py-2">일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다</p>
           </div>
         )}
@@ -435,28 +421,32 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           </button>
           {showPastDone && (
             <div className="mt-2 pl-1">
-              {pastDoneRoles.map((r, i) => (
-                <div key={`past-${r.role}-${r.person}-${i}`} className="flex items-baseline gap-3 py-1 text-sm">
-                  <div className="w-24 shrink-0 flex items-center gap-1.5">
-                    <span className={`inline-block w-2 h-2 rounded-sm shrink-0 mt-0.5 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
-                    <span className="font-medium text-gray-600 truncate">{r.role}</span>
-                  </div>
-                  <span className="w-20 shrink-0 text-gray-400 truncate">{r.person}</span>
-                  <span className="w-64 shrink-0 whitespace-nowrap text-gray-500">
-                    {r.start && r.end ? (
-                      <>
-                        {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
-                        <span className="ml-1.5 text-xs text-gray-400">{calcWorkingDays(r.start, r.end)}영업일</span>
-                      </>
-                    ) : ""}
-                  </span>
-                  {r.detail && (
-                    <span className="text-gray-500 min-w-0" title={r.detail}>
-                      · {r.detail}
+              <div className="grid gap-y-0.5" style={{ gridTemplateColumns: "auto auto auto 1fr" }}>
+                {pastDoneRoles.map((r, i) => (
+                  <Fragment key={`past-${r.role}-${r.person}-${i}`}>
+                    {/* role */}
+                    <div className="flex items-center gap-1.5 pr-3 py-1">
+                      <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
+                      <span className="text-sm font-medium text-gray-400 whitespace-nowrap">{r.role}</span>
+                    </div>
+                    {/* person */}
+                    <span className="text-sm text-gray-400 whitespace-nowrap pr-3 py-1" title={r.person}>{r.person}</span>
+                    {/* date */}
+                    <span className="text-sm text-gray-500 whitespace-nowrap pr-3 py-1">
+                      {r.start && r.end ? (
+                        <>
+                          {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
+                          <span className="ml-1.5 text-xs text-gray-400">{calcWorkingDays(r.start, r.end)}영업일</span>
+                        </>
+                      ) : ""}
                     </span>
-                  )}
-                </div>
-              ))}
+                    {/* detail */}
+                    <span className="text-sm text-gray-400 py-1 min-w-0 truncate" title={r.detail ?? ""}>
+                      {r.detail ? `· ${r.detail}` : ""}
+                    </span>
+                  </Fragment>
+                ))}
+              </div>
             </div>
           )}
         </div>
