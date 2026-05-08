@@ -2641,11 +2641,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   <div className="flex items-center gap-2">
                     <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
                       <button
-                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => (a.start || "").localeCompare(b.start || "")))}
+                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => {
+                          if (!a.start && !b.start) return 0;
+                          if (!a.start) return 1;
+                          if (!b.start) return -1;
+                          return a.start.localeCompare(b.start);
+                        }))}
                         className="px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
                       >오래된순</button>
                       <button
-                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => (b.start || "").localeCompare(a.start || "")))}
+                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => {
+                          if (!a.start && !b.start) return 0;
+                          if (!a.start) return 1;
+                          if (!b.start) return -1;
+                          return b.start.localeCompare(a.start);
+                        }))}
                         className="px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors border-l border-gray-200"
                       >최신순</button>
                     </div>
