@@ -452,7 +452,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
 }
 
 const MILESTONE_ROLES = ["Kick-Off", "Release", "Launch"];
-const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "BE-메가존", "FE-CFE", "FE-DFE", "FE-Sotatek", "Mobile", "QA"];
+const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "BE-메가존", "FE-CFE", "FE-DFE", "FE-Sotatek", "Mobile", "DA", "QA"];
 const ALL_PRESET_ROLES = [...MILESTONE_ROLES, ...PRESET_ROLES];
 
 function isCustomRole(role: string) {
