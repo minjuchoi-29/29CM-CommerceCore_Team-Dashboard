@@ -157,11 +157,9 @@ export const TICKET_OVERRIDES: Record<string, Partial<Omit<Ticket, "key">>> = {
       { role: "BE-외주", person: "오현태 / 차진혁",  start: "2026-03-02", end: "2026-04-17", status: "완료" },
       // CSV: FE-CFE 실제 작업 03-30→04-17 (#fff2cc). 기존 03-23→04-30에서 수정.
       { role: "FE-CFE",  person: "조창훈 / 이하영",  start: "2026-03-30", end: "2026-04-17", status: "완료" },
-      // CSV: Mobile 실제 작업 04-27→04-30 (#fff2cc). 기존 03-23 시작에서 대폭 변경. 확인 필요.
-      { role: "Mobile",  person: "박상민 / 김중원",  start: "2026-04-27", end: "2026-04-30", status: "완료" },
-      // CSV: QA 04-20→05-11 (#fff2cc). 기존 04-27 시작에서 04-20으로 수정.
-      { role: "QA",      person: "-",                 start: "2026-04-20", end: "2026-05-11", status: "진행중" },
-      { role: "배포",    person: "-",                 start: "2026-05-11", end: "2026-05-11", status: "예정" },
+      { role: "Mobile",  person: "박상민 / 김중원",  start: "2026-04-27", end: "2026-05-13", status: "완료" },
+      { role: "QA",      person: "-",                 start: "2026-04-20", end: "2026-05-11", status: "완료" },
+      { role: "배포",    person: "-",                 start: "2026-05-11", end: "2026-05-11", status: "완료" },
     ],
   },
 
@@ -246,13 +244,10 @@ export const TICKET_OVERRIDES: Record<string, Partial<Omit<Ticket, "key">>> = {
   // ─────────────────────────────────────────────────────────────────
   "TM-2853": {
     roles: [
-      { role: "BE-SP",   person: "-",       start: "2026-02-01", end: "2026-04-30", status: "완료" },
-      { role: "BE-외주", person: "-",       start: "2026-02-01", end: "2026-04-30", status: "완료" },
-      // CSV: 기획(좌예슬) 실제 작업 바 없음. 스프린트 체크인만 확인. 일정 수동 확인 필요.
+      { role: "BE-SP",   person: "-",       start: "2026-02-06", end: "2026-04-22", status: "완료" },
+      { role: "BE-외주", person: "-",       start: "2026-02-06", end: "2026-04-21", status: "완료" },
       { role: "기획",    person: "좌예슬",  start: "2026-04-01", end: "2026-05-20", status: "진행중" },
-      // CSV: QA 04-27→05-15 (#fff2cc) 확인. 기존 06-01 시작에서 대폭 수정.
       { role: "QA",      person: "-",       start: "2026-04-27", end: "2026-05-15", status: "진행중" },
-      // CSV: 배포 05-20 (#ffff00) 마일스톤 확인.
       { role: "배포",    person: "-",       start: "2026-05-20", end: "2026-05-20", status: "예정" },
     ],
   },
