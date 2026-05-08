@@ -40,16 +40,17 @@ export const TICKET_OVERRIDES: Record<string, Partial<Omit<Ticket, "key">>> = {
   // ─────────────────────────────────────────────────────────────────
   "TM-1241": {
     roles: [
-      { role: "기획",    person: "김지영",    start: "2026-01-05", end: "2026-02-28", status: "완료" },
-      { role: "디자인",  person: "김정탁",    start: "2026-02-01", end: "2026-03-15", status: "완료" },
-      { role: "BE-PP",   person: "설연수",    start: "2026-03-01", end: "2026-04-15", status: "완료" },
-      { role: "DA",      person: "이남곤",    start: "2026-02-01", end: "2026-03-31", status: "완료" },
-      // CSV: FE-Sotatek 실제 작업 바 2026-03-09~03-13 확인 (기존 04-01 → 03-09로 수정)
-      { role: "BE-외주", person: "나기훈",    start: "2026-04-01", end: "2026-06-08", status: "진행중" },
-      { role: "FE-외주", person: "소타텍",    start: "2026-03-09", end: "2026-06-08", status: "진행중" },
-      { role: "BE-SP",   person: "윤정오",    start: "2026-05-07", end: "2026-06-08", status: "예정" },
-      { role: "QA",      person: "소타텍",    start: "2026-06-01", end: "2026-06-08", status: "예정" },
-      { role: "배포",    person: "소타텍",    start: "2026-06-08", end: "2026-06-08", status: "예정" },
+      { role: "기획",     person: "김지영",  start: "2026-04-08", end: "2026-04-08", status: "완료",   detail: "PRD 업데이트" },
+      { role: "디자인",   person: "김정탁",  start: "2026-04-06", end: "2026-04-08", status: "완료",   detail: "디자인 baseline" },
+      { role: "BE-PP",   person: "설연수",  start: "2026-04-23", end: "2026-04-27", status: "완료",   detail: "데이터 집계 기준 변경" },
+      { role: "BE-SP",   person: "윤정오",  start: "2026-03-03", end: "2026-03-23", status: "완료" },
+      { role: "BE-메가존", person: "나기훈",  start: "2026-03-03", end: "2026-03-23", status: "완료" },
+      { role: "BE-메가존", person: "나기훈",  start: "2026-04-23", end: "2026-04-27", status: "완료",   detail: "데이터 집계 기준 변경" },
+      { role: "FE-외주",  person: "소타텍",  start: "2026-03-09", end: "2026-03-13", status: "완료",   detail: "Sotatek 테이블 및 DB 명세 전달" },
+      { role: "FE-외주",  person: "소타텍",  start: "2026-04-27", end: "2026-04-28", status: "완료",   detail: "변경 기준 내부QA 일정 재산정" },
+      { role: "DA",      person: "이남곤",  start: "2026-04-23", end: "2026-04-27", status: "완료",   detail: "데이터 집계 기준 변경" },
+      { role: "QA",      person: "소타텍",  start: "",           end: "",           status: "확인필요" },
+      { role: "배포",    person: "소타텍",  start: "",           end: "",           status: "확인필요" },
     ],
   },
 
