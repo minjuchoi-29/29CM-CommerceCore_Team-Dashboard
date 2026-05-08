@@ -384,17 +384,6 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                 </span>
               )}
             </div>
-            {r.detail && (
-              <div className="flex items-center mt-0.5">
-                <div className="w-36 shrink-0 flex items-center gap-1 pl-1">
-                  <span className="text-gray-500 text-sm">└</span>
-                  <span className="text-sm text-gray-500">{r.detail}</span>
-                  {r.detailPerson && (
-                    <span className="text-sm text-gray-400">· {r.detailPerson}</span>
-                  )}
-                </div>
-              </div>
-            )}
             {r.status === "미정" ? (
               <div className="flex items-center">
                 <div className="w-36 shrink-0" />
@@ -412,6 +401,17 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                   {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
                   <span className="ml-1.5 text-xs text-gray-400">{calcWorkingDays(r.start, r.end)}영업일</span>
                 </span>
+              </div>
+            )}
+            {r.detail && (
+              <div className="flex items-center mt-0.5">
+                <div className="w-36 shrink-0 flex items-center gap-1 pl-1">
+                  <span className="text-gray-500 text-sm">└</span>
+                  <span className="text-sm text-gray-500">{r.detail}</span>
+                  {r.detailPerson && (
+                    <span className="text-sm text-gray-400">· {r.detailPerson}</span>
+                  )}
+                </div>
               </div>
             )}
           </div>
