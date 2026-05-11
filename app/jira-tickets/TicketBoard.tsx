@@ -968,7 +968,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       // 화면 반영 + cc-tickets-v1 갱신
       const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
-      setTickets([...(data.tickets as Ticket[]), ...freshCustom]);
+      // hiddenKeys 필터 적용 (삭제된 티켓 재등장 방지)
+      let localHiddenSync: string[] = [];
+      try {
+        const hr = localStorage.getItem("cc-hidden-keys");
+        if (hr) localHiddenSync = JSON.parse(hr);
+      } catch {}
+      const hiddenSync = new Set([...hiddenKeys, ...localHiddenSync]);
+      setTickets([...(data.tickets as Ticket[]), ...freshCustom].filter(t => !hiddenSync.has(t.key)));
       setSyncedAt(at);
       try {
         localStorage.setItem(
