@@ -2959,15 +2959,33 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 </span>
                               );
                             }
-                            if (p.dev !== "완료" && p.dev !== "대상아님") {
-                              const ws = wStyle(p.dev, "dev");
-                              pending.push(
-                                <span key="pv" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
-                                  style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
-                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
-                                  Dev · {p.dev}
-                                </span>
-                              );
+                            {
+                              const devEntries = Object.entries(p.devTracks) as [DevTrackKey, TrackState][];
+                              if (devEntries.length > 0) {
+                                // 서브 트랙별 — 완료/대상아님은 제외하고 미완료만
+                                for (const [tk, state] of devEntries) {
+                                  if (state !== "완료" && state !== "대상아님") {
+                                    const ws = wStyle(state, "dev");
+                                    pending.push(
+                                      <span key={`pv-${tk}`} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
+                                        style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
+                                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
+                                        {tk} · {state}
+                                      </span>
+                                    );
+                                  }
+                                }
+                              } else if (p.dev !== "완료" && p.dev !== "대상아님") {
+                                // 서브 트랙 미설정 시 레거시 aggregate
+                                const ws = wStyle(p.dev, "dev");
+                                pending.push(
+                                  <span key="pv" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
+                                    style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
+                                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
+                                    Dev · {p.dev}
+                                  </span>
+                                );
+                              }
                             }
                             if (pending.length === 0) return null;
                             return (
@@ -2987,11 +3005,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ds.dot }} />
                                   Design · {p.design}{p.design === "완료" ? " ✓" : ""}
                                 </span>
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
-                                  style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}`, opacity: p.dev === "완료" || p.dev === "대상아님" ? 0.4 : 1 }}>
-                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dv.dot }} />
-                                  Dev · {p.dev}{p.dev === "완료" ? " ✓" : ""}
-                                </span>
+                                {/* Dev: 서브 트랙 있으면 각각, 없으면 aggregate */}
+                                {Object.keys(p.devTracks).length > 0
+                                  ? (Object.entries(p.devTracks) as [DevTrackKey, TrackState][]).map(([tk, state]) => {
+                                      const tvStyle = trackStyle(state, "dev");
+                                      const isDone = state === "완료" || state === "대상아님";
+                                      return (
+                                        <span key={`tv-${tk}`} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
+                                          style={{ background: tvStyle.bg, color: tvStyle.text, border: `1px solid ${tvStyle.border}`, opacity: isDone ? 0.4 : 1 }}>
+                                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: tvStyle.dot }} />
+                                          {tk} · {state}{state === "완료" ? " ✓" : ""}
+                                        </span>
+                                      );
+                                    })
+                                  : (
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
+                                      style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}`, opacity: p.dev === "완료" || p.dev === "대상아님" ? 0.4 : 1 }}>
+                                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dv.dot }} />
+                                      Dev · {p.dev}{p.dev === "완료" ? " ✓" : ""}
+                                    </span>
+                                  )
+                                }
                               </>
                             );
                           }
