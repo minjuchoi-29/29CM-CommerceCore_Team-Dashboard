@@ -805,6 +805,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [hiddenKeys, setHiddenKeys]       = useState<Set<string>>(new Set());
   const [hiddenMeta, setHiddenMeta]       = useState<{ key: string; summary: string }[]>([]);
   const [showHiddenPanel, setShowHiddenPanel] = useState(false);
+  const [bulkApplyMsg, setBulkApplyMsg]   = useState<string | null>(null);
   const isResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -1380,6 +1381,67 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }
       }
     } catch {}
+  }
+
+  // 시작일 → Kick-Off 일괄 적용
+  // · tickets 중 startDate 있는 것을 대상으로
+  // · 이미 Kick-Off 날짜가 있는 티켓은 건너뜀
+  // · 변경된 schedules를 KV에 한 번에 저장
+  function bulkApplyStartDates() {
+    const targets = tickets.filter(t => t.startDate);
+    if (targets.length === 0) {
+      setBulkApplyMsg("시작일이 지정된 티켓이 없습니다.");
+      setTimeout(() => setBulkApplyMsg(null), 3000);
+      return;
+    }
+
+    let updated = { ...schedules };
+    let count = 0;
+
+    for (const t of targets) {
+      const rows = updated[t.key] ?? [];
+      const existingKickoff = rows.find(r => r.role === "Kick-Off");
+
+      // 이미 날짜 있으면 스킵
+      if (existingKickoff?.end) continue;
+
+      const isActive = INPROGRESS_STATUSES.includes(t.status) || DONE_STATUSES.includes(t.status);
+      const kickoffStatus = isActive ? "완료" as const : "예정" as const;
+
+      const newKickoff: RoleSchedule = {
+        role: "Kick-Off",
+        person: t.assignee || "-",
+        start: t.startDate!,
+        end:   t.startDate!,
+        status: existingKickoff?.status === "완료" ? "완료" as const : kickoffStatus,
+      };
+
+      if (existingKickoff) {
+        // 기존 Kick-Off 행 업데이트 (날짜만 채움)
+        updated[t.key] = rows.map(r => r.role === "Kick-Off" ? { ...r, start: t.startDate!, end: t.startDate!, status: newKickoff.status } : r);
+      } else {
+        // Kick-Off 행 맨 앞에 추가
+        updated[t.key] = [newKickoff, ...rows];
+      }
+      count++;
+    }
+
+    if (count === 0) {
+      setBulkApplyMsg("이미 모든 티켓에 킥오프 날짜가 입력되어 있습니다.");
+      setTimeout(() => setBulkApplyMsg(null), 3000);
+      return;
+    }
+
+    setSchedules(updated);
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-schedules", value: updated }),
+    }).catch(() => {});
+    try { localStorage.setItem("cc-schedules", JSON.stringify(updated)); } catch {}
+
+    setBulkApplyMsg(`✓ ${count}개 티켓의 킥오프 날짜를 시작일로 적용했습니다.`);
+    setTimeout(() => setBulkApplyMsg(null), 4000);
   }
 
   // 마운트 시 자동 로드
@@ -2104,6 +2166,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {sheetSyncMsg && (
               <span className="text-xs text-green-600 font-medium">{sheetSyncMsg}</span>
             )}
+            {bulkApplyMsg && (
+              <span className="text-xs font-medium" style={{ color: bulkApplyMsg.startsWith("✓") ? "#34d399" : "#fbbf24" }}>{bulkApplyMsg}</span>
+            )}
             {syncedAt && (
               <span className="text-xs text-gray-400">
                 JIRA 동기화:{" "}
@@ -2119,6 +2184,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </span>
               </span>
             )}
+            <button
+              onClick={bulkApplyStartDates}
+              title="시작일이 지정된 티켓의 킥오프 날짜를 일괄 적용 (이미 날짜 있는 티켓은 스킵)"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{ background: "#1c2128", border: "1px solid #30363d", color: "#7d8590" }}
+              onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#e6edf3"; (e.currentTarget as HTMLElement).style.borderColor = "#484f58"; }}
+              onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#7d8590"; (e.currentTarget as HTMLElement).style.borderColor = "#30363d"; }}
+            >
+              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              시작일 일괄 적용
+            </button>
             {hiddenMeta.length > 0 && (
               <button
                 onClick={() => setShowHiddenPanel(v => !v)}
