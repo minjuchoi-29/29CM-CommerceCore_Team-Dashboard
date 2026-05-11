@@ -803,6 +803,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [duplicateKeys, setDuplicateKeys] = useState<Set<string>>(new Set());
   const [customKeys, setCustomKeys]       = useState<Set<string>>(new Set());
   const [hiddenKeys, setHiddenKeys]       = useState<Set<string>>(new Set());
+  const [hiddenMeta, setHiddenMeta]       = useState<{ key: string; summary: string }[]>([]);
+  const [showHiddenPanel, setShowHiddenPanel] = useState(false);
   const isResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -1282,6 +1284,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }).catch(() => {});
     }
 
+    // hiddenMeta에 티켓 정보 저장 (복원용)
+    const removedTicket = tickets.find(t => t.key === key);
+    const newHiddenMeta = [
+      ...hiddenMeta.filter(m => m.key !== key),
+      ...(removedTicket ? [{ key: removedTicket.key, summary: removedTicket.summary }] : [{ key, summary: key }]),
+    ];
+    setHiddenMeta(newHiddenMeta);
+
     setTickets(prev => prev.filter(t => t.key !== key));
     const newCustomKeys = new Set([...customKeys].filter(k => k !== key));
     setCustomKeys(newCustomKeys);
@@ -1310,11 +1320,58 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "cc-hidden-keys", value: newHiddenArr }),
     }).catch(() => {});
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-hidden-meta", value: newHiddenMeta }),
+    }).catch(() => {});
     // localStorage 동기화 (오프라인 폴백용)
     try {
       localStorage.setItem("cc-custom-keys",    JSON.stringify(newCustomKeysArr));
       localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
       localStorage.setItem("cc-hidden-keys",    JSON.stringify(newHiddenArr));
+      localStorage.setItem("cc-hidden-meta",    JSON.stringify(newHiddenMeta));
+    } catch {}
+  }
+
+  // 숨긴 티켓 복원
+  async function restoreTicket(key: string) {
+    // hiddenKeys / hiddenMeta에서 제거
+    const newHiddenKeys = new Set([...hiddenKeys].filter(k => k !== key));
+    const newHiddenMeta = hiddenMeta.filter(m => m.key !== key);
+    setHiddenKeys(newHiddenKeys);
+    setHiddenMeta(newHiddenMeta);
+
+    const newHiddenArr = [...newHiddenKeys];
+
+    // KV 업데이트
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-hidden-keys", value: newHiddenArr }),
+    }).catch(() => {});
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-hidden-meta", value: newHiddenMeta }),
+    }).catch(() => {});
+    try {
+      localStorage.setItem("cc-hidden-keys", JSON.stringify(newHiddenArr));
+      localStorage.setItem("cc-hidden-meta", JSON.stringify(newHiddenMeta));
+    } catch {}
+
+    // Jira에서 단건 재조회해서 목록에 추가
+    try {
+      const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(key)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.ticket) {
+          setTickets(prev => {
+            if (prev.some(t => t.key === key)) return prev;
+            return [...prev, data.ticket as Ticket];
+          });
+        }
+      }
     } catch {}
   }
 
@@ -1380,7 +1437,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys")
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys,cc-hidden-meta")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -1412,6 +1469,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 setHiddenKeys(new Set(parsed));
                 setTickets(prev => prev.filter(t => !parsed.includes(t.key)));
               }
+            }
+          } catch {}
+        }
+
+        // hidden meta (복원용 티켓 정보): KV 우선, 없으면 localStorage 폴백
+        const kvMeta: { key: string; summary: string }[] = Array.isArray(data["cc-hidden-meta"]) ? data["cc-hidden-meta"] : [];
+        if (kvMeta.length > 0) {
+          setHiddenMeta(kvMeta);
+        } else {
+          try {
+            const local = localStorage.getItem("cc-hidden-meta");
+            if (local) {
+              const parsed: { key: string; summary: string }[] = JSON.parse(local);
+              if (parsed.length > 0) setHiddenMeta(parsed);
             }
           } catch {}
         }
@@ -2041,6 +2112,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </span>
               </span>
             )}
+            {hiddenMeta.length > 0 && (
+              <button
+                onClick={() => setShowHiddenPanel(v => !v)}
+                title="숨긴 티켓 목록 보기 / 복원"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                style={{
+                  background: showHiddenPanel ? "rgba(251,146,60,0.15)" : "#1c2128",
+                  border: `1px solid ${showHiddenPanel ? "#fb923c" : "#30363d"}`,
+                  color: showHiddenPanel ? "#fb923c" : "#7d8590",
+                }}
+              >
+                <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                숨긴 티켓 {hiddenMeta.length}
+              </button>
+            )}
             <button
               onClick={forceRefresh}
               disabled={fetching}
@@ -2058,6 +2146,55 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         {fetchError && (
           <div className="mb-4 px-4 py-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600 font-mono break-all">
             {fetchError}
+          </div>
+        )}
+
+        {/* 숨긴 티켓 복원 패널 */}
+        {showHiddenPanel && hiddenMeta.length > 0 && (
+          <div className="mb-4 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(251,146,60,0.3)", background: "rgba(251,146,60,0.05)" }}>
+            <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid rgba(251,146,60,0.2)" }}>
+              <div className="flex items-center gap-2">
+                <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="#fb923c" strokeWidth="2.5">
+                  <path d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span className="text-xs font-semibold" style={{ color: "#fb923c" }}>숨긴 티켓</span>
+                <span className="text-xs" style={{ color: "#7d8590" }}>— 복원하면 목록에 다시 표시됩니다</span>
+              </div>
+              <button
+                onClick={() => setShowHiddenPanel(false)}
+                className="text-xs transition-colors"
+                style={{ color: "#484f58" }}
+              >✕</button>
+            </div>
+            <div className="divide-y" style={{ borderColor: "rgba(251,146,60,0.1)" }}>
+              {hiddenMeta.map(m => (
+                <div key={m.key} className="flex items-center gap-3 px-4 py-2.5">
+                  <a
+                    href={`${JIRA_BASE}${m.key}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="shrink-0 text-xs font-mono font-semibold hover:underline"
+                    style={{ color: "#7d8590" }}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    {m.key}
+                  </a>
+                  <span className="flex-1 min-w-0 text-sm truncate" style={{ color: "#c9d1d9" }}>{m.summary}</span>
+                  <button
+                    onClick={() => restoreTicket(m.key)}
+                    className="shrink-0 flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium transition-colors"
+                    style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.3)", color: "#34d399" }}
+                    onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(52,211,153,0.2)"; }}
+                    onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "rgba(52,211,153,0.1)"; }}
+                  >
+                    <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    복원
+                  </button>
+                </div>
+              ))}
+            </div>
           </div>
         )}
 
