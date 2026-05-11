@@ -2362,26 +2362,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             P{activePriorities[t.key]}
                           </span>
                         )}
-                        {(() => {
-                          const p = getPlanningVal(planning[t.key]);
-                          const showDesign = p.design === "검토중";
-                          const showDev    = p.dev    === "검토중";
-                          if (!showDesign && !showDev) return null;
-                          return (
-                            <span className="shrink-0 mr-1.5 flex items-center gap-1">
-                              {showDesign && (
-                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(124,58,237,0.2)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.3)" }}>
-                                  Design 검토
-                                </span>
-                              )}
-                              {showDev && (
-                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(59,130,246,0.2)", color: "#60a5fa", border: "1px solid rgba(59,130,246,0.3)" }}>
-                                  Dev 검토
-                                </span>
-                              )}
-                            </span>
-                          );
-                        })()}
                         <span className="flex-1 min-w-0 text-sm font-medium truncate pr-3" style={{ color: "#f0f6fc" }}>{t.summary}</span>
                         <span className="w-20 shrink-0 flex justify-center">
                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
@@ -2425,8 +2405,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         : "미정" as const;
                       return { role, person: "-", start: "", end: "", status: defaultStatus, isMissing: true };
                     });
+                    // 플래닝 상태 뱃지 스타일
+                    const p = getPlanningVal(planning[t.key]);
+                    const planningBothDone = p.design === "완료" && p.dev === "완료";
+                    const trackStyle = (state: string, track: "design" | "dev") => {
+                      if (state === "완료")     return { dot: "#34d399", text: "#34d399", bg: "rgba(16,185,129,0.1)",  border: "rgba(16,185,129,0.25)" };
+                      if (state === "검토중")   return track === "design"
+                        ? { dot: "#a78bfa", text: "#a78bfa", bg: "rgba(124,58,237,0.1)", border: "rgba(124,58,237,0.25)" }
+                        : { dot: "#60a5fa", text: "#60a5fa", bg: "rgba(59,130,246,0.1)", border: "rgba(59,130,246,0.25)" };
+                      if (state === "대상아님") return { dot: "#6b7280", text: "#6b7280", bg: "rgba(75,85,99,0.1)",    border: "rgba(75,85,99,0.2)"  };
+                      /* 대기중 */               return { dot: "#4b5563", text: "#6b7280", bg: "rgba(75,85,99,0.08)",   border: "rgba(75,85,99,0.15)" };
+                    };
+                    const ds = trackStyle(p.design, "design");
+                    const dv = trackStyle(p.dev,    "dev");
+
                     return (
                       <div className="flex items-center gap-1.5 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
+                        {/* 마일스톤 칩 */}
                         {milestones.map((r, mi) => {
                           const isDone      = r.status === "완료";
                           const isMissing   = !r.end || (r as { isMissing?: boolean }).isMissing;
@@ -2444,15 +2439,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isNeedCheck ? "bg-orange-400" : MILESTONE_DOT[r.role] ?? "bg-gray-400"}`} />
                             {MILESTONE_KO[r.role] ?? r.role}
                             {r.detail && (
-                              <span className="opacity-70 max-w-[10rem] truncate" title={r.detail}>
-                                · {r.detail}
-                              </span>
+                              <span className="opacity-70 max-w-[10rem] truncate" title={r.detail}>· {r.detail}</span>
                             )}
                             <span className="opacity-80 ml-0.5">{labelText}</span>
                             {isDone && <span className="ml-0.5 opacity-60">✓</span>}
                           </span>
                           );
                         })}
+
+                        {/* 구분선 */}
+                        <span className="mx-1 text-[10px]" style={{ color: "#30363d" }}>|</span>
+
+                        {/* 플래닝 상태 — 항상 표시 */}
+                        {planningBothDone ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium" style={{ background: "rgba(16,185,129,0.12)", color: "#34d399", border: "1px solid rgba(16,185,129,0.3)" }}>
+                            ✓ 플래닝 완료
+                          </span>
+                        ) : (
+                          <>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]" style={{ background: ds.bg, color: ds.text, border: `1px solid ${ds.border}` }}>
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ds.dot }} />
+                              D · {p.design}
+                            </span>
+                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]" style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}` }}>
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dv.dot }} />
+                              Dev · {p.dev}
+                            </span>
+                          </>
+                        )}
                       </div>
                     );
                   })()}
