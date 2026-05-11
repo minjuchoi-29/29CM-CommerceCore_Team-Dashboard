@@ -628,7 +628,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
 
   // 정렬
-  const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("default");
+  const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("eta");
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기">("전체");
 
   // 사용자 직접 추가 티켓 관리
