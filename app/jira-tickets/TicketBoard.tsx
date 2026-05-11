@@ -2767,15 +2767,38 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const planningComplete = tp.design === "완료" && tp.dev === "완료";
               const ticketDone = ["론치완료", "완료", "배포완료"].includes(t.status);
               const showAgenda = !planningComplete && !ticketDone;
+
+              // ETA 경고: 완료/진행중 상태가 아닌데 ETA가 경과·임박한 경우
+              const todayStr = new Date().toISOString().split("T")[0];
+              const in7Days  = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
+              const hasEta   = t.eta && t.eta !== "-";
+              const isNotProgressOrDone = !INPROGRESS_STATUSES.includes(t.status) && !PLANNING_DONE_STATUSES.has(t.status);
+              const isEtaOverdue   = hasEta && t.eta! < todayStr && isNotProgressOrDone;
+              const isEtaImminent  = hasEta && t.eta! >= todayStr && t.eta! <= in7Days && isNotProgressOrDone;
+              const etaWarnLevel   = isEtaOverdue ? "overdue" : isEtaImminent ? "imminent" : null;
+
+              const rowBg = isSelected ? "#1c2128"
+                : isDuplicate  ? "rgba(245,158,11,0.08)"
+                : isNew        ? "rgba(16,185,129,0.08)"
+                : isEtaOverdue ? "rgba(239,68,68,0.05)"
+                : isEtaImminent ? "rgba(245,158,11,0.05)"
+                : undefined;
+
               return (
                 <div
                   key={t.key}
                   data-ticket-key={t.key}
                   className={`cursor-pointer transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""}`}
-                  style={{ borderBottom: "1px solid #21262d", background: isSelected ? "#1c2128" : isNew ? "rgba(16,185,129,0.08)" : isDuplicate ? "rgba(245,158,11,0.08)" : undefined }}
+                  style={{
+                    borderBottom: "1px solid #21262d",
+                    borderLeft: etaWarnLevel === "overdue" ? "3px solid #f87171"
+                              : etaWarnLevel === "imminent" ? "3px solid #fbbf24"
+                              : "3px solid transparent",
+                    background: rowBg,
+                  }}
                   onClick={() => handleSelect(t)}
                   onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "#1c2128"; }}
-                  onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = isNew ? "rgba(16,185,129,0.08)" : isDuplicate ? "rgba(245,158,11,0.08)" : ""; }}
+                  onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = rowBg ?? ""; }}
                 >
                   {/* 메인 행 */}
                   <div
@@ -2842,8 +2865,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <span className="w-28 shrink-0 text-sm font-medium text-center" style={{ color: t.startDate ? "#e6edf3" : "#484f58" }}>
                           {t.startDate ? formatDateWithDay(t.startDate) : "미정"}
                         </span>
-                        <span className="w-28 shrink-0 text-sm font-medium text-center" style={{ color: (!t.eta || t.eta === "-") ? "#484f58" : "#e6edf3" }}>
+                        <span className="w-28 shrink-0 text-sm font-medium text-center"
+                          style={{ color: isEtaOverdue ? "#f87171" : isEtaImminent ? "#fbbf24" : (!t.eta || t.eta === "-") ? "#484f58" : "#e6edf3",
+                                   fontWeight: etaWarnLevel ? 700 : undefined }}>
                           {!t.eta || t.eta === "-" ? "미정" : formatDateWithDay(t.eta)}
+                          {isEtaOverdue  && <span className="ml-1 text-[10px]">(!)</span>}
+                          {isEtaImminent && <span className="ml-1 text-[10px]">▲</span>}
                         </span>
                         <button
                           onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}

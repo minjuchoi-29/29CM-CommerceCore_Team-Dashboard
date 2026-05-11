@@ -22,7 +22,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
 
   if (!visible) {
     return (
-      <aside className="w-10 min-h-screen flex flex-col items-center shrink-0" style={{ background: "#111318", borderRight: "1px solid #21262d" }}>
+      <aside className="w-10 h-screen sticky top-0 flex flex-col items-center shrink-0" style={{ background: "#111318", borderRight: "1px solid #21262d" }}>
         {user && (
           <form action={logoutAction} className="mt-auto pb-4">
             <button
@@ -40,7 +40,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
   }
 
   return (
-    <aside className="w-52 min-h-screen flex flex-col shrink-0" style={{ background: "#111318", borderRight: "1px solid #21262d" }}>
+    <aside className="w-52 h-screen sticky top-0 flex flex-col shrink-0" style={{ background: "#111318", borderRight: "1px solid #21262d" }}>
       <div className="px-5 py-5" style={{ borderBottom: "1px solid #21262d" }}>
         <h1 className="text-sm font-bold" style={{ color: "#e6edf3" }}>29CM</h1>
         <p className="text-xs mt-0.5" style={{ color: "#7d8590" }}>Commerce Core</p>
