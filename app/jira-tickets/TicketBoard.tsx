@@ -782,6 +782,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [wikiInput, setWikiInput] = useState("");
   const [wikiTitleInput, setWikiTitleInput] = useState("");
   const [wikiError, setWikiError] = useState<string | null>(null);
+  const [wikiAddOpen, setWikiAddOpen] = useState(false);
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
 
   // 정렬
@@ -1901,6 +1902,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setWikiInput("");
     setWikiTitleInput("");
     setWikiError(null);
+    setWikiAddOpen(false);
   }
 
   function removeWikiLink(ticketKey: string, url: string) {
@@ -2641,29 +2643,42 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </>
               )}
 
-              {/* Wiki 링크 섹션 */}
+              {/* 관련 주요 문서 연결 섹션 */}
               <div className="mt-3 pt-3" style={{ borderTop: "1px solid #21262d" }}>
-                <p className="text-[11px] font-semibold uppercase tracking-wide mb-2 flex items-center gap-1.5" style={{ color: "#7d8590" }}>
-                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3" style={{ color: "#818cf8" }}>
-                    <path d="M8.75 2.75a.75.75 0 0 0-1.5 0v5.69L5.03 6.22a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06L8.75 8.44V2.75Z" />
-                    <path d="M3.5 9.75a.75.75 0 0 0-1.5 0v1.5A2.75 2.75 0 0 0 4.75 14h6.5A2.75 2.75 0 0 0 14 11.25v-1.5a.75.75 0 0 0-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5Z" />
-                  </svg>
-                  Wiki 링크
-                </p>
+                {/* 헤더: 타이틀 + 추가 버튼 */}
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide flex items-center gap-1.5" style={{ color: "#7d8590" }}>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0" style={{ color: "#818cf8" }}>
+                      <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                      <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
+                    </svg>
+                    관련 주요 문서 연결
+                  </p>
+                  <button
+                    onClick={() => { setWikiAddOpen(v => !v); setWikiError(null); setWikiInput(""); setWikiTitleInput(""); }}
+                    className="flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium transition-colors"
+                    style={wikiAddOpen
+                      ? { background: "rgba(124,58,237,0.15)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.4)" }
+                      : { background: "#21262d", color: "#7d8590", border: "1px solid #30363d" }}
+                  >
+                    {wikiAddOpen ? "✕ 취소" : "+ 추가"}
+                  </button>
+                </div>
 
-                {/* 등록된 Wiki 링크 목록 */}
+                {/* 등록된 문서 목록 */}
                 {(etrMap[selected.key]?.wikiLinks ?? []).length > 0 && (
                   <div className="space-y-1.5 mb-2">
                     {(etrMap[selected.key]?.wikiLinks ?? []).map(w => (
                       <div key={w.url} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ background: "#0d1117", border: "1px solid #21262d" }}>
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0" style={{ color: "#818cf8" }}>
-                          <path d="M7.25 3.688a8.035 8.035 0 0 0-4.872 2.862.75.75 0 1 1-1.226-.863 9.535 9.535 0 0 1 5.98-3.471.75.75 0 0 1 .118 1.472Zm1.5 0a.75.75 0 0 1 .118-1.472 9.534 9.534 0 0 1 5.98 3.471.75.75 0 1 1-1.226.863 8.035 8.035 0 0 0-4.872-2.862ZM10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0Zm-8.44 2.943a.75.75 0 1 0-1.12.994 9.535 9.535 0 0 0 5.98 3.471.75.75 0 0 0 .118-1.472 8.035 8.035 0 0 1-4.978-2.993Zm11 .994a.75.75 0 1 0-1.12-.994 8.035 8.035 0 0 1-4.978 2.993.75.75 0 0 0 .118 1.472 9.534 9.534 0 0 0 5.98-3.471Z" />
+                          <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                          <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
                         </svg>
                         <a
                           href={w.url}
                           target="_blank"
                           rel="noopener noreferrer"
-                          className="flex-1 min-w-0 truncate hover:underline"
+                          className="flex-1 min-w-0 truncate text-[11px] hover:underline"
                           style={{ color: "#818cf8" }}
                           title={w.url}
                         >{w.title}</a>
@@ -2676,34 +2691,42 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
                 )}
 
-                {/* Wiki URL 입력 */}
-                <div className="space-y-1.5">
-                  <input
-                    type="text"
-                    placeholder="Wiki URL (https://...atlassian.net/wiki/...)"
-                    value={wikiInput}
-                    onChange={(e) => { setWikiInput(e.target.value); setWikiError(null); }}
-                    onKeyDown={(e) => e.key === "Enter" && addWikiLink(selected.key)}
-                    className="w-full rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
-                  />
-                  <div className="flex gap-1.5">
+                {/* 입력 폼 — 추가 버튼 클릭 시에만 노출 */}
+                {wikiAddOpen && (
+                  <div className="space-y-1.5 rounded-lg p-2.5" style={{ background: "#0d1117", border: "1px solid #30363d" }}>
                     <input
+                      autoFocus
                       type="text"
-                      placeholder="페이지 제목 (비우면 URL에서 자동 추출)"
-                      value={wikiTitleInput}
-                      onChange={(e) => setWikiTitleInput(e.target.value)}
+                      placeholder="URL (https://...)"
+                      value={wikiInput}
+                      onChange={(e) => { setWikiInput(e.target.value); setWikiError(null); }}
                       onKeyDown={(e) => e.key === "Enter" && addWikiLink(selected.key)}
-                      className="flex-1 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
+                      className="w-full rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500" style={{ background: "#161b22", border: "1px solid #30363d", color: "#e6edf3" }}
                     />
-                    <button
-                      onClick={() => addWikiLink(selected.key)}
-                      disabled={!wikiInput.trim()}
-                      className="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-40 transition-colors"
-                      style={{ background: "#7c3aed", color: "#fff" }}
-                    >추가</button>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        placeholder="제목 (비우면 URL에서 자동 추출)"
+                        value={wikiTitleInput}
+                        onChange={(e) => setWikiTitleInput(e.target.value)}
+                        onKeyDown={(e) => e.key === "Enter" && addWikiLink(selected.key)}
+                        className="flex-1 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500" style={{ background: "#161b22", border: "1px solid #30363d", color: "#e6edf3" }}
+                      />
+                      <button
+                        onClick={() => addWikiLink(selected.key)}
+                        disabled={!wikiInput.trim()}
+                        className="px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 transition-colors"
+                        style={{ background: "#7c3aed", color: "#fff" }}
+                      >저장</button>
+                    </div>
+                    {wikiError && <p className="text-red-500 text-[11px]">{wikiError}</p>}
                   </div>
-                  {wikiError && <p className="text-red-500 text-[11px]">{wikiError}</p>}
-                </div>
+                )}
+
+                {/* 문서 없고 폼도 닫혀있을 때 */}
+                {(etrMap[selected.key]?.wikiLinks ?? []).length === 0 && !wikiAddOpen && (
+                  <p className="text-[11px]" style={{ color: "#484f58" }}>연결된 문서가 없습니다</p>
+                )}
               </div>
             </div>
 
