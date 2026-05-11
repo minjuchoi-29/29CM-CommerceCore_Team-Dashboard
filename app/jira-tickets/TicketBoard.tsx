@@ -4,22 +4,22 @@ import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "rea
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
 const STATUS_COLOR: Record<string, string> = {
-  "론치완료": "bg-green-100 text-green-700",
-  "완료": "bg-green-100 text-green-700",
-  "배포완료": "bg-green-100 text-green-700",
-  "개발중": "bg-blue-100 text-blue-700",
-  "In Progress": "bg-blue-100 text-blue-700",
-  "QA중": "bg-purple-100 text-purple-700",
-  "디자인완료": "bg-purple-50 text-purple-500",
-  "기획중": "bg-orange-100 text-orange-700",
-  "기획완료": "bg-green-50 text-green-600",
-  "SUGGESTED": "bg-gray-100 text-gray-500",
-  "HOLD": "bg-yellow-100 text-yellow-700",
-  "Postponed": "bg-yellow-100 text-yellow-700",
-  "철회/반려/취소": "bg-red-100 text-red-600",
-  "준비중": "bg-yellow-50 text-yellow-600",
-  "디자인중": "bg-purple-50 text-purple-400",
-  "Backlog": "bg-gray-100 text-gray-400",
+  "론치완료": "bg-emerald-900/40 text-emerald-400 border border-emerald-700/40",
+  "완료": "bg-emerald-900/40 text-emerald-400 border border-emerald-700/40",
+  "배포완료": "bg-emerald-900/40 text-emerald-400 border border-emerald-700/40",
+  "개발중": "bg-blue-900/40 text-blue-400 border border-blue-700/40",
+  "In Progress": "bg-blue-900/40 text-blue-400 border border-blue-700/40",
+  "QA중": "bg-amber-900/40 text-amber-400 border border-amber-700/40",
+  "디자인완료": "bg-purple-900/40 text-purple-400 border border-purple-700/40",
+  "기획중": "bg-orange-900/40 text-orange-400 border border-orange-700/40",
+  "기획완료": "bg-teal-900/40 text-teal-400 border border-teal-700/40",
+  "SUGGESTED": "bg-gray-800/60 text-gray-400 border border-gray-700/40",
+  "HOLD": "bg-yellow-900/40 text-yellow-400 border border-yellow-700/40",
+  "Postponed": "bg-yellow-900/40 text-yellow-400 border border-yellow-700/40",
+  "철회/반려/취소": "bg-red-900/40 text-red-400 border border-red-700/40",
+  "준비중": "bg-yellow-900/30 text-yellow-300 border border-yellow-700/30",
+  "디자인중": "bg-purple-900/30 text-purple-300 border border-purple-700/30",
+  "Backlog": "bg-gray-800/40 text-gray-500 border border-gray-700/30",
 };
 
 const ROLE_COLOR: Record<string, string> = {
@@ -77,9 +77,9 @@ type MemoVersion = {
 };
 
 const TYPE_COLOR: Record<string, string> = {
-  "Initiative": "bg-indigo-100 text-indigo-700",
-  "Epic":       "bg-violet-100 text-violet-600",
-  "Dev":        "bg-gray-100 text-gray-500",
+  "Initiative": "bg-violet-900/40 text-violet-400 border border-violet-700/40",
+  "Epic":       "bg-blue-900/40 text-blue-400 border border-blue-700/40",
+  "Dev":        "bg-gray-800/60 text-gray-400 border border-gray-700/40",
 };
 
 export type Ticket = {
@@ -320,7 +320,13 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
     ? () => false
     : (r: RoleSchedule) => r.status === "완료" && !!r.end && new Date(r.end).getTime() < viewStart;
   const pastDoneRoles  = sortedRoles.filter(isPastDone);
-  const visibleRoles   = sortedRoles.filter(r => !isPastDone(r));
+  const rawVisible     = sortedRoles.filter(r => !isPastDone(r));
+
+  // Kick-Off / Release / Launch 가 없으면 "미정" 기본 행 추가
+  const milestoneDefaults: RoleSchedule[] = MILESTONE_ROLES
+    .filter(role => !rawVisible.some(r => r.role === role))
+    .map(role => ({ role, person: "-", start: "", end: "", status: "미정" as const }));
+  const visibleRoles = [...rawVisible, ...milestoneDefaults];
 
   return (
     <div className="mt-3">
@@ -371,8 +377,8 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
               <div className="w-48 shrink-0 pt-0.5">
                 <div className="flex items-center gap-1.5">
                   <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
-                  <span className={`text-sm font-medium shrink-0 whitespace-nowrap w-20 ${MILESTONE_ROLES.includes(r.role) ? "text-indigo-500 font-semibold" : "text-gray-400"}`}>{r.role}</span>
-                  <span className="text-sm text-gray-500 whitespace-nowrap" title={r.person}>{r.person}</span>
+                  <span className={`text-sm font-medium shrink-0 whitespace-nowrap w-20 ${MILESTONE_ROLES.includes(r.role) ? "font-semibold" : ""}`} style={{ color: MILESTONE_ROLES.includes(r.role) ? "#818cf8" : "#7d8590" }}>{r.role}</span>
+                  <span className="text-sm whitespace-nowrap" style={{ color: "#9ca3af" }} title={r.person}>{r.person}</span>
                 </div>
                 {r.detail && (
                   <p className="text-xs text-gray-400 mt-0.5 pl-3.5 leading-snug" title={`${r.detail}${r.detailPerson ? ` · ${r.detailPerson}` : ""}`}>
@@ -384,7 +390,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
               {/* 우측: 바 + 날짜 */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center">
-                  <div className="flex-1 relative h-5 bg-gray-100 rounded-sm overflow-hidden">
+                  <div className="flex-1 relative h-5 rounded-sm overflow-hidden" style={{ background: "#1c2128" }}>
                     <div className="absolute top-0 bottom-0 w-px bg-red-400 z-10" style={{ left: `${todayPct}%` }} />
                     {r.status === "미정" ? (
                       <div className="absolute inset-0 flex items-center justify-center">
@@ -554,8 +560,8 @@ type TicketRequestInfo = {
   etrTickets?: EtrTicketInfo[];
 };
 
-type TrackState = "대기중" | "검토중" | "완료";
-const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료"];
+type TrackState = "대기중" | "검토중" | "완료" | "대상아님";
+const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료", "대상아님"];
 
 function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState } {
   if (!val || typeof val === "string") return { design: "대기중", dev: "대기중" };
@@ -623,6 +629,84 @@ function computeRebalance(
   toClean.forEach(key => { sheetUpdate[key] = "완료"; });
 
   return { newState, sheetUpdate };
+}
+
+function MultiSelectDropdown({
+  label,
+  items,
+  selected,
+  onToggle,
+  onClear,
+  accentColor = "#7c3aed",
+}: {
+  label: string;
+  items: string[];
+  selected: Set<string>;
+  onToggle: (v: string) => void;
+  onClear: () => void;
+  accentColor?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+  const count = selected.size;
+  return (
+    <div ref={ref} className="relative">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all border whitespace-nowrap"
+        style={{
+          background: count > 0 ? "rgba(124,58,237,0.12)" : "#1c2128",
+          borderColor: count > 0 ? accentColor : "#30363d",
+          color: count > 0 ? accentColor : "#7d8590",
+        }}
+      >
+        {label}{count > 0 ? `: ${[...selected].join(", ")}` : ": 전체"}
+        <span className="ml-0.5 text-[9px]">▾</span>
+      </button>
+      {open && (
+        <div
+          className="absolute top-full left-0 mt-1 z-50 rounded-lg border overflow-hidden shadow-xl"
+          style={{ background: "#1c2128", borderColor: "#30363d", minWidth: "140px" }}
+        >
+          <div
+            className="px-3 py-2 text-xs font-medium cursor-pointer hover:bg-opacity-80 border-b"
+            style={{ color: count === 0 ? "#a78bfa" : "#7d8590", borderColor: "#30363d" }}
+            onClick={() => { onClear(); }}
+          >
+            전체 (선택 해제)
+          </div>
+          {items.map(v => (
+            <div
+              key={v}
+              className="flex items-center gap-2 px-3 py-2 text-xs cursor-pointer transition-colors"
+              style={{ color: selected.has(v) ? "#a78bfa" : "#c9d1d9" }}
+              onMouseEnter={e => (e.currentTarget.style.background = "#21262d")}
+              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+              onClick={() => onToggle(v)}
+            >
+              <span
+                className="w-3.5 h-3.5 rounded border flex items-center justify-center shrink-0"
+                style={{
+                  borderColor: selected.has(v) ? "#7c3aed" : "#484f58",
+                  background: selected.has(v) ? "#7c3aed" : "transparent",
+                }}
+              >
+                {selected.has(v) && <span className="text-white text-[9px]">✓</span>}
+              </span>
+              {v}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function TicketBoard({ userName = "알 수 없음" }: { userName?: string }) {
@@ -1799,13 +1883,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   return (
-    <div className="flex bg-gray-50 min-h-screen">
+    <div className="flex min-h-screen" style={{ background: "#0d1117", color: "#e6edf3" }}>
       {/* ── 리스트 패널 ── */}
-      <div className={`${isDetailExpanded ? "w-44 shrink-0" : "flex-1 min-w-0"} px-3 py-8 overflow-hidden`}>
-        <div className="mb-5 flex items-start justify-between">
+      <div className={`${isDetailExpanded ? "shrink-0 overflow-hidden" : "flex-1 min-w-0"} px-3 py-8 overflow-hidden`} style={{ background: "#0d1117", ...(isDetailExpanded ? { width: "176px" } : {}) }}>
+        {isDetailExpanded && (
+          <div className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "#484f58" }}>티켓</div>
+        )}
+        <div className={`mb-5 flex items-start justify-between ${isDetailExpanded ? "hidden" : ""}`}>
           <div>
-            <h2 className="text-lg font-bold text-gray-900">전체 과제 현황</h2>
-            <p className="text-sm text-gray-400 mt-0.5">Sub Group: 29CM-P Commerce Core</p>
+            <h2 className="text-lg font-bold" style={{ color: "#e6edf3" }}>전체 과제 현황</h2>
+            <p className="text-sm mt-0.5" style={{ color: "#7d8590" }}>Sub Group: 29CM-P Commerce Core</p>
           </div>
           <div className="flex items-center gap-3 mt-1">
             {priorityError && (
@@ -1835,7 +1922,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               onClick={forceRefresh}
               disabled={fetching}
               title="JIRA에서 즉시 재동기화 (서버 캐시 초기화)"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-white border border-gray-200 text-gray-600 hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 transition-colors"
+              style={{ background: "#1c2128", border: "1px solid #30363d", color: "#e6edf3" }}
             >
               <svg className={`w-3 h-3 ${fetching ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
@@ -1851,20 +1939,40 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 과제 상태 탭 */}
-        <div className="flex gap-1.5 mb-5">
+        <div className={`flex gap-1.5 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
           {([
-            { key: "전체",           label: "전체",           desc: "모든 과제",                   activeCls: "bg-gray-800 text-white",   inactiveCls: "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50" },
-            { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중",        activeCls: "bg-blue-600 text-white",   inactiveCls: "bg-white border border-blue-200 text-blue-600 hover:bg-blue-50" },
-            { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중", activeCls: "bg-amber-500 text-white",   inactiveCls: "bg-white border border-amber-200 text-amber-600 hover:bg-amber-50" },
-            { key: "완료",           label: "완료",           desc: "론치·배포 완료",               activeCls: "bg-green-600 text-white",  inactiveCls: "bg-white border border-green-200 text-green-600 hover:bg-green-50" },
-          ] as const).map(({ key, label, desc, activeCls, inactiveCls }) => {
+            { key: "전체",           label: "전체",           desc: "모든 과제" },
+            { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중" },
+            { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중" },
+            { key: "완료",           label: "완료",           desc: "론치·배포 완료" },
+          ] as const).map(({ key, label, desc }) => {
             const active = planningTab === key;
             return (
               <button
                 key={key}
                 onClick={() => setPlanningTab(key)}
                 title={desc}
-                className={`flex-1 py-2.5 px-3 rounded-xl text-sm font-semibold transition-all shadow-sm ${active ? activeCls : inactiveCls}`}
+                className="flex-1 py-2.5 px-3 rounded-xl text-sm font-semibold transition-all"
+                style={{
+                  background: active
+                    ? key === "전체" ? "#21262d"
+                    : key === "진행 중" ? "rgba(99,102,241,0.25)"
+                    : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.2)"
+                    : "rgba(16,185,129,0.2)"
+                    : "#161b22",
+                  border: `1px solid ${active
+                    ? key === "전체" ? "#30363d"
+                    : key === "진행 중" ? "rgba(99,102,241,0.5)"
+                    : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.4)"
+                    : "rgba(16,185,129,0.4)"
+                    : "#21262d"}`,
+                  color: active
+                    ? key === "진행 중" ? "#818cf8"
+                    : key === "플래닝 대기·검토" ? "#fbbf24"
+                    : key === "완료" ? "#34d399"
+                    : "#e6edf3"
+                    : "#7d8590",
+                }}
               >
                 {label}
                 <span className={`ml-1.5 text-xs font-normal ${active ? "opacity-80" : "opacity-60"}`}>
@@ -1904,7 +2012,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 요약 카드 */}
-        <div className="grid grid-cols-4 gap-3 mb-5">
+        <div className={`grid grid-cols-4 gap-3 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
           {([
             { label: "전체",      count: preFiltered.length, numColor: "text-gray-900",  ring: "ring-gray-400"  },
             { label: "완료",      count: done,               numColor: "text-green-600", ring: "ring-green-400" },
@@ -1916,88 +2024,80 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <button
                 key={s.label}
                 onClick={() => setStatusTab(active ? "전체" : s.label)}
-                className={`bg-white rounded-xl border px-4 py-3 text-left transition-all ${active ? `border-transparent ring-2 ${s.ring}` : "border-gray-200 hover:border-gray-300"}`}
+                className="rounded-xl border px-4 py-3 text-left transition-all cursor-pointer"
+                style={{
+                  background: active ? "#1c2128" : "#161b22",
+                  borderColor: active ? "#7c3aed" : "#21262d",
+                }}
               >
-                <p className="text-xs text-gray-500">{s.label}</p>
-                <p className={`text-2xl font-bold mt-1 ${s.numColor}`}>{s.count}</p>
+                <p className="text-xs" style={{ color: "#7d8590" }}>{s.label}</p>
+                <p className="text-2xl font-bold mt-1" style={{ color: s.label === "완료" ? "#34d399" : s.label === "진행중" ? "#818cf8" : s.label === "계획/대기" ? "#fbbf24" : "#e6edf3" }}>{s.count}</p>
               </button>
             );
           })}
         </div>
 
         {/* 필터 */}
-        <div className="flex flex-col gap-2 mb-4">
-          {[
-            { label: "분기",    items: ALL_QUARTERS, state: quarters,     setState: setQuarters,     activeColor: "bg-indigo-600 text-white" },
-            { label: "레벨",    items: ALL_LEVELS,   state: levels,       setState: setLevels,       activeColor: "bg-violet-600 text-white" },
-            { label: "프로젝트", items: ALL_PROJECTS, state: projects,    setState: setProjects,     activeColor: "bg-gray-800 text-white" },
-            { label: "상태",    items: ALL_STATUSES, state: statuses,     setState: setStatuses,     activeColor: "bg-blue-600 text-white" },
-            { label: "담당자",  items: allAssignees,  state: assigneeFilter, setState: setAssigneeFilter, activeColor: "bg-pink-600 text-white" },
-            { label: "도메인",  items: allDomains,   state: domainFilter,   setState: setDomainFilter,   activeColor: "bg-teal-600 text-white" },
-            { label: "대상",    items: allTargets,   state: targetFilter,   setState: setTargetFilter,   activeColor: "bg-violet-600 text-white" },
-          ].map(({ label, items, state, setState, activeColor }) => (
-            <div key={label} className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-gray-500 w-14 shrink-0">{label}</span>
-              <button
-                onClick={() => setState(new Set())}
-                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${state.size === 0 ? activeColor : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
-              >전체</button>
-              {items.map((v) => (
-                <button key={v} onClick={() => setState((p) => toggle(p, v))}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${state.has(v) ? activeColor : "bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"}`}
-                >{v}</button>
-              ))}
-            </div>
-          ))}
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-gray-500 w-14 shrink-0">정렬</span>
-            {([
-              { key: "default",   label: "등록순",        color: "bg-gray-800" },
-              { key: "priority",  label: "우선순위 P1↑",  color: "bg-amber-500" },
-              { key: "startDate", label: "시작일순",      color: "bg-gray-800" },
-              { key: "eta",       label: "ETA순",         color: "bg-gray-800" },
-            ] as const).map(({ key, label, color }) => (
-              <button
-                key={key}
-                onClick={() => setSortBy(key)}
-                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-colors ${sortBy === key ? `${color} text-white` : "bg-white border border-gray-200 text-gray-500 hover:bg-gray-50"}`}
-              >{label}</button>
-            ))}
+        <div className={`flex items-center gap-2 mb-4 flex-wrap ${isDetailExpanded ? "hidden" : ""}`}>
+          <MultiSelectDropdown label="분기" items={ALL_QUARTERS} selected={quarters} onToggle={v => setQuarters(p => toggle(p, v))} onClear={() => setQuarters(new Set())} />
+          <MultiSelectDropdown label="레벨" items={ALL_LEVELS} selected={levels} onToggle={v => setLevels(p => toggle(p, v))} onClear={() => setLevels(new Set())} />
+          <MultiSelectDropdown label="프로젝트" items={ALL_PROJECTS} selected={projects} onToggle={v => setProjects(p => toggle(p, v))} onClear={() => setProjects(new Set())} />
+          <MultiSelectDropdown label="상태" items={ALL_STATUSES} selected={statuses} onToggle={v => setStatuses(p => toggle(p, v))} onClear={() => setStatuses(new Set())} />
+          <MultiSelectDropdown label="담당자" items={allAssignees} selected={assigneeFilter} onToggle={v => setAssigneeFilter(p => toggle(p, v))} onClear={() => setAssigneeFilter(new Set())} />
+          <MultiSelectDropdown label="도메인" items={allDomains} selected={domainFilter} onToggle={v => setDomainFilter(p => toggle(p, v))} onClear={() => setDomainFilter(new Set())} />
+          <MultiSelectDropdown label="대상" items={allTargets} selected={targetFilter} onToggle={v => setTargetFilter(p => toggle(p, v))} onClear={() => setTargetFilter(new Set())} />
+
+          <div className="w-px h-4 mx-1 shrink-0" style={{ background: "#30363d" }} />
+
+          {/* 정렬 */}
+          <div className="relative" style={{ display: "inline-block" }}>
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value as typeof sortBy)}
+              className="appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-xs font-medium cursor-pointer border transition-all"
+              style={{ background: "#1c2128", borderColor: "#7c3aed", color: "#a78bfa", outline: "none" }}
+            >
+              <option value="eta">ETA순</option>
+              <option value="default">등록순</option>
+              <option value="priority">우선순위 P1↑</option>
+              <option value="startDate">시작일순</option>
+            </select>
+            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px]" style={{ color: "#a78bfa" }}>▾</span>
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className="text-xs text-gray-500 w-14 shrink-0">검색</span>
+
+          {/* 검색 */}
+          <div className="relative ml-1">
+            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#7d8590" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
             <input
               type="text"
               placeholder="티켓 번호 · 제목 · 담당자"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="border border-gray-200 rounded-lg px-3 py-1 text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-300 w-64"
+              onChange={e => setSearch(e.target.value)}
+              className="pl-7 pr-3 py-1.5 rounded-lg text-xs border transition-all"
+              style={{ background: "#1c2128", borderColor: "#30363d", color: "#e6edf3", outline: "none", width: "190px" }}
             />
           </div>
-          <div className="flex items-center gap-1.5 flex-wrap">
-            <span className="text-xs text-gray-500 w-14 shrink-0">티켓 추가</span>
+
+          {/* 티켓 추가 */}
+          <div className="flex items-center gap-1.5 ml-1">
             <input
               type="text"
-              placeholder="예: TM-1234, TM-5678 (쉼표/공백으로 여러 개 입력)"
+              placeholder="예: TM-1234, TM-5678"
               value={addKeyInput}
-              onChange={(e) => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
-              onKeyDown={(e) => e.key === "Enter" && addTickets(addKeyInput)}
-              className="border border-gray-200 rounded-lg px-3 py-1 text-sm font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 w-80"
+              onChange={e => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
+              onKeyDown={e => e.key === "Enter" && addTickets(addKeyInput)}
+              className="px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-all"
+              style={{ background: "#1c2128", borderColor: "#30363d", color: "#e6edf3", outline: "none", width: "180px" }}
             />
             <button
               onClick={() => addTickets(addKeyInput)}
               disabled={addKeyLoading || !addKeyInput.trim()}
-              className="px-3 py-1 rounded-lg text-xs font-medium bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
+              style={{ background: "#7c3aed", color: "white" }}
             >
-              {addKeyLoading
-                ? addKeyProgress
-                  ? `${addKeyProgress.current}/${addKeyProgress.total} 추가 중…`
-                  : "추가 중…"
-                : "추가"}
+              {addKeyLoading ? (addKeyProgress ? `${addKeyProgress.current}/${addKeyProgress.total}` : "추가 중…") : "추가"}
             </button>
-            {addKeyError && (
-              <span className="text-xs text-red-500">{addKeyError}</span>
-            )}
+            {addKeyError && <span className="text-xs" style={{ color: "#f87171" }}>{addKeyError}</span>}
           </div>
         </div>
 
@@ -2080,9 +2180,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 티켓 목록 */}
-        <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
+        <div className="rounded-xl overflow-hidden" style={{ border: "1px solid #21262d", background: "#0d1117" }}>
           {/* 헤더 */}
-          <div className="flex items-center px-4 py-2.5 bg-gray-50 border-b border-gray-200 text-xs text-gray-600 font-semibold">
+          <div className="flex items-center px-4 py-2.5 text-xs font-semibold" style={{ background: "#161b22", borderBottom: "1px solid #21262d", color: "#484f58" }}>
             {isDetailExpanded ? (
               <span className="flex-1 min-w-0">티켓</span>
             ) : (
@@ -2103,7 +2203,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
 
           {filtered.length === 0 ? (
-            <div className="py-12 text-center text-sm text-gray-400">검색 결과가 없습니다.</div>
+            <div className="py-12 text-center text-sm" style={{ color: "#484f58" }}>검색 결과가 없습니다.</div>
           ) : (
             filtered.map((t, idx) => {
               const isSelected = selected?.key === t.key;
@@ -2117,7 +2217,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <div
                   key={t.key}
                   data-ticket-key={t.key}
-                  className={`border-b border-gray-100 last:border-0 transition-colors duration-700 ${isSelected ? "bg-indigo-50" : isNew ? "bg-emerald-50" : isDuplicate ? "bg-amber-50 ring-1 ring-inset ring-amber-200" : "hover:bg-gray-50"}`}
+                  className={`transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""}`}
+                  style={{ borderBottom: "1px solid #21262d", background: isSelected ? "#1c2128" : isNew ? "rgba(16,185,129,0.08)" : isDuplicate ? "rgba(245,158,11,0.08)" : undefined }}
+                  onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "#1c2128"; }}
+                  onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = isNew ? "rgba(16,185,129,0.08)" : isDuplicate ? "rgba(245,158,11,0.08)" : ""; }}
                 >
                   {/* 메인 행 */}
                   <div
@@ -2149,7 +2252,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         ) : (
                           <span className="w-6 shrink-0" />
                         )}
-                        <span className="w-8 shrink-0 text-center text-xs text-gray-300 font-mono">{idx + 1}</span>
+                        <span className="w-8 shrink-0 text-center text-xs font-mono" style={{ color: "#484f58" }}>{idx + 1}</span>
                         <a
                           href={`${JIRA_BASE}${t.key}`}
                           target="_blank"
@@ -2177,41 +2280,41 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           return (
                             <span className="shrink-0 mr-1.5 flex items-center gap-1">
                               {!designDone && (
-                                <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.design === "검토중" ? "rgba(124,58,237,0.2)" : "rgba(75,85,99,0.2)", color: p.design === "검토중" ? "#a78bfa" : "#9ca3af", border: `1px solid ${p.design === "검토중" ? "rgba(124,58,237,0.3)" : "rgba(75,85,99,0.3)"}` }}>
                                   Design{p.design === "검토중" ? " 검토" : " 대기"}
                                 </span>
                               )}
                               {!devDone && (
-                                <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.dev === "검토중" ? "rgba(59,130,246,0.2)" : "rgba(75,85,99,0.2)", color: p.dev === "검토중" ? "#60a5fa" : "#9ca3af", border: `1px solid ${p.dev === "검토중" ? "rgba(59,130,246,0.3)" : "rgba(75,85,99,0.3)"}` }}>
                                   Dev{p.dev === "검토중" ? " 검토" : " 대기"}
                                 </span>
                               )}
                             </span>
                           );
                         })()}
-                        <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
+                        <span className="flex-1 min-w-0 text-sm truncate pr-3" style={{ color: "#e6edf3" }}>{t.summary}</span>
                         <span className="w-20 shrink-0 flex justify-center">
                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
                             {t.type}
                           </span>
                         </span>
-                        <span className="w-16 shrink-0 text-xs text-gray-500 text-center">{t.project}</span>
-                        <span className="w-20 shrink-0 text-sm font-semibold text-gray-900 text-center truncate">{t.assignee}</span>
+                        <span className="w-16 shrink-0 text-xs text-center" style={{ color: "#7d8590" }}>{t.project}</span>
+                        <span className="w-20 shrink-0 text-sm font-semibold text-center truncate" style={{ color: "#e6edf3" }}>{t.assignee}</span>
                         <span className="w-28 shrink-0 flex justify-center">
                           <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-semibold ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
                             {t.status}
                           </span>
                         </span>
-                        <span className={`w-28 shrink-0 text-sm font-medium text-center ${t.startDate ? "text-gray-900" : "text-gray-300"}`}>
+                        <span className="w-28 shrink-0 text-sm font-medium text-center" style={{ color: t.startDate ? "#e6edf3" : "#484f58" }}>
                           {t.startDate ? formatDateWithDay(t.startDate) : "미정"}
                         </span>
-                        <span className={`w-28 shrink-0 text-sm font-medium text-center ${!t.eta || t.eta === "-" ? "text-gray-300" : "text-gray-900"}`}>
+                        <span className="w-28 shrink-0 text-sm font-medium text-center" style={{ color: (!t.eta || t.eta === "-") ? "#484f58" : "#e6edf3" }}>
                           {!t.eta || t.eta === "-" ? "미정" : formatDateWithDay(t.eta)}
                         </span>
                         <button
                           onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}
                           title="목록에서 제거"
-                          className="w-6 shrink-0 flex justify-center items-center text-gray-300 hover:text-red-400 transition-colors"
+                          className="w-6 shrink-0 flex justify-center items-center hover:text-red-400 transition-colors" style={{ color: "#484f58" }}
                         >×</button>
                       </>
                     )}
@@ -2253,8 +2356,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       {/* ── 우측 상세 패널 ── */}
       {selected && (
         <div
-          className={`shrink-0 sticky top-0 h-screen border-l border-gray-200 bg-white relative flex flex-col ${isDetailExpanded ? "flex-1" : ""}`}
-          style={isDetailExpanded ? undefined : { width: sidebarWidth }}
+          className={`shrink-0 sticky top-0 h-screen relative flex flex-col ${isDetailExpanded ? "flex-1" : ""}`}
+          style={{ borderLeft: "1px solid #21262d", background: "#0d1117", ...(isDetailExpanded ? {} : { width: sidebarWidth }) }}
         >
           {/* 드래그 핸들 + 펼치기/접기 버튼 */}
           <div
@@ -2265,7 +2368,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               onMouseDown={(e) => e.stopPropagation()}
               onClick={() => setIsDetailExpanded(v => !v)}
               title={isDetailExpanded ? "접기" : "펼치기"}
-              className="absolute top-1/2 -translate-y-1/2 -left-3 w-6 h-12 bg-white border border-gray-200 rounded-full shadow-sm flex items-center justify-center text-gray-400 hover:text-indigo-500 hover:border-indigo-300 hover:shadow-md transition-all z-20 text-xs"
+              className="absolute top-1/2 -translate-y-1/2 -left-3 w-6 h-12 rounded-full flex items-center justify-center transition-all z-20 text-xs"
+              style={{ background: "#161b22", border: "1px solid #30363d", color: "#7d8590" }}
             >
               {isDetailExpanded ? "›" : "‹"}
             </button>
@@ -2275,7 +2379,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {/* 헤더 */}
             <div className="flex justify-between items-start mb-4">
               <div className="flex-1 pr-2">
-                <h3 className="text-base font-bold text-gray-900 leading-snug">{selected.summary}</h3>
+                <h3 className="text-base font-bold leading-snug" style={{ color: "#e6edf3" }}>{selected.summary}</h3>
                 {(() => {
                   const p = getPlanningVal(planning[selected.key]);
                   const designDone = p.design === "완료";
@@ -2284,12 +2388,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   return (
                     <div className="flex gap-1 mt-1.5">
                       {!designDone && (
-                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                        <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.design === "검토중" ? "rgba(124,58,237,0.2)" : "rgba(75,85,99,0.2)", color: p.design === "검토중" ? "#a78bfa" : "#9ca3af", border: `1px solid ${p.design === "검토중" ? "rgba(124,58,237,0.3)" : "rgba(75,85,99,0.3)"}` }}>
                           Design{p.design === "검토중" ? " 검토" : " 대기"}
                         </span>
                       )}
                       {!devDone && (
-                        <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                        <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.dev === "검토중" ? "rgba(59,130,246,0.2)" : "rgba(75,85,99,0.2)", color: p.dev === "검토중" ? "#60a5fa" : "#9ca3af", border: `1px solid ${p.dev === "검토중" ? "rgba(59,130,246,0.3)" : "rgba(75,85,99,0.3)"}` }}>
                           Dev{p.dev === "검토중" ? " 검토" : " 대기"}
                         </span>
                       )}
@@ -2299,7 +2403,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
               <button
                 onClick={() => { setSelected(null); setEditMode(false); }}
-                className="text-gray-400 hover:text-gray-600 text-lg leading-none shrink-0"
+                className="text-lg leading-none shrink-0" style={{ color: "#7d8590" }}
               >×</button>
             </div>
 
@@ -2323,15 +2427,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   { label: "ETA",     value: (!selected.eta || selected.eta === "-") ? "미정" : formatDateWithDay(selected.eta) },
                 ].map(({ label, value }) => (
                   <div key={label}>
-                    <span className="text-gray-500">{label} </span>
-                    <span className="text-gray-700 font-medium">{value || "-"}</span>
+                    <span style={{ color: "#7d8590" }}>{label} </span>
+                    <span className="font-medium" style={{ color: "#e6edf3" }}>{value || "-"}</span>
                   </div>
                 ))}
               </div>
             </div>
 
             {/* 추가 메타 정보 */}
-            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-sm">
+            <div className="rounded-lg px-3 py-2.5 mb-4 space-y-1.5 text-sm" style={{ background: "#161b22", border: "1px solid #21262d" }}>
               {[
                 { label: "Main Subject",  value: selected.requestDept },
                 { label: "요청부문",      value: selected.bodyRequestDept },
@@ -2339,46 +2443,46 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 { label: "Story Points",  value: selected.storyPoints?.toString() },
               ].map(({ label, value }) => (
                 <div key={label} className="flex items-center gap-1">
-                  <span className="text-gray-500 w-28 shrink-0">{label}</span>
-                  <span className="text-gray-700 font-medium">{value || <span className="text-gray-300">-</span>}</span>
+                  <span className="w-28 shrink-0" style={{ color: "#7d8590" }}>{label}</span>
+                  <span className="font-medium" style={{ color: "#e6edf3" }}>{value || <span style={{ color: "#484f58" }}>-</span>}</span>
                 </div>
               ))}
               <div className="flex items-center gap-1">
-                <span className="text-gray-500 w-28 shrink-0">상위 항목</span>
+                <span className="w-28 shrink-0" style={{ color: "#7d8590" }}>상위 항목</span>
                 {selected.parent
                   ? <a href={`${JIRA_BASE}${selected.parent}`} target="_blank" rel="noopener noreferrer"
                       className="font-mono text-blue-500 hover:underline">{selected.parent}</a>
-                  : <span className="text-gray-300">-</span>
+                  : <span style={{ color: "#484f58" }}>-</span>
                 }
               </div>
               <div className="flex items-center gap-1">
-                <span className="text-gray-500 w-28 shrink-0">Health Check</span>
+                <span className="w-28 shrink-0" style={{ color: "#7d8590" }}>Health Check</span>
                 {selected.healthCheck
                   ? <HealthBadge value={selected.healthCheck} />
-                  : <span className="text-gray-300">-</span>
+                  : <span style={{ color: "#484f58" }}>-</span>
                 }
               </div>
               <div className="flex items-center gap-1">
-                <span className="text-gray-500 w-28 shrink-0">2-Pager</span>
+                <span className="w-28 shrink-0" style={{ color: "#7d8590" }}>2-Pager</span>
                 {selected.twoPagerUrl
                   ? <a href={selected.twoPagerUrl} target="_blank" rel="noopener noreferrer"
                       className="text-blue-500 hover:underline truncate">링크 열기</a>
-                  : <span className="text-gray-300">-</span>
+                  : <span style={{ color: "#484f58" }}>-</span>
                 }
               </div>
               <div className="flex items-center gap-1">
-                <span className="text-gray-500 w-28 shrink-0">PRD Link</span>
+                <span className="w-28 shrink-0" style={{ color: "#7d8590" }}>PRD Link</span>
                 {selected.prdUrl
                   ? <a href={selected.prdUrl} target="_blank" rel="noopener noreferrer"
                       className="text-blue-500 hover:underline truncate">링크 열기</a>
-                  : <span className="text-gray-300">-</span>
+                  : <span style={{ color: "#484f58" }}>-</span>
                 }
               </div>
             </div>
 
             {/* 요구사항 출처 */}
-            <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2.5 mb-4 text-xs">
-              <p className="font-semibold text-gray-500 uppercase tracking-wide mb-2">요구사항 출처</p>
+            <div className="rounded-lg px-3 py-2.5 mb-4 text-xs" style={{ background: "#161b22", border: "1px solid #21262d" }}>
+              <p className="font-semibold uppercase tracking-wide mb-2" style={{ color: "#7d8590" }}>요구사항 출처</p>
 
               {/* 출처 선택 */}
               <div className="flex gap-1.5 mb-3">
@@ -2396,7 +2500,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <button
                       key={src}
                       onClick={() => setEtrSource(selected.key, src)}
-                      className={`flex-1 py-1.5 px-2 rounded-lg font-medium border transition-colors ${active ? activeColor : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+                      className={`flex-1 py-1.5 px-2 rounded-lg font-medium border transition-colors ${active ? activeColor : "hover:opacity-80"}`}
+                      style={active ? undefined : { background: "#21262d", borderColor: "#30363d", color: "#7d8590" }}
                     >{label}</button>
                   );
                 })}
@@ -2409,7 +2514,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {(etrMap[selected.key]?.etrTickets ?? []).length > 0 ? (
                     <div className="space-y-1.5 mb-2">
                       {(etrMap[selected.key]?.etrTickets ?? []).map(t => (
-                        <div key={t.key} className="flex items-start gap-2 bg-white border border-gray-200 rounded px-2 py-1.5">
+                        <div key={t.key} className="flex items-start gap-2 rounded px-2 py-1.5" style={{ background: "#0d1117", border: "1px solid #21262d" }}>
                           <a
                             href={`${JIRA_BASE}${t.key}`}
                             target="_blank"
@@ -2418,18 +2523,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >{t.key}</a>
                           <div className="flex-1 min-w-0">
                             {t.requestDept && (
-                              <span className="inline-block text-gray-400 mr-1">[{t.requestDept}]</span>
+                              <span className="inline-block mr-1" style={{ color: "#7d8590" }}>[{t.requestDept}]</span>
                             )}
                             {t.summary && (
-                              <span className="text-gray-600 break-words">{t.summary}</span>
+                              <span className="break-words" style={{ color: "#e6edf3" }}>{t.summary}</span>
                             )}
                             {!t.requestDept && !t.summary && (
-                              <span className="text-gray-300 italic">정보 없음</span>
+                              <span className="italic" style={{ color: "#484f58" }}>정보 없음</span>
                             )}
                           </div>
                           <button
                             onClick={() => removeEtr(selected.key, t.key)}
-                            className="text-gray-300 hover:text-red-400 transition-colors shrink-0 mt-0.5"
+                            className="hover:text-red-400 transition-colors shrink-0 mt-0.5" style={{ color: "#484f58" }}
                           >×</button>
                         </div>
                       ))}
@@ -2446,7 +2551,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       value={etrInput}
                       onChange={(e) => { setEtrInput(e.target.value.toUpperCase()); setEtrError(null); }}
                       onKeyDown={(e) => e.key === "Enter" && addEtr(selected.key, etrInput)}
-                      className="flex-1 border border-gray-200 rounded px-2 py-1 font-mono text-gray-900 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300"
+                      className="flex-1 rounded px-2 py-1 font-mono focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
                     />
                     <button
                       onClick={() => addEtr(selected.key, etrInput)}
@@ -2459,19 +2564,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               )}
             </div>
 
-            <div className="border-t border-gray-200 pt-4">
+            <div className="pt-4" style={{ borderTop: "1px solid #21262d" }}>
               {/* 주요 내용 요약 */}
               <div className="mb-4">
                 {/* 헤더 */}
                 <div className="flex items-center justify-between mb-2">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">주요 내용 요약</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#7d8590" }}>주요 내용 요약</p>
                   <div className="flex items-center gap-2">
                     {/* AI 재생성 버튼 */}
                     {!memoEditMode && (
                       <button
                         onClick={() => regenerateSummary(selected.key)}
                         disabled={summaryLoading.has(selected.key)}
-                        className="flex items-center gap-1 text-xs text-gray-400 hover:text-indigo-500 disabled:opacity-40 transition-colors"
+                        className="flex items-center gap-1 text-xs hover:text-indigo-400 disabled:opacity-40 transition-colors" style={{ color: "#7d8590" }}
                         title="AI로 요약 재생성"
                       >
                         <svg className={`w-3 h-3 ${summaryLoading.has(selected.key) ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -2493,7 +2598,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium"
                         >저장</button>
                         <button onClick={() => setMemoEditMode(false)}
-                          className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
+                          className="text-xs px-2 py-1 hover:opacity-80" style={{ color: "#7d8590" }}>취소</button>
                       </div>
                     )}
                   </div>
@@ -2513,7 +2618,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     onChange={(e) => setMemoText(e.target.value)}
                     placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
                     rows={6}
-                    className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-y"
+                    className="w-full text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
                   />
                 ) : summaryLoading.has(selected.key) ? (
                   <div className="flex items-center gap-2 text-xs text-indigo-400 bg-indigo-50 rounded-lg px-3 py-2">
@@ -2535,7 +2640,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         : cur.text;
                       return (
                         <div className="overflow-visible">
-                          <div className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed bg-gray-50 rounded-lg px-3 py-2.5 mb-1">
+                          <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-lg px-3 py-2.5 mb-1" style={{ color: "#e6edf3", background: "#161b22" }}>
                             {displayText}
                           </div>
                           {needsCollapse && (
@@ -2547,14 +2652,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             </button>
                           )}
                           <div className="flex items-center justify-between">
-                            <span className="text-xs text-gray-400 flex items-center gap-1">
-                              {cur.isAI && <span className="px-1 py-0.5 rounded bg-indigo-50 text-indigo-400 border border-indigo-100">AI</span>}
+                            <span className="text-xs flex items-center gap-1" style={{ color: "#7d8590" }}>
+                              {cur.isAI && <span className="px-1 py-0.5 rounded border" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8", borderColor: "rgba(99,102,241,0.3)" }}>AI</span>}
                               {cur.author}{cur.date ? ` · ${cur.date}` : ""}
                             </span>
                             {(memoHistory[selected.key]?.length ?? 0) > 1 && (
                               <button
                                 onClick={() => setMemoHistoryOpen(o => !o)}
-                                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+                                className="text-xs hover:opacity-80 transition-colors" style={{ color: "#7d8590" }}
                               >
                                 {memoHistoryOpen ? "히스토리 닫기" : `이전 버전 ${(memoHistory[selected.key]?.length ?? 1) - 1}개`}
                               </button>
@@ -2566,31 +2671,31 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                     {/* 히스토리 */}
                     {memoHistoryOpen && (memoHistory[selected.key]?.length ?? 0) > 1 && (
-                      <div className="mt-3 space-y-2 border-t border-gray-100 pt-3">
-                        <p className="text-xs text-gray-400 font-medium mb-1.5">이전 버전</p>
+                      <div className="mt-3 space-y-2 pt-3" style={{ borderTop: "1px solid #21262d" }}>
+                        <p className="text-xs font-medium mb-1.5" style={{ color: "#7d8590" }}>이전 버전</p>
                         {[...(memoHistory[selected.key] ?? [])].reverse().slice(1).map((v, i) => (
-                          <div key={i} className="border border-gray-100 rounded-lg overflow-visible opacity-70">
-                            <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 rounded-t-lg border-b border-gray-100">
-                              <span className="text-xs text-gray-500 flex items-center gap-1">
-                                {v.isAI && <span className="px-1 py-0.5 rounded bg-indigo-50 text-indigo-400 text-xs">AI</span>}
+                          <div key={i} className="rounded-lg overflow-visible opacity-70" style={{ border: "1px solid #21262d" }}>
+                            <div className="flex items-center justify-between px-3 py-1.5 rounded-t-lg" style={{ background: "#161b22", borderBottom: "1px solid #21262d" }}>
+                              <span className="text-xs flex items-center gap-1" style={{ color: "#7d8590" }}>
+                                {v.isAI && <span className="px-1 py-0.5 rounded text-xs" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}>AI</span>}
                                 {v.author}
                               </span>
-                              <span className="text-xs text-gray-400">{v.date}</span>
+                              <span className="text-xs" style={{ color: "#7d8590" }}>{v.date}</span>
                             </div>
-                            <div className="text-sm text-gray-500 whitespace-pre-wrap leading-relaxed px-3 py-2">{v.text}</div>
+                            <div className="text-sm whitespace-pre-wrap leading-relaxed px-3 py-2" style={{ color: "#7d8590" }}>{v.text}</div>
                           </div>
                         ))}
                       </div>
                     )}
                   </>
                 ) : (
-                  <p className="text-xs text-gray-300 italic">입력된 내용이 없습니다</p>
+                  <p className="text-xs italic" style={{ color: "#484f58" }}>입력된 내용이 없습니다</p>
                 )}
               </div>
 
               {/* 메모 */}
-              <div className="mb-4 border-t border-gray-200 pt-4">
-                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">메모</p>
+              <div className="mb-4 pt-4" style={{ borderTop: "1px solid #21262d" }}>
+                <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "#7d8590" }}>메모</p>
 
                 {(ticketNotes[selected.key] ?? []).length > 0 ? (() => {
                   type Group = { author: string; date: string; items: { text: string; idx: number }[] };
@@ -2607,18 +2712,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   return (
                     <div className="space-y-2 mb-2">
                       {groups.map((g, gi) => (
-                        <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
-                          <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
-                            <span className="text-xs font-medium text-gray-600">{g.author}</span>
-                            <span className="text-xs text-gray-400">{g.date}</span>
+                        <div key={gi} className="rounded-lg overflow-hidden" style={{ border: "1px solid #21262d" }}>
+                          <div className="flex items-center justify-between px-3 py-1.5" style={{ background: "#161b22", borderBottom: "1px solid #21262d" }}>
+                            <span className="text-xs font-medium" style={{ color: "#e6edf3" }}>{g.author}</span>
+                            <span className="text-xs" style={{ color: "#7d8590" }}>{g.date}</span>
                           </div>
-                          <div className="divide-y divide-gray-50">
+                          <div className="divide-y" style={{ borderColor: "#21262d" }}>
                             {g.items.map(({ text, idx }) => (
                               <div key={idx} className="group flex items-start gap-2 px-3 py-2">
-                                <p className="flex-1 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                <p className="flex-1 text-sm whitespace-pre-wrap leading-relaxed" style={{ color: "#e6edf3" }}>{text}</p>
                                 <button
                                   onClick={() => deleteTicketNote(selected.key, idx)}
-                                  className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+                                  className="shrink-0 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5" style={{ color: "#484f58" }}
                                 >삭제</button>
                               </div>
                             ))}
@@ -2628,7 +2733,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </div>
                   );
                 })() : (
-                  <p className="text-xs text-gray-300 italic mb-2">등록된 메모가 없습니다</p>
+                  <p className="text-xs italic mb-2" style={{ color: "#484f58" }}>등록된 메모가 없습니다</p>
                 )}
 
                 <div className="flex flex-col gap-1.5">
@@ -2643,7 +2748,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     }}
                     placeholder="메모를 입력하세요 (⌘+Enter로 등록)"
                     rows={2}
-                    className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                    className="w-full text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
                   />
                   <button
                     onClick={() => { addTicketNote(selected.key, ticketNoteInput); setTicketNoteInput(""); }}
@@ -2654,13 +2759,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
 
               {/* 플래닝 상태 */}
-              <div className="border-t border-gray-100 pt-4 mb-4">
+              <div className="pt-4 mb-4" style={{ borderTop: "1px solid #21262d" }}>
                 <button
                   onClick={() => setPlanningOpen(o => !o)}
                   className="flex items-center justify-between w-full mb-2 group"
                 >
                   <div className="flex items-center gap-2">
-                    <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">플래닝 상태</p>
+                    <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#7d8590" }}>플래닝 상태</p>
                     {(() => {
                       const p = getPlanningVal(planning[selected.key]);
                       const allDone = p.design === "완료" && p.dev === "완료";
@@ -2676,7 +2781,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     })()}
                   </div>
                   <svg
-                    className={`w-3.5 h-3.5 text-gray-400 transition-transform ${planningOpen ? "rotate-180" : ""}`}
+                    className={`w-3.5 h-3.5 transition-transform ${planningOpen ? "rotate-180" : ""}`} style={{ color: "#7d8590" }}
                     viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
                   >
                     <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round"/>
@@ -2695,15 +2800,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <span className={`text-sm font-medium w-12 shrink-0 ${track === "design" ? "text-violet-600" : "text-blue-600"}`}>{label}</span>
                         {TRACK_STATES.map((s) => {
                           const active = current === s;
-                          const activeClass =
-                            s === "완료"   ? "bg-green-600 text-white border-green-600" :
-                            s === "검토중" ? (track === "design" ? "bg-violet-600 text-white border-violet-600" : "bg-blue-600 text-white border-blue-600") :
-                                             "bg-gray-500 text-white border-gray-500";
+                          const activeStyle =
+                            s === "완료"     ? { background: "rgba(16,185,129,0.25)", borderColor: "rgba(16,185,129,0.5)", color: "#34d399" } :
+                            s === "검토중"   ? (track === "design" ? { background: "rgba(124,58,237,0.25)", borderColor: "rgba(124,58,237,0.5)", color: "#a78bfa" } : { background: "rgba(59,130,246,0.25)", borderColor: "rgba(59,130,246,0.5)", color: "#60a5fa" }) :
+                            s === "대상아님" ? { background: "rgba(75,85,99,0.25)", borderColor: "rgba(75,85,99,0.5)", color: "#9ca3af" } :
+                                               { background: "rgba(75,85,99,0.15)", borderColor: "rgba(75,85,99,0.4)", color: "#6b7280" };
                           return (
                             <button
                               key={s}
                               onClick={() => savePlanning(selected.key, track, s)}
-                              className={`flex-1 py-1.5 px-2 rounded-lg text-sm font-medium border transition-colors ${active ? activeClass : "bg-white border-gray-200 text-gray-500 hover:bg-gray-50"}`}
+                              className="flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors hover:opacity-90"
+                              style={active ? activeStyle : { background: "#161b22", borderColor: "#30363d", color: "#484f58" }}
                             >{s}</button>
                           );
                         })}
@@ -2714,7 +2821,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                 {/* 플래닝 코멘트 */}
                 <div className="mt-3">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">플래닝 코멘트</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "#7d8590" }}>플래닝 코멘트</p>
 
                   {(planningNotes[selected.key] ?? []).length > 0 ? (() => {
                     type Group = { author: string; date: string; items: { text: string; idx: number }[] };
@@ -2731,18 +2838,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     return (
                       <div className="space-y-2 mb-2">
                         {groups.map((g, gi) => (
-                          <div key={gi} className="border border-gray-100 rounded-lg overflow-hidden">
-                            <div className="flex items-center justify-between bg-gray-50 px-3 py-1.5 border-b border-gray-100">
-                              <span className="text-xs font-medium text-gray-600">{g.author}</span>
-                              <span className="text-xs text-gray-400">{g.date}</span>
+                          <div key={gi} className="rounded-lg overflow-hidden" style={{ border: "1px solid #21262d" }}>
+                            <div className="flex items-center justify-between px-3 py-1.5" style={{ background: "#161b22", borderBottom: "1px solid #21262d" }}>
+                              <span className="text-xs font-medium" style={{ color: "#e6edf3" }}>{g.author}</span>
+                              <span className="text-xs" style={{ color: "#7d8590" }}>{g.date}</span>
                             </div>
-                            <div className="divide-y divide-gray-50">
+                            <div className="divide-y" style={{ borderColor: "#21262d" }}>
                               {g.items.map(({ text, idx }) => (
                                 <div key={idx} className="group flex items-start gap-2 px-3 py-2">
-                                  <p className="flex-1 text-sm text-gray-700 whitespace-pre-wrap leading-relaxed">{text}</p>
+                                  <p className="flex-1 text-sm whitespace-pre-wrap leading-relaxed" style={{ color: "#e6edf3" }}>{text}</p>
                                   <button
                                     onClick={() => deletePlanningNote(selected.key, idx)}
-                                    className="shrink-0 text-gray-300 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5"
+                                    className="shrink-0 hover:text-red-400 text-xs opacity-0 group-hover:opacity-100 transition-opacity mt-0.5" style={{ color: "#484f58" }}
                                   >삭제</button>
                                 </div>
                               ))}
@@ -2752,7 +2859,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </div>
                     );
                   })() : (
-                    <p className="text-xs text-gray-300 italic mb-2">등록된 코멘트가 없습니다</p>
+                    <p className="text-xs italic mb-2" style={{ color: "#484f58" }}>등록된 코멘트가 없습니다</p>
                   )}
 
                   <div className="flex flex-col gap-1.5">
@@ -2767,7 +2874,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       }}
                       placeholder="논의 내용을 입력하세요 (⌘+Enter로 등록)"
                       rows={2}
-                      className="w-full text-sm text-gray-700 border border-gray-200 rounded-lg px-3 py-2 placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-300 resize-none"
+                      className="w-full text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
                     />
                     <button
                       onClick={() => { addPlanningNote(selected.key, noteInput); setNoteInput(""); }}
@@ -2780,11 +2887,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 )}
               </div>
 
-              <div className="border-t border-gray-200 pt-4">
+              <div className="pt-4" style={{ borderTop: "1px solid #21262d" }}>
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-2">
-                  <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide">작업별 일정</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#7d8590" }}>작업별 일정</p>
                 </div>
                 {!editMode ? (
                   <button
@@ -2793,7 +2900,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   >편집</button>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <div className="flex rounded-lg border border-gray-200 overflow-hidden text-xs">
+                    <div className="flex rounded-lg overflow-hidden text-xs" style={{ border: "1px solid #30363d" }}>
                       <button
                         onClick={() => setEditRows(prev => [...prev].sort((a, b) => {
                           if (!a.start && !b.start) return 0;
@@ -2801,7 +2908,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           if (!b.start) return -1;
                           return a.start.localeCompare(b.start);
                         }))}
-                        className="px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors"
+                        className="px-2 py-1 hover:opacity-80 transition-colors" style={{ color: "#7d8590" }}
                       >오래된순</button>
                       <button
                         onClick={() => setEditRows(prev => [...prev].sort((a, b) => {
@@ -2810,13 +2917,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           if (!b.start) return -1;
                           return b.start.localeCompare(a.start);
                         }))}
-                        className="px-2 py-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700 transition-colors border-l border-gray-200"
+                        className="px-2 py-1 hover:opacity-80 transition-colors" style={{ color: "#7d8590", borderLeft: "1px solid #30363d" }}
                       >최신순</button>
                     </div>
                     <button onClick={saveEdit}
                       className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium">저장</button>
                     <button onClick={() => { setEditMode(false); setEditError(null); }}
-                      className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
+                      className="text-xs px-2 py-1 hover:opacity-80" style={{ color: "#7d8590" }}>취소</button>
                   </div>
                 )}
               </div>
@@ -2854,7 +2961,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       <div
                         key={i}
                         ref={el => { editRowRefs.current[i] = el; }}
-                        className={`rounded-lg p-2.5 space-y-1.5 transition-colors ${isFocused ? "bg-indigo-50 ring-2 ring-indigo-300" : "bg-gray-50"}`}
+                        className={`rounded-lg p-2.5 space-y-1.5 transition-colors ${isFocused ? "ring-2 ring-indigo-500" : ""}`}
+                        style={{ background: isFocused ? "#1c2440" : "#161b22" }}
                       >
                         <div className="flex items-center gap-1.5">
                           {/* 작업 프리셋 선택 */}
@@ -2868,7 +2976,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 updateRow(i, "role", e.target.value);
                               }
                             }}
-                            className={`text-xs text-gray-900 border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 bg-white shrink-0 w-24`}
+                            className={`text-xs border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 shrink-0 w-24`} style={{ background: "#0d1117", color: "#e6edf3" }}
                           >
                             <optgroup label="마일스톤">
                               {MILESTONE_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
@@ -2884,7 +2992,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               value={row.role}
                               onChange={(e) => { setEditError(null); updateRow(i, "role", e.target.value); }}
                               placeholder="작업명"
-                              className={`text-xs text-gray-900 border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 w-24 shrink-0 placeholder:text-gray-500`}
+                              className={`text-xs border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 w-24 shrink-0`} style={{ background: "#0d1117", color: "#e6edf3" }}
                             />
                           )}
                           {/* 담당자 */}
@@ -2892,35 +3000,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             value={row.person}
                             onChange={(e) => { setEditError(null); updateRow(i, "person", e.target.value); }}
                             placeholder="담당자명"
-                            className={`text-xs text-gray-900 border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 flex-1 min-w-0 placeholder:text-gray-500`}
+                            className={`text-xs border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 flex-1 min-w-0`} style={{ background: "#0d1117", color: "#e6edf3" }}
                           />
                           {/* 상태 */}
                           <select
                             value={row.status}
                             onChange={(e) => updateRow(i, "status", e.target.value as RoleSchedule["status"])}
-                            className="text-xs text-gray-900 border border-gray-300 rounded px-1.5 py-1 bg-white w-16 shrink-0"
+                            className="text-xs rounded px-1.5 py-1 w-16 shrink-0" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
                           >
                             {STATUS_OPTIONS.map(s => <option key={s}>{s}</option>)}
                           </select>
                           {/* 삭제 */}
                           <button onClick={() => { setEditError(null); setEditRows(prev => prev.filter((_, idx) => idx !== i)); }}
-                            className="text-gray-300 hover:text-red-400 text-base leading-none shrink-0">×</button>
+                            className="hover:text-red-400 text-base leading-none shrink-0" style={{ color: "#484f58" }}>×</button>
                         </div>
                         {/* 상세 작업 (프리셋 선택 시에만 표시) */}
                         {!custom && (
-                          <div className="flex items-center gap-1.5 pl-1 border-l-2 border-gray-200">
-                            <span className="text-gray-300 text-xs shrink-0">└</span>
+                          <div className="flex items-center gap-1.5 pl-1" style={{ borderLeft: "2px solid #30363d" }}>
+                            <span className="text-xs shrink-0" style={{ color: "#484f58" }}>└</span>
                             <input
                               value={row.detail ?? ""}
                               onChange={(e) => updateRow(i, "detail", e.target.value)}
                               placeholder="상세 작업명 (선택)"
-                              className="text-xs text-gray-900 border border-gray-200 rounded px-1.5 py-1 flex-1 min-w-0 placeholder:text-gray-400 bg-white"
+                              className="text-xs rounded px-1.5 py-1 flex-1 min-w-0" style={{ background: "#0d1117", border: "1px solid #21262d", color: "#e6edf3" }}
                             />
                             <input
                               value={row.detailPerson ?? ""}
                               onChange={(e) => updateRow(i, "detailPerson", e.target.value)}
                               placeholder="담당자 (선택)"
-                              className="text-xs text-gray-900 border border-gray-200 rounded px-1.5 py-1 w-20 shrink-0 placeholder:text-gray-400 bg-white"
+                              className="text-xs rounded px-1.5 py-1 w-20 shrink-0" style={{ background: "#0d1117", border: "1px solid #21262d", color: "#e6edf3" }}
                             />
                           </div>
                         )}
@@ -2930,7 +3038,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-gray-500 w-6 shrink-0">시작</span>
+                            <span className="text-xs w-6 shrink-0" style={{ color: "#7d8590" }}>시작</span>
                             <input
                               type="date"
                               value={row.start}
@@ -2944,17 +3052,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   return { ...r, start: newStart, end: newEnd };
                                 }));
                               }}
-                              className={`text-xs text-gray-900 border ${errStart ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
+                              className={`text-xs border ${errStart ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`} style={{ background: "#0d1117", color: "#e6edf3" }}
                             />
-                            <span className="text-xs text-gray-400 shrink-0">~</span>
+                            <span className="text-xs shrink-0" style={{ color: "#7d8590" }}>~</span>
                             <input
                               type="date"
                               value={row.end}
                               min={row.start || undefined}
                               onChange={(e) => { setEditError(null); updateRow(i, "end", e.target.value); }}
-                              className={`text-xs text-gray-900 border ${errEnd ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`}
+                              className={`text-xs border ${errEnd ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`} style={{ background: "#0d1117", color: "#e6edf3" }}
                             />
-                            <label className="flex items-center gap-1 text-xs text-gray-400 shrink-0 cursor-pointer select-none hover:text-gray-600">
+                            <label className="flex items-center gap-1 text-xs shrink-0 cursor-pointer select-none hover:opacity-80" style={{ color: "#7d8590" }}>
                               <input
                                 type="checkbox"
                                 checked={!!row.start && row.end === row.start}
@@ -2963,7 +3071,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               />
                               동일
                             </label>
-                            <label className="flex items-center gap-1 text-xs text-orange-400 shrink-0 whitespace-nowrap bg-orange-50 border border-orange-200 rounded-md px-2 py-0.5">
+                            <label className="flex items-center gap-1 text-xs text-orange-400 shrink-0 whitespace-nowrap rounded-md px-2 py-0.5" style={{ background: "rgba(251,146,60,0.15)", border: "1px solid rgba(251,146,60,0.3)" }}>
                               🏖 휴가
                               <input
                                 type="number"
@@ -2975,7 +3083,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, vacationDays: v } : r));
                                 }}
                                 placeholder="0"
-                                className="w-10 text-xs text-orange-900 border border-orange-200 rounded px-1.5 py-0.5 text-center placeholder:text-orange-200 bg-white"
+                                className="w-10 text-xs rounded px-1.5 py-0.5 text-center" style={{ background: "#0d1117", border: "1px solid rgba(251,146,60,0.3)", color: "#fb923c" }}
                               />
                               일
                             </label>
@@ -2986,16 +3094,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   })}
                   <button
                     onClick={() => setEditRows(prev => [...prev, newRow()])}
-                    className="w-full text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 hover:border-indigo-300 rounded-lg py-2 transition-colors"
+                    className="w-full text-xs font-medium text-indigo-400 hover:text-indigo-300 rounded-lg py-2 transition-colors" style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.3)" }}
                   >+ 작업 추가</button>
                   {editError && (
                     <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{editError}</p>
                   )}
-                  <div className="flex justify-end items-center gap-2 pt-1 border-t border-gray-100">
+                  <div className="flex justify-end items-center gap-2 pt-1" style={{ borderTop: "1px solid #21262d" }}>
                     <button onClick={saveEdit}
                       className="text-xs bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium">저장</button>
                     <button onClick={() => { setEditMode(false); setEditError(null); }}
-                      className="text-xs text-gray-400 hover:text-gray-600 px-2 py-1">취소</button>
+                      className="text-xs px-2 py-1 hover:opacity-80" style={{ color: "#7d8590" }}>취소</button>
                   </div>
                 </div>
               ) : (
@@ -3016,8 +3124,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     return (
                       <>
                         {isDone && allRoles.length > 0 && (
-                          <div className="mb-2 flex items-center justify-between bg-gray-50 border border-gray-100 rounded-lg px-3 py-1.5">
-                            <span className="text-xs text-gray-400">
+                          <div className="mb-2 flex items-center justify-between rounded-lg px-3 py-1.5" style={{ background: "#161b22", border: "1px solid #21262d" }}>
+                            <span className="text-xs" style={{ color: "#7d8590" }}>
                               ✅ 론치 완료 — {isSummary ? "킥오프 · 배포 · 론치 일정만 요약 표시" : "전체 일정 표시 중"}
                             </span>
                             <button
