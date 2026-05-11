@@ -2987,12 +2987,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         {TRACK_STATES.map((s) => {
                           const active = current === s;
                           const activeStyle =
-                            s === "완료"     ? { background: "rgba(16,185,129,0.25)", borderColor: "rgba(16,185,129,0.5)", color: "#34d399" } :
-                            s === "검토중"   ? (track === "design" ? { background: "rgba(124,58,237,0.25)", borderColor: "rgba(124,58,237,0.5)", color: "#a78bfa" } : { background: "rgba(59,130,246,0.25)", borderColor: "rgba(59,130,246,0.5)", color: "#60a5fa" }) :
-                            s === "대상아님" ? { background: "rgba(100,116,139,0.3)", borderColor: "#94a3b8", color: "#cbd5e1" } :
-                            /* 대기중 */       { background: "rgba(100,116,139,0.25)", borderColor: "#64748b", color: "#94a3b8" };
-                          // 미선택: 조금 더 밝게 해서 클릭 가능함을 인지
-                          const inactiveStyle = { background: "#1c2128", borderColor: "#484f58", color: "#7d8590" };
+                            s === "완료"     ? { background: "rgba(16,185,129,0.2)",  borderColor: "#34d399", color: "#34d399",  boxShadow: "0 0 0 1px #34d399" } :
+                            s === "검토중"   ? (track === "design"
+                              ? { background: "rgba(124,58,237,0.2)",  borderColor: "#a78bfa", color: "#a78bfa", boxShadow: "0 0 0 1px #a78bfa" }
+                              : { background: "rgba(59,130,246,0.2)",  borderColor: "#60a5fa", color: "#60a5fa", boxShadow: "0 0 0 1px #60a5fa" }) :
+                            s === "대상아님" ? { background: "#2d333b", borderColor: "#e6edf3", color: "#e6edf3", boxShadow: "0 0 0 1px #e6edf3" } :
+                            /* 대기중 */       { background: "#2d333b", borderColor: "#c9d1d9", color: "#c9d1d9", boxShadow: "0 0 0 1px #c9d1d9" };
+                          const inactiveStyle = { background: "#161b22", borderColor: "#30363d", color: "#484f58", boxShadow: "none" };
                           return (
                             <button
                               key={s}
