@@ -3199,16 +3199,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             value={row.person}
                             onChange={(e) => { setEditError(null); updateRow(i, "person", e.target.value); }}
                             placeholder="담당자명"
-                            className={`text-xs border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 flex-1 min-w-0`} style={{ background: "#0d1117", color: "#e6edf3" }}
+                            className={`text-xs border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 w-28 shrink-0`} style={{ background: "#0d1117", color: "#e6edf3" }}
                           />
-                          {/* 상태 */}
-                          <select
-                            value={row.status}
-                            onChange={(e) => updateRow(i, "status", e.target.value as RoleSchedule["status"])}
-                            className="text-xs rounded px-1.5 py-1 w-16 shrink-0" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
-                          >
-                            {STATUS_OPTIONS.map(s => <option key={s}>{s}</option>)}
-                          </select>
+                          {/* 상태 — 현재 값에 따라 색상 강조 */}
+                          {(() => {
+                            const statusColor =
+                              row.status === "완료"     ? { bg: "rgba(16,185,129,0.15)",  border: "#34d399",  color: "#34d399"  } :
+                              row.status === "진행중"   ? { bg: "rgba(124,58,237,0.15)",  border: "#a78bfa",  color: "#a78bfa"  } :
+                              row.status === "예정"     ? { bg: "rgba(59,130,246,0.15)",  border: "#60a5fa",  color: "#60a5fa"  } :
+                              row.status === "확인필요" ? { bg: "rgba(251,146,60,0.15)",  border: "#fb923c",  color: "#fb923c"  } :
+                              /* 미정 */                  { bg: "rgba(75,85,99,0.15)",    border: "#6b7280",  color: "#9ca3af"  };
+                            return (
+                              <select
+                                value={row.status}
+                                onChange={(e) => updateRow(i, "status", e.target.value as RoleSchedule["status"])}
+                                className="text-xs rounded px-2 py-1 w-24 shrink-0 font-medium"
+                                style={{ background: statusColor.bg, border: `1px solid ${statusColor.border}`, color: statusColor.color }}
+                              >
+                                {STATUS_OPTIONS.map(s => <option key={s} style={{ background: "#1c2128", color: "#e6edf3" }}>{s}</option>)}
+                              </select>
+                            );
+                          })()}
                           {/* 삭제 */}
                           <button onClick={() => { setEditError(null); setEditRows(prev => prev.filter((_, idx) => idx !== i)); }}
                             className="hover:text-red-400 text-base leading-none shrink-0" style={{ color: "#484f58" }}>×</button>
