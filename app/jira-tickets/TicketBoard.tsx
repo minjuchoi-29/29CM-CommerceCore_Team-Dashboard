@@ -2603,36 +2603,41 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       if (state === "검토중")   return track === "design"
                         ? { dot: "#a78bfa", text: "#a78bfa", bg: "rgba(124,58,237,0.1)", border: "rgba(124,58,237,0.25)" }
                         : { dot: "#60a5fa", text: "#60a5fa", bg: "rgba(59,130,246,0.1)", border: "rgba(59,130,246,0.25)" };
-                      if (state === "대상아님") return { dot: "#6b7280", text: "#6b7280", bg: "rgba(75,85,99,0.1)",    border: "rgba(75,85,99,0.2)"  };
-                      /* 대기중 */               return { dot: "#4b5563", text: "#6b7280", bg: "rgba(75,85,99,0.08)",   border: "rgba(75,85,99,0.15)" };
+                      if (state === "대상아님") return { dot: "#6b7280", text: "#6b7280", bg: "rgba(75,85,99,0.08)",   border: "rgba(75,85,99,0.15)" };
+                      /* 대기중 → 노란색 강조 */  return { dot: "#fbbf24", text: "#fbbf24", bg: "rgba(245,158,11,0.1)",  border: "rgba(245,158,11,0.3)" };
                     };
                     const ds = trackStyle(p.design, "design");
                     const dv = trackStyle(p.dev,    "dev");
 
                     return (
                       <div className="flex items-center gap-1.5 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
-                        {/* 마일스톤 칩 — 진행중·완료 티켓이거나 실제 마일스톤 데이터 있을 때만 표시
-                            (비활성+마일스톤 없는 티켓에서 "미정" 3개 노출 방지) */}
-                        {(isTicketActive || hasAnyMilestoneData) && milestones.map((r, mi) => {
+                        {/* 마일스톤 칩 — 항상 표시 (2763/2878 등 일관성 유지)
+                            날짜 확정된 칩은 full opacity + font-medium으로 강조
+                            날짜 없는 칩(미정/확인필요)은 dim 처리 */}
+                        {milestones.map((r, mi) => {
                           const isDone      = r.status === "완료";
                           const isMissing   = !r.end || (r as { isMissing?: boolean }).isMissing;
                           const isNeedCheck = isMissing && r.status === "확인필요";
+                          const hasDate     = !isMissing && !isDone; // 실제 날짜 확정
                           const labelText   = isMissing ? r.status : shortDate(r.end);
+                          // 날짜 확정 → 강조 / 완료 → 매우 dim / 미정 → dim / 확인필요 → 중간
+                          const chipOpacity = isDone ? 0.28 : hasDate ? 1 : isNeedCheck ? 0.85 : 0.38;
                           return (
                           <span
                             key={`${r.role}-${mi}`}
-                            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[11px] font-normal
-                              ${isDone ? "opacity-30" : isMissing && !isNeedCheck ? "opacity-40" : "opacity-70"}
+                            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[11px]
+                              ${hasDate ? "font-semibold" : "font-normal"}
                               ${isNeedCheck
                                 ? "bg-orange-900/20 text-orange-400 border-orange-800/40"
                                 : MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
+                            style={{ opacity: chipOpacity }}
                           >
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isNeedCheck ? "bg-orange-400" : MILESTONE_DOT[r.role] ?? "bg-gray-400"}`} />
                             {MILESTONE_KO[r.role] ?? r.role}
                             {r.detail && (
-                              <span className="opacity-70 max-w-[10rem] truncate" title={r.detail}>· {r.detail}</span>
+                              <span className="opacity-80 max-w-[10rem] truncate" title={r.detail}>· {r.detail}</span>
                             )}
-                            <span className="opacity-80 ml-0.5">{labelText}</span>
+                            <span className={`ml-0.5 ${hasDate ? "opacity-100" : "opacity-75"}`}>{labelText}</span>
                             {isDone && <span className="ml-0.5 opacity-60">✓</span>}
                           </span>
                           );
