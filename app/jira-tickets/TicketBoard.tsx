@@ -2663,11 +2663,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     // 플래닝 상태 먼저 계산 (서브행 표시 조건에 사용)
                     const p = getPlanningVal(planning[t.key]);
                     const planningBothDone = p.design === "완료" && p.dev === "완료";
-                    // 플래닝이 기본값(대기중/대기중)이 아닌 경우 → 서브행 표시할 이유 있음
-                    const planningHasProgress = p.design !== "대기중" || p.dev !== "대기중";
+                    // 플래닝이 완전히 종결(완료 or 대상아님)인 경우
+                    const planningAllResolved =
+                      (p.design === "완료" || p.design === "대상아님") &&
+                      (p.dev   === "완료" || p.dev   === "대상아님");
 
-                    // 표시 조건: 진행중·완료 티켓 / 마일스톤 데이터 있음 / 플래닝 진행 상태 있음
-                    if (!isTicketActive && !hasAnyMilestoneData && !planningHasProgress) return null;
+                    // 숨김: 비활성 티켓 + 마일스톤 데이터 없음 + 플래닝 완전 종결
+                    // → 그 외는 항상 표시 (대기중/대기중인 2756도 포함)
+                    if (!isTicketActive && !hasAnyMilestoneData && planningAllResolved) return null;
 
                     const milestones: (RoleSchedule & { isMissing?: boolean })[] = MILESTONE_ROLES.map(role => {
                       if (existingMap[role]) return existingMap[role];
