@@ -177,7 +177,8 @@ function makeViewFns(viewStart: number, viewEnd: number) {
   function barLeft(s: string) { return pct(Math.max(viewStart, new Date(s).getTime())); }
   function barWidth(s: string, e: string) {
     const sMs = Math.max(viewStart, new Date(s).getTime());
-    const eMs = Math.min(viewEnd, new Date(e).getTime());
+    // 종료일을 하루의 끝(23:59:59)으로 계산 — 시작=종료(1일짜리)도 바가 보이도록
+    const eMs = Math.min(viewEnd, new Date(e + "T23:59:59").getTime());
     return eMs <= sMs ? 0 : Math.max(0.3, ((eMs - sMs) / span) * 100);
   }
   return { pct, datePct, barLeft, barWidth };
@@ -187,6 +188,13 @@ function formatDateWithDay(dateStr: string): string {
   if (!dateStr) return "-";
   const d = new Date(dateStr + "T00:00:00");
   return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
+}
+
+// 짧은 날짜 포맷: "2026-04-01" → "4/1"
+function shortDate(dateStr: string): string {
+  if (!dateStr) return "";
+  const d = new Date(dateStr + "T00:00:00");
+  return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 
 // 한국 공휴일 (2025~2026)
@@ -225,21 +233,45 @@ function calcWorkingDays(start: string, end: string): number {
   return count;
 }
 
-function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
+function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, onEditRow }: {
+  roles?: RoleSchedule[];
+  forceShowPastDone?: boolean;
+  extendedView?: boolean;   // 펼치기: 과거 6개월 + 미래 2개월
+  fitToContent?: boolean;   // 론치완료 요약: viewStart = 최초 role 시작일, pastDone 없이 표시
+  ticketDone?: boolean;     // 완료 티켓: 확인필요 항목도 이전 완료 일정으로 분류
+  onEditRow?: (r: RoleSchedule) => void; // 행 수정 버튼 클릭 콜백
+}) {
   const [showPastDone, setShowPastDone] = useState(false);
+  const effectiveShowPastDone = forceShowPastDone || showPastDone;
 
-  // 뷰 시작: 이번 달 1일
+  // 뷰 시작
   const viewStart = (() => {
+    if (extendedView) {
+      // 과거 6개월 전 1일
+      const d = new Date();
+      d.setMonth(d.getMonth() - 6);
+      d.setDate(1); d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    }
+    if (fitToContent && (roles ?? []).some(r => r.start)) {
+      // 가장 이른 role 시작월 1일
+      const earliest = Math.min(...(roles ?? []).filter(r => r.start).map(r => new Date(r.start + "T00:00:00").getTime()));
+      const d = new Date(earliest);
+      d.setDate(1); d.setHours(0, 0, 0, 0);
+      return d.getTime();
+    }
+    // 기본: 이번 달 1일
     const d = new Date();
     d.setDate(1); d.setHours(0, 0, 0, 0);
     return d.getTime();
   })();
 
-  // 뷰 종료: roles 중 가장 먼 end 종료월 vs 현재월+2 중 큰 것
+  // 뷰 종료
   const viewEnd = (() => {
+    const monthsForward = extendedView ? 2 : 3; // 펼치기: 미래 2개월, 기본: 현재월 포함 3개월
     const minEnd = new Date();
-    minEnd.setMonth(minEnd.getMonth() + 3);
-    minEnd.setDate(0); // 3개월 후 말일 (현재월 포함 3개월)
+    minEnd.setMonth(minEnd.getMonth() + monthsForward);
+    minEnd.setDate(0);
     minEnd.setHours(23, 59, 59, 999);
     let ms = minEnd.getTime();
     for (const r of roles ?? []) {
@@ -248,7 +280,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
         if (endMs > ms) {
           const d = new Date(r.end);
           d.setMonth(d.getMonth() + 1);
-          d.setDate(0); // 해당 월 말일
+          d.setDate(0);
           d.setHours(23, 59, 59, 999);
           ms = d.getTime();
         }
@@ -282,9 +314,11 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
     return aE - bE;
   });
 
-  // 현재 뷰에서 안 보이는 과거 완료 항목 분리
-  const isPastDone = (r: RoleSchedule) =>
-    r.status === "완료" && !!r.end && new Date(r.end).getTime() < viewStart;
+  // 현재 뷰에서 안 보이는 과거 완료 항목 분리 (fitToContent면 항상 visible로)
+  // 완료 티켓(ticketDone)은 이전 완료 일정 섹션 없이 전체 플랫하게 표시
+  const isPastDone = (fitToContent || ticketDone)
+    ? () => false
+    : (r: RoleSchedule) => r.status === "완료" && !!r.end && new Date(r.end).getTime() < viewStart;
   const pastDoneRoles  = sortedRoles.filter(isPastDone);
   const visibleRoles   = sortedRoles.filter(r => !isPastDone(r));
 
@@ -331,7 +365,7 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
           const overdue   = endMs   !== null && endMs   < TODAY_MS && r.status !== "완료";
           const notStarted = startMs !== null && startMs < TODAY_MS && r.status === "예정";
           return (
-          <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5">
+          <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5 group/ganttrow">
             <div className="flex items-start">
               {/* 좌측: role + person, 세부작업 */}
               <div className="w-48 shrink-0 pt-0.5">
@@ -388,6 +422,16 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
                       </span>
                     </span>
                   )}
+                  {/* 수정 바로가기 버튼 (행 호버 시 노출) */}
+                  {onEditRow && (
+                    <button
+                      onClick={() => onEditRow(r)}
+                      title="이 항목 수정"
+                      className="ml-1.5 shrink-0 opacity-0 group-hover/ganttrow:opacity-100 transition-opacity text-gray-300 hover:text-indigo-500 text-xs px-1 py-0.5 rounded hover:bg-indigo-50"
+                    >
+                      ✏️
+                    </button>
+                  )}
                 </div>
                 {r.status === "미정" ? (
                   <p className="text-xs text-orange-400 italic mt-0.5">기간 산정중</p>
@@ -424,10 +468,10 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
             onClick={() => setShowPastDone(v => !v)}
             className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-300 transition-colors"
           >
-            <span>{showPastDone ? "▾" : "▸"}</span>
+            <span>{effectiveShowPastDone ? "▾" : "▸"}</span>
             <span>이전 완료 일정 {pastDoneRoles.length}건</span>
           </button>
-          {showPastDone && (
+          {effectiveShowPastDone && (
             <div className="mt-2 pl-1">
               <div className="grid gap-y-0.5" style={{ gridTemplateColumns: "auto auto auto 1fr" }}>
                 {pastDoneRoles.map((r, i) => (
@@ -471,6 +515,21 @@ function GanttChart({ roles }: { roles?: RoleSchedule[] }) {
 }
 
 const MILESTONE_ROLES = ["Kick-Off", "Release", "Launch"];
+const MILESTONE_KO: Record<string, string> = {
+  "Kick-Off": "킥오프",
+  "Release":  "배포",
+  "Launch":   "론치",
+};
+const MILESTONE_CHIP: Record<string, string> = {
+  "Kick-Off": "bg-indigo-50 text-indigo-600 border-indigo-200",
+  "Release":  "bg-orange-50 text-orange-600 border-orange-200",
+  "Launch":   "bg-green-50 text-green-700 border-green-200",
+};
+const MILESTONE_DOT: Record<string, string> = {
+  "Kick-Off": "bg-indigo-500",
+  "Release":  "bg-orange-500",
+  "Launch":   "bg-green-600",
+};
 const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "BE-메가존", "FE-CFE", "FE-DFE", "FE-Sotatek", "Mobile", "DA", "QA"];
 const ALL_PRESET_ROLES = [...MILESTONE_ROLES, ...PRESET_ROLES];
 
@@ -587,6 +646,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [editMode, setEditMode]     = useState(false);
   const [editRows, setEditRows]     = useState<RoleSchedule[]>([]);
   const [editError, setEditError]   = useState<string | null>(null);
+  const [editFocusKey, setEditFocusKey] = useState<string | null>(null); // 직접 수정 버튼으로 진입 시 포커스할 행 키
+  const editRowRefs = useRef<(HTMLDivElement | null)[]>([]); // 편집 폼 행 ref (스크롤용)
 
   // 주요 내용 요약 (작성자/날짜 포함)
   const [memos, setMemos]           = useState<Record<string, MemoEntry | string>>({});
@@ -601,6 +662,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 우측 사이드바 너비 (드래그 리사이즈)
   const [sidebarWidth, setSidebarWidth] = useState(700);
+  const [isDetailExpanded, setIsDetailExpanded] = useState(false);
+  const [showFullDoneSchedule, setShowFullDoneSchedule] = useState(false);
 
   // 시트 우선순위 (key → priority 문자열)
   const [priorities, setPriorities] = useState<Record<string, string>>({});
@@ -1333,13 +1396,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }).catch(() => {});
   }
 
-  function startEdit() {
+  function startEdit(focusKey?: string) {
     if (!selected) return;
     setEditRows(getRoles(selected).length > 0
       ? getRoles(selected).map(r => ({ ...r }))
       : [newRow()]
     );
+    setEditFocusKey(focusKey ?? null);
     setEditMode(true);
+  }
+
+  // 행의 포커스 키 생성 (role + person + start 조합)
+  function makeEditFocusKey(r: RoleSchedule) {
+    return `${r.role}|||${r.person}|||${r.start ?? ""}`;
   }
 
   function saveEdit() {
@@ -1369,6 +1438,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   function updateRow(i: number, field: keyof RoleSchedule, value: string) {
     setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
   }
+
+  // 편집 모드 진입 + focusKey 있을 때 → 해당 행으로 스크롤
+  useEffect(() => {
+    if (!editMode || !editFocusKey) return;
+    const timer = setTimeout(() => {
+      const focusIdx = editRows.findIndex(r => makeEditFocusKey(r) === editFocusKey);
+      if (focusIdx >= 0 && editRowRefs.current[focusIdx]) {
+        editRowRefs.current[focusIdx]?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 80); // 렌더 완료 후 스크롤
+    return () => clearTimeout(timer);
+  }, [editMode, editFocusKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
   const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료"]);
@@ -1685,6 +1766,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setMemoCollapsed(true);
     setMemoHistoryOpen(false);
     setRegenError(null);
+    setShowFullDoneSchedule(false);
     setNoteInput("");
     setEtrInput("");
     setEtrError(null);
@@ -1712,7 +1794,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   return (
     <div className="flex bg-gray-50 min-h-screen">
       {/* ── 리스트 패널 ── */}
-      <div className="flex-1 min-w-0 px-6 py-8">
+      <div className={`${isDetailExpanded ? "w-44 shrink-0" : "flex-1 min-w-0"} px-3 py-8 overflow-hidden`}>
         <div className="mb-5 flex items-start justify-between">
           <div>
             <h2 className="text-lg font-bold text-gray-900">전체 과제 현황</h2>
@@ -1863,7 +1945,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-gray-500 w-14 shrink-0">정렬</span>
             {([
-              { key: "default",   label: "기본",         color: "bg-gray-800" },
+              { key: "default",   label: "등록순",        color: "bg-gray-800" },
               { key: "priority",  label: "우선순위 P1↑",  color: "bg-amber-500" },
               { key: "startDate", label: "시작일순",      color: "bg-gray-800" },
               { key: "eta",       label: "ETA순",         color: "bg-gray-800" },
@@ -1994,17 +2076,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
           {/* 헤더 */}
           <div className="flex items-center px-4 py-2.5 bg-gray-50 border-b border-gray-200 text-xs text-gray-600 font-semibold">
-            <span className="w-6 shrink-0 text-center" title="아젠다 체크">🗓</span>
-            <span className="w-8 shrink-0 text-center">#</span>
-            <span className="w-32 shrink-0">티켓</span>
-            <span className="flex-1 min-w-0">제목</span>
-            <span className="w-20 shrink-0 text-center">레벨</span>
-            <span className="w-16 shrink-0 text-center">프로젝트</span>
-            <span className="w-20 shrink-0 text-center">담당자</span>
-            <span className="w-28 shrink-0 text-center">상태</span>
-            <span className="w-28 shrink-0 text-center">시작일</span>
-            <span className="w-28 shrink-0 text-center">ETA</span>
-            <span className="w-6 shrink-0" />
+            {isDetailExpanded ? (
+              <span className="flex-1 min-w-0">티켓</span>
+            ) : (
+              <>
+                <span className="w-6 shrink-0 text-center" title="아젠다 체크">🗓</span>
+                <span className="w-8 shrink-0 text-center">#</span>
+                <span className="w-32 shrink-0">티켓</span>
+                <span className="flex-1 min-w-0">제목</span>
+                <span className="w-20 shrink-0 text-center">레벨</span>
+                <span className="w-16 shrink-0 text-center">프로젝트</span>
+                <span className="w-20 shrink-0 text-center">담당자</span>
+                <span className="w-28 shrink-0 text-center">상태</span>
+                <span className="w-28 shrink-0 text-center">시작일</span>
+                <span className="w-28 shrink-0 text-center">ETA</span>
+                <span className="w-6 shrink-0" />
+              </>
+            )}
           </div>
 
           {filtered.length === 0 ? (
@@ -2029,83 +2117,120 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="flex items-center px-4 py-3 cursor-pointer"
                     onClick={() => handleSelect(t)}
                   >
-                    {showAgenda ? (
-                      <button
-                        onClick={(e) => { e.stopPropagation(); toggleAgenda(t.key); }}
-                        title={agenda.has(t.key) ? "아젠다에서 제거" : "아젠다에 추가"}
-                        className={`w-6 shrink-0 flex items-center justify-center text-base transition-all rounded ${agenda.has(t.key) ? "opacity-100" : "opacity-20 hover:opacity-60"}`}
+                    {isDetailExpanded ? (
+                      /* 축소 뷰: 티켓 번호만 */
+                      <a
+                        href={`${JIRA_BASE}${t.key}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex-1 min-w-0 font-mono text-xs text-blue-500 hover:underline truncate"
                       >
-                        🗓
-                      </button>
+                        {t.key}
+                      </a>
                     ) : (
-                      <span className="w-6 shrink-0" />
-                    )}
-                    <span className="w-8 shrink-0 text-center text-xs text-gray-300 font-mono">{idx + 1}</span>
-                    <a
-                      href={`${JIRA_BASE}${t.key}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={(e) => e.stopPropagation()}
-                      className="w-32 shrink-0 font-mono text-xs text-blue-500 hover:underline"
-                    >
-                      {t.key}
-                    </a>
-                    {isNew && (
-                      <span className="shrink-0 mr-1 px-1.5 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-700 border border-emerald-300 animate-pulse">
-                        추가됨
-                      </span>
-                    )}
-                    {activePriorities[t.key] && (
-                      <span className="shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
-                        P{activePriorities[t.key]}
-                      </span>
-                    )}
-                    {(() => {
-                      const p = getPlanningVal(planning[t.key]);
-                      const designDone = p.design === "완료";
-                      const devDone = p.dev === "완료";
-                      if (designDone && devDone) return null;
-                      return (
-                        <span className="shrink-0 mr-1.5 flex items-center gap-1">
-                          {!designDone && (
-                            <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
-                              Design{p.design === "검토중" ? " 검토" : " 대기"}
+                      /* 기본 뷰: 전체 컬럼 */
+                      <>
+                        {showAgenda ? (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleAgenda(t.key); }}
+                            title={agenda.has(t.key) ? "아젠다에서 제거" : "아젠다에 추가"}
+                            className={`w-6 shrink-0 flex items-center justify-center text-base transition-all rounded ${agenda.has(t.key) ? "opacity-100" : "opacity-20 hover:opacity-60"}`}
+                          >
+                            🗓
+                          </button>
+                        ) : (
+                          <span className="w-6 shrink-0" />
+                        )}
+                        <span className="w-8 shrink-0 text-center text-xs text-gray-300 font-mono">{idx + 1}</span>
+                        <a
+                          href={`${JIRA_BASE}${t.key}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="w-32 shrink-0 font-mono text-xs text-blue-500 hover:underline"
+                        >
+                          {t.key}
+                        </a>
+                        {isNew && (
+                          <span className="shrink-0 mr-1 px-1.5 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-700 border border-emerald-300 animate-pulse">
+                            추가됨
+                          </span>
+                        )}
+                        {activePriorities[t.key] && (
+                          <span className="shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
+                            P{activePriorities[t.key]}
+                          </span>
+                        )}
+                        {(() => {
+                          const p = getPlanningVal(planning[t.key]);
+                          const designDone = p.design === "완료";
+                          const devDone = p.dev === "완료";
+                          if (designDone && devDone) return null;
+                          return (
+                            <span className="shrink-0 mr-1.5 flex items-center gap-1">
+                              {!designDone && (
+                                <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.design === "검토중" ? "bg-violet-100 text-violet-600 border-violet-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                                  Design{p.design === "검토중" ? " 검토" : " 대기"}
+                                </span>
+                              )}
+                              {!devDone && (
+                                <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
+                                  Dev{p.dev === "검토중" ? " 검토" : " 대기"}
+                                </span>
+                              )}
                             </span>
-                          )}
-                          {!devDone && (
-                            <span className={`px-1.5 py-0.5 rounded text-xs font-medium border ${p.dev === "검토중" ? "bg-blue-100 text-blue-600 border-blue-200" : "bg-gray-100 text-gray-500 border-gray-200"}`}>
-                              Dev{p.dev === "검토중" ? " 검토" : " 대기"}
-                            </span>
-                          )}
+                          );
+                        })()}
+                        <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
+                        <span className="w-20 shrink-0 flex justify-center">
+                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
+                            {t.type}
+                          </span>
                         </span>
-                      );
-                    })()}
-                    <span className="flex-1 min-w-0 text-sm text-gray-800 truncate pr-3">{t.summary}</span>
-                    <span className="w-20 shrink-0 flex justify-center">
-                      <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
-                        {t.type}
-                      </span>
-                    </span>
-                    <span className="w-16 shrink-0 text-xs text-gray-500 text-center">{t.project}</span>
-                    <span className="w-20 shrink-0 text-sm font-semibold text-gray-900 text-center truncate">{t.assignee}</span>
-                    <span className="w-28 shrink-0 flex justify-center">
-                      <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-semibold ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
-                        {t.status}
-                      </span>
-                    </span>
-                    <span className={`w-28 shrink-0 text-sm font-medium text-center ${t.startDate ? "text-gray-900" : "text-gray-300"}`}>
-                      {t.startDate ? formatDateWithDay(t.startDate) : "미정"}
-                    </span>
-                    <span className={`w-28 shrink-0 text-sm font-medium text-center ${!t.eta || t.eta === "-" ? "text-gray-300" : "text-gray-900"}`}>
-                      {!t.eta || t.eta === "-" ? "미정" : formatDateWithDay(t.eta)}
-                    </span>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}
-                      title="목록에서 제거"
-                      className="w-6 shrink-0 flex justify-center items-center text-gray-300 hover:text-red-400 transition-colors"
-                    >×</button>
+                        <span className="w-16 shrink-0 text-xs text-gray-500 text-center">{t.project}</span>
+                        <span className="w-20 shrink-0 text-sm font-semibold text-gray-900 text-center truncate">{t.assignee}</span>
+                        <span className="w-28 shrink-0 flex justify-center">
+                          <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-semibold ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
+                            {t.status}
+                          </span>
+                        </span>
+                        <span className={`w-28 shrink-0 text-sm font-medium text-center ${t.startDate ? "text-gray-900" : "text-gray-300"}`}>
+                          {t.startDate ? formatDateWithDay(t.startDate) : "미정"}
+                        </span>
+                        <span className={`w-28 shrink-0 text-sm font-medium text-center ${!t.eta || t.eta === "-" ? "text-gray-300" : "text-gray-900"}`}>
+                          {!t.eta || t.eta === "-" ? "미정" : formatDateWithDay(t.eta)}
+                        </span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}
+                          title="목록에서 제거"
+                          className="w-6 shrink-0 flex justify-center items-center text-gray-300 hover:text-red-400 transition-colors"
+                        >×</button>
+                      </>
+                    )}
                   </div>
 
+                  {/* 마일스톤 서브 행: 킥오프/배포/론치 날짜 칩 */}
+                  {!isDetailExpanded && (() => {
+                    const milestones = (schedules[t.key] ?? [])
+                      .filter(r => MILESTONE_ROLES.includes(r.role) && r.end);
+                    if (milestones.length === 0) return null;
+                    return (
+                      <div className="flex items-center gap-1.5 px-4 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
+                        {milestones.map((r, mi) => (
+                          <span
+                            key={`${r.role}-${mi}`}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium ${r.status === "완료" ? "opacity-40" : ""} ${MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${MILESTONE_DOT[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-60" : ""}`} />
+                            {MILESTONE_KO[r.role] ?? r.role}
+                            <span className="font-normal opacity-75">{shortDate(r.end)}</span>
+                            {r.status === "완료" && <span className="text-[10px] font-semibold">✓</span>}
+                          </span>
+                        ))}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })
@@ -2115,12 +2240,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       {/* ── 우측 상세 패널 ── */}
       {selected && (
-        <div className="shrink-0 sticky top-0 h-screen border-l border-gray-200 bg-white relative flex flex-col" style={{ width: sidebarWidth }}>
-          {/* 드래그 핸들 — overflow 컨테이너 바깥에 위치해 전체 높이 활성화 */}
+        <div
+          className={`shrink-0 sticky top-0 h-screen border-l border-gray-200 bg-white relative flex flex-col ${isDetailExpanded ? "flex-1" : ""}`}
+          style={isDetailExpanded ? undefined : { width: sidebarWidth }}
+        >
+          {/* 드래그 핸들 + 펼치기/접기 버튼 */}
           <div
             onMouseDown={isResizing}
             className="absolute left-0 top-0 h-full w-1 cursor-col-resize hover:bg-indigo-300 active:bg-indigo-400 transition-colors z-10"
-          />
+          >
+            <button
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={() => setIsDetailExpanded(v => !v)}
+              title={isDetailExpanded ? "접기" : "펼치기"}
+              className="absolute top-1/2 -translate-y-1/2 -left-3 w-6 h-12 bg-white border border-gray-200 rounded-full shadow-sm flex items-center justify-center text-gray-400 hover:text-indigo-500 hover:border-indigo-300 hover:shadow-md transition-all z-20 text-xs"
+            >
+              {isDetailExpanded ? "›" : "‹"}
+            </button>
+          </div>
           <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-5">
             {/* 헤더 */}
@@ -2639,7 +2776,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
                 {!editMode ? (
                   <button
-                    onClick={startEdit}
+                    onClick={() => startEdit()}
                     className="text-xs text-indigo-500 hover:text-indigo-700 font-medium"
                   >편집</button>
                 ) : (
@@ -2680,7 +2817,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <div className="flex items-center justify-between bg-orange-50 border border-orange-200 rounded-lg px-3 py-2.5 mb-3 text-xs">
                       <span className="text-orange-700">플래닝이 완료됐어요. 작업별 일정을 입력해주세요.</span>
                       <button
-                        onClick={startEdit}
+                        onClick={() => startEdit()}
                         className="ml-3 shrink-0 px-2.5 py-1 rounded-lg bg-orange-500 text-white font-medium hover:bg-orange-600 transition-colors"
                       >일정 입력</button>
                     </div>
@@ -2700,8 +2837,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const errEnd    = !!editError && row.status !== "미정" && !row.end;
                     const errBorder = "border-red-400";
                     const okBorder  = "border-gray-300";
+                    const isFocused = editFocusKey === makeEditFocusKey(row);
                     return (
-                      <div key={i} className="bg-gray-50 rounded-lg p-2.5 space-y-1.5">
+                      <div
+                        key={i}
+                        ref={el => { editRowRefs.current[i] = el; }}
+                        className={`rounded-lg p-2.5 space-y-1.5 transition-colors ${isFocused ? "bg-indigo-50 ring-2 ring-indigo-300" : "bg-gray-50"}`}
+                      >
                         <div className="flex items-center gap-1.5">
                           {/* 작업 프리셋 선택 */}
                           <select
@@ -2852,7 +2994,39 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       작업별 일정과 담당자를 입력해주세요.
                     </p>
                   )}
-                  <GanttChart roles={getRoles(selected)} />
+                  {(() => {
+                    const isDone = ["론치완료", "완료", "배포완료"].includes(selected.status);
+                    const allRoles = getRoles(selected);
+                    const isSummary = isDone && !showFullDoneSchedule;
+                    const displayRoles = isSummary
+                      ? allRoles.filter(r => MILESTONE_ROLES.includes(r.role))
+                      : allRoles;
+                    return (
+                      <>
+                        {isDone && allRoles.length > 0 && (
+                          <div className="mb-2 flex items-center justify-between bg-gray-50 border border-gray-100 rounded-lg px-3 py-1.5">
+                            <span className="text-xs text-gray-400">
+                              ✅ 론치 완료 — {isSummary ? "킥오프 · 배포 · 론치 일정만 요약 표시" : "전체 일정 표시 중"}
+                            </span>
+                            <button
+                              onClick={() => setShowFullDoneSchedule(v => !v)}
+                              className="text-xs text-indigo-500 hover:text-indigo-700 font-medium shrink-0 ml-3"
+                            >
+                              {isSummary ? "전체 보기" : "요약 보기"}
+                            </button>
+                          </div>
+                        )}
+                        <GanttChart
+                          roles={displayRoles}
+                          forceShowPastDone={isDetailExpanded}
+                          extendedView={isDetailExpanded}
+                          fitToContent={isDone && !isDetailExpanded}
+                          ticketDone={isDone}
+                          onEditRow={r => startEdit(makeEditFocusKey(r))}
+                        />
+                      </>
+                    );
+                  })()}
                 </>
               )}
             </div>
