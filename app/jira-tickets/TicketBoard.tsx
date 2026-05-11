@@ -802,6 +802,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [newlyAddedKeys, setNewlyAddedKeys] = useState<Set<string>>(new Set());
   const [duplicateKeys, setDuplicateKeys] = useState<Set<string>>(new Set());
   const [customKeys, setCustomKeys]       = useState<Set<string>>(new Set());
+  const [hiddenKeys, setHiddenKeys]       = useState<Set<string>>(new Set());
   const isResizing = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -825,6 +826,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // API에서 받은 데이터를 상태 + localStorage에 저장 (사용자 추가 티켓 병합)
   function applyApiData(data: { tickets: Ticket[]; fetchedAt?: string }) {
     const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
+    // hiddenKeys: localStorage에서 동기적으로 로드
+    let localHidden: string[] = [];
+    try {
+      const hr = localStorage.getItem("cc-hidden-keys");
+      if (hr) localHidden = JSON.parse(hr);
+    } catch {}
+    const hidden = new Set([...hiddenKeys, ...localHidden]);
+
     // localStorage에서 custom tickets 미리 읽기 (동기 작업)
     let localExtra: Ticket[] = [];
     try {
@@ -838,7 +847,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
       // localStorage에서 읽은 것도 병합 (KV에 없는 경우 fallback)
       for (const t of localExtra) if (!extraByKey.has(t.key) && !jiraKeys.has(t.key)) extraByKey.set(t.key, t);
-      return [...data.tickets, ...extraByKey.values()];
+      // hiddenKeys 필터 적용
+      return [...data.tickets, ...extraByKey.values()].filter(t => !hidden.has(t.key));
     });
     setSyncedAt(at);
     try {
@@ -1275,9 +1285,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setTickets(prev => prev.filter(t => t.key !== key));
     const newCustomKeys = new Set([...customKeys].filter(k => k !== key));
     setCustomKeys(newCustomKeys);
+    // hiddenKeys에 추가 → Jira 재조회 시에도 필터링
+    const newHiddenKeys = new Set([...hiddenKeys, key]);
+    setHiddenKeys(newHiddenKeys);
     if (selected?.key === key) { setSelected(null); setEditMode(false); }
 
     const newCustomKeysArr = [...newCustomKeys];
+    const newHiddenArr     = [...newHiddenKeys];
     const newCustomTickets = tickets.filter(t => customKeys.has(t.key) && t.key !== key);
 
     // KV에 저장 (팀 공유)
@@ -1291,10 +1305,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }),
     }).catch(() => {});
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-hidden-keys", value: newHiddenArr }),
+    }).catch(() => {});
     // localStorage 동기화 (오프라인 폴백용)
     try {
-      localStorage.setItem("cc-custom-keys", JSON.stringify(newCustomKeysArr));
+      localStorage.setItem("cc-custom-keys",    JSON.stringify(newCustomKeysArr));
       localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
+      localStorage.setItem("cc-hidden-keys",    JSON.stringify(newHiddenArr));
     } catch {}
   }
 
@@ -1360,7 +1380,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda")
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -1376,6 +1396,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (data["cc-ticket-notes"]) {
           setTicketNotes(data["cc-ticket-notes"]);
           try { localStorage.setItem("cc-ticket-notes", JSON.stringify(data["cc-ticket-notes"])); } catch {}
+        }
+
+        // hidden keys: KV 우선, 없으면 localStorage 폴백
+        const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
+        if (kvHidden.length > 0) {
+          setHiddenKeys(new Set(kvHidden));
+          setTickets(prev => prev.filter(t => !kvHidden.includes(t.key)));
+        } else {
+          try {
+            const local = localStorage.getItem("cc-hidden-keys");
+            if (local) {
+              const parsed: string[] = JSON.parse(local);
+              if (parsed.length > 0) {
+                setHiddenKeys(new Set(parsed));
+                setTickets(prev => prev.filter(t => !parsed.includes(t.key)));
+              }
+            }
+          } catch {}
         }
 
         // custom keys: KV 우선, 없으면 localStorage 폴백
@@ -2390,7 +2428,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     )}
                   </div>
 
-                  {/* 마일스톤 서브 행: 킥오프/배포/론치 날짜 칩 (미정 포함 항상 표시) */}
+                  {/* 마일스톤 서브 행 */}
                   {!isDetailExpanded && (() => {
                     const isTicketActive = INPROGRESS_STATUSES.includes(t.status) || DONE_STATUSES.includes(t.status);
                     const existingMap = Object.fromEntries(
@@ -2398,6 +2436,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         .filter(r => MILESTONE_ROLES.includes(r.role))
                         .map(r => [r.role, r])
                     );
+                    const hasAnyMilestoneData = Object.keys(existingMap).length > 0;
+
+                    // 플래닝 대기 상태(진행중·완료 아님) 티켓은 마일스톤 데이터 있을 때만 표시
+                    if (!isTicketActive && !hasAnyMilestoneData) return null;
+
                     const milestones: (RoleSchedule & { isMissing?: boolean })[] = MILESTONE_ROLES.map(role => {
                       if (existingMap[role]) return existingMap[role];
                       const defaultStatus = (isTicketActive && role === "Kick-Off")
