@@ -2634,26 +2634,66 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           );
                         })}
 
-                        {/* 구분선 */}
-                        <span className="mx-1 text-[10px]" style={{ color: "#30363d" }}>|</span>
-
-                        {/* 플래닝 상태 — 항상 표시 */}
-                        {planningBothDone ? (
-                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium" style={{ background: "rgba(16,185,129,0.12)", color: "#34d399", border: "1px solid rgba(16,185,129,0.3)" }}>
-                            ✓ 플래닝 완료
-                          </span>
-                        ) : (
-                          <>
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]" style={{ background: ds.bg, color: ds.text, border: `1px solid ${ds.border}` }}>
-                              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ds.dot }} />
-                              D · {p.design}
-                            </span>
-                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]" style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}` }}>
-                              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dv.dot }} />
-                              Dev · {p.dev}
-                            </span>
-                          </>
-                        )}
+                        {/* 플래닝 상태 배지 */}
+                        {(() => {
+                          if (isTicketActive) {
+                            // 진행중·완료 티켓: 플래닝 완료면 배지 없음 / 미완 트랙만 경고색 강조
+                            if (planningBothDone) return null;
+                            const wStyle = (state: string, track: "design" | "dev") => {
+                              if (state === "검토중") return track === "design"
+                                ? { dot: "#a78bfa", text: "#a78bfa", bg: "rgba(124,58,237,0.15)", border: "rgba(124,58,237,0.4)" }
+                                : { dot: "#60a5fa", text: "#60a5fa", bg: "rgba(59,130,246,0.15)", border: "rgba(59,130,246,0.4)" };
+                              // 대기중 → amber 경고
+                              return { dot: "#fbbf24", text: "#fbbf24", bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.35)" };
+                            };
+                            const pending: React.ReactNode[] = [];
+                            if (p.design !== "완료" && p.design !== "대상아님") {
+                              const ws = wStyle(p.design, "design");
+                              pending.push(
+                                <span key="pd" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
+                                  style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
+                                  D · {p.design}
+                                </span>
+                              );
+                            }
+                            if (p.dev !== "완료" && p.dev !== "대상아님") {
+                              const ws = wStyle(p.dev, "dev");
+                              pending.push(
+                                <span key="pv" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
+                                  style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
+                                  Dev · {p.dev}
+                                </span>
+                              );
+                            }
+                            if (pending.length === 0) return null;
+                            return (
+                              <>
+                                <span className="mx-1 text-[10px]" style={{ color: "#30363d" }}>|</span>
+                                {pending}
+                              </>
+                            );
+                          } else {
+                            // 플래닝 대기·검토 티켓: D / Dev 항상 각각 표시
+                            // 완료 트랙은 dim, 미완 트랙은 강조
+                            return (
+                              <>
+                                <span className="mx-1 text-[10px]" style={{ color: "#30363d" }}>|</span>
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
+                                  style={{ background: ds.bg, color: ds.text, border: `1px solid ${ds.border}`, opacity: p.design === "완료" || p.design === "대상아님" ? 0.4 : 1 }}>
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ds.dot }} />
+                                  D · {p.design}{p.design === "완료" ? " ✓" : ""}
+                                </span>
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
+                                  style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}`, opacity: p.dev === "완료" || p.dev === "대상아님" ? 0.4 : 1 }}>
+                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dv.dot }} />
+                                  Dev · {p.dev}{p.dev === "완료" ? " ✓" : ""}
+                                </span>
+                              </>
+                            );
+                          }
+                        })()}
                       </div>
                     );
                   })()}
