@@ -803,6 +803,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState, reviewNeeded?: boolean })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
   const [reviewFilter, setReviewFilter] = useState(false); // 검토필요 티켓만 필터
+  const [newFilter, setNewFilter]       = useState(false); // 최근 2주 신규 티켓만 필터
+  const [ticketAddedDates, setTicketAddedDates] = useState<Record<string, string>>({}); // key → "YYYY-MM-DD"
+  const [newSectionOpen, setNewSectionOpen] = useState(false); // 신규 섹션 접힘 여부
   const [planningTab, setPlanningTab] = useState("진행 중");
   const [kvLoaded, setKvLoaded]     = useState(false);
   const planningMigratedRef         = useRef(false);
@@ -1273,6 +1276,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-keys", value: newCustomKeysArr }) }).catch(() => {});
       fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }) }).catch(() => {});
+
+      // 신규 추가 티켓 날짜 기록
+      const today = new Date().toISOString().split("T")[0];
+      const updatedDates = { ...ticketAddedDates };
+      for (const t of fetched) if (!updatedDates[t.key]) updatedDates[t.key] = today;
+      setTicketAddedDates(updatedDates);
+      fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-ticket-added-dates", value: updatedDates }) }).catch(() => {});
       try {
         localStorage.setItem("cc-custom-keys", JSON.stringify(newCustomKeysArr));
         localStorage.setItem("cc-custom-tickets", JSON.stringify(newCustomTickets));
@@ -1483,7 +1494,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys,cc-hidden-meta")
+    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -1582,6 +1593,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             }
           } catch {}
         }
+        // cc-ticket-added-dates: 신규 티켓 추가 날짜 추적
+        const savedDates: Record<string, string> = data["cc-ticket-added-dates"] ?? {};
+        setTicketAddedDates(savedDates);
+
         setKvLoaded(true);
       })
       .catch(() => {
@@ -1731,6 +1746,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => clearTimeout(timer);
   }, [editMode, editFocusKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // KV 로드 완료 후: 날짜 미기록 티켓에 오늘 날짜 기록 (신규 추가분만 앞으로 추적)
+  useEffect(() => {
+    if (!kvLoaded || tickets.length === 0) return;
+    const today = new Date().toISOString().split("T")[0];
+    const missing = tickets.filter(t => !ticketAddedDates[t.key]).map(t => t.key);
+    if (missing.length === 0) return;
+    const updated = { ...ticketAddedDates };
+    for (const key of missing) updated[key] = today;
+    setTicketAddedDates(updated);
+    fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-ticket-added-dates", value: updated }) }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kvLoaded, tickets.length]);
+
   // addKeyError 자동 해제 (5초 후)
   useEffect(() => {
     if (!addKeyError) return;
@@ -1738,8 +1767,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => clearTimeout(t);
   }, [addKeyError]);
 
-  const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
-  const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료", "개발완료"]);
+  const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료", "개발완료"]);
+  const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료"]);
 
   // key 기준 중복 제거 (배치 + 커스텀 동시 로드 시 race condition 방어)
   const dedupedTickets = useMemo(() => {
@@ -1851,6 +1880,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const inProgress = totalInProgress;
   const planned    = totalPlanned;
 
+  // 최근 2주 기준 날짜
+  const TWO_WEEKS_AGO = useMemo(() => {
+    const d = new Date(); d.setDate(d.getDate() - 14);
+    return d.toISOString().split("T")[0];
+  }, []);
+
+  const isRecentTicket = (key: string) => (ticketAddedDates[key] ?? "") >= TWO_WEEKS_AGO;
+
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
     let result = statusTab === "전체" ? [...preFiltered]
@@ -1859,6 +1896,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       :                            preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status));
     // 검토필요 필터
     if (reviewFilter) result = result.filter(t => getPlanningVal(planning[t.key]).reviewNeeded);
+    // 신규 필터
+    if (newFilter) result = result.filter(t => isRecentTicket(t.key));
     const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
     if (sortBy === "priority") {
       result.sort((a: Ticket, b: Ticket) =>
@@ -1870,7 +1909,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       result.sort((a: Ticket, b: Ticket) => dateVal(a.eta) - dateVal(b.eta));
     }
     return result;
-  }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function nowDateStr(): string {
     const now = new Date();
@@ -2345,30 +2384,53 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           })}
         </div>
 
-        {/* 검토필요 빠른 필터 */}
+        {/* 빠른 필터 행: 검토필요 + 최근 2주 신규 */}
         {(() => {
           const reviewCount = preFiltered.filter(t => getPlanningVal(planning[t.key]).reviewNeeded).length;
-          if (reviewCount === 0 && !reviewFilter) return null;
+          const newCount    = preFiltered.filter(t => isRecentTicket(t.key)).length;
+          if (reviewCount === 0 && !reviewFilter && newCount === 0 && !newFilter) return null;
           return (
             <div className={`flex items-center gap-2 mb-4 ${isDetailExpanded ? "hidden" : ""}`}>
-              <button
-                onClick={() => setReviewFilter(v => !v)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
-                style={{
-                  background: reviewFilter ? "rgba(239,68,68,0.15)" : "#161b22",
-                  border: `1px solid ${reviewFilter ? "#f87171" : "#30363d"}`,
-                  color: reviewFilter ? "#f87171" : "#7d8590",
-                  boxShadow: reviewFilter ? "0 0 0 1px #f87171" : "none",
-                }}
-              >
-                ⚡ 검토필요
-                <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
-                  style={{ background: reviewFilter ? "rgba(239,68,68,0.25)" : "#21262d", color: reviewFilter ? "#f87171" : "#484f58" }}>
-                  {reviewCount}
+              {(reviewCount > 0 || reviewFilter) && (
+                <button
+                  onClick={() => setReviewFilter(v => !v)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                  style={{
+                    background: reviewFilter ? "rgba(239,68,68,0.15)" : "#161b22",
+                    border: `1px solid ${reviewFilter ? "#f87171" : "#30363d"}`,
+                    color: reviewFilter ? "#f87171" : "#7d8590",
+                    boxShadow: reviewFilter ? "0 0 0 1px #f87171" : "none",
+                  }}
+                >
+                  ⚡ 검토필요
+                  <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                    style={{ background: reviewFilter ? "rgba(239,68,68,0.25)" : "#21262d", color: reviewFilter ? "#f87171" : "#484f58" }}>
+                    {reviewCount}
+                  </span>
+                </button>
+              )}
+              {(newCount > 0 || newFilter) && (
+                <button
+                  onClick={() => setNewFilter(v => !v)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                  style={{
+                    background: newFilter ? "rgba(56,189,248,0.15)" : "#161b22",
+                    border: `1px solid ${newFilter ? "#38bdf8" : "#30363d"}`,
+                    color: newFilter ? "#38bdf8" : "#7d8590",
+                    boxShadow: newFilter ? "0 0 0 1px #38bdf8" : "none",
+                  }}
+                >
+                  🆕 최근 2주 신규
+                  <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                    style={{ background: newFilter ? "rgba(56,189,248,0.25)" : "#21262d", color: newFilter ? "#38bdf8" : "#484f58" }}>
+                    {newCount}
+                  </span>
+                </button>
+              )}
+              {(reviewFilter || newFilter) && (
+                <span className="text-xs" style={{ color: "#484f58" }}>
+                  {reviewFilter && newFilter ? "검토필요 + 신규 티켓만 표시 중" : reviewFilter ? "검토필요 티켓만 표시 중" : "최근 2주 신규 티켓만 표시 중"}
                 </span>
-              </button>
-              {reviewFilter && (
-                <span className="text-xs" style={{ color: "#484f58" }}>검토필요 티켓만 표시 중</span>
               )}
             </div>
           );
@@ -2621,6 +2683,55 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
           </div>
         )}
+
+        {/* 최근 2주 신규 고정 섹션 — newFilter ON이면 중복이므로 숨김 */}
+        {!newFilter && !isDetailExpanded && (() => {
+          const recentInTab = preFiltered.filter(t => isRecentTicket(t.key));
+          if (recentInTab.length === 0) return null;
+          return (
+            <div className="mb-3 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(56,189,248,0.3)", background: "#0d1117" }}>
+              <button
+                onClick={() => setNewSectionOpen(v => !v)}
+                className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-semibold transition-colors"
+                style={{ background: "rgba(56,189,248,0.08)", borderBottom: newSectionOpen ? "1px solid rgba(56,189,248,0.2)" : "none", color: "#38bdf8" }}
+              >
+                <span className="flex items-center gap-2">
+                  🆕 최근 2주 신규 추가
+                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold" style={{ background: "rgba(56,189,248,0.2)", color: "#38bdf8" }}>
+                    {recentInTab.length}
+                  </span>
+                </span>
+                <svg className={`w-3.5 h-3.5 transition-transform ${newSectionOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                  <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+              </button>
+              {newSectionOpen && (
+                <div>
+                  {recentInTab.map(t => (
+                    <div
+                      key={t.key}
+                      onClick={() => handleSelect(t)}
+                      className="flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors"
+                      style={{ borderBottom: "1px solid #21262d" }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#1c2128"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                    >
+                      <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: "rgba(56,189,248,0.15)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.3)" }}>
+                        {ticketAddedDates[t.key]?.slice(5).replace("-", "/")} 추가
+                      </span>
+                      <a href={`${JIRA_BASE}${t.key}`} target="_blank" rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        className="font-mono text-sm font-semibold text-blue-400 hover:underline shrink-0">{t.key}</a>
+                      <span className="text-sm truncate flex-1 min-w-0" style={{ color: "#f0f6fc" }}>{t.summary}</span>
+                      <span className="text-xs shrink-0" style={{ color: "#7d8590" }}>{t.assignee}</span>
+                      <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>{t.status}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* 티켓 목록 */}
         <div className="rounded-xl overflow-hidden" style={{ border: "1px solid #21262d", background: "#0d1117" }}>
