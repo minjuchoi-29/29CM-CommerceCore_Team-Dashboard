@@ -2341,19 +2341,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         )}
                         {(() => {
                           const p = getPlanningVal(planning[t.key]);
-                          const designDone = p.design === "완료";
-                          const devDone = p.dev === "완료";
-                          if (designDone && devDone) return null;
+                          const showDesign = p.design === "검토중";
+                          const showDev    = p.dev    === "검토중";
+                          if (!showDesign && !showDev) return null;
                           return (
                             <span className="shrink-0 mr-1.5 flex items-center gap-1">
-                              {!designDone && (
-                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.design === "검토중" ? "rgba(124,58,237,0.2)" : "rgba(75,85,99,0.2)", color: p.design === "검토중" ? "#a78bfa" : "#9ca3af", border: `1px solid ${p.design === "검토중" ? "rgba(124,58,237,0.3)" : "rgba(75,85,99,0.3)"}` }}>
-                                  Design{p.design === "검토중" ? " 검토" : " 대기"}
+                              {showDesign && (
+                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(124,58,237,0.2)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.3)" }}>
+                                  Design 검토
                                 </span>
                               )}
-                              {!devDone && (
-                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.dev === "검토중" ? "rgba(59,130,246,0.2)" : "rgba(75,85,99,0.2)", color: p.dev === "검토중" ? "#60a5fa" : "#9ca3af", border: `1px solid ${p.dev === "검토중" ? "rgba(59,130,246,0.3)" : "rgba(75,85,99,0.3)"}` }}>
-                                  Dev{p.dev === "검토중" ? " 검토" : " 대기"}
+                              {showDev && (
+                                <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(59,130,246,0.2)", color: "#60a5fa", border: "1px solid rgba(59,130,246,0.3)" }}>
+                                  Dev 검토
                                 </span>
                               )}
                             </span>
@@ -2449,19 +2449,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <h3 className="text-base font-bold leading-snug" style={{ color: "#e6edf3" }}>{selected.summary}</h3>
                 {(() => {
                   const p = getPlanningVal(planning[selected.key]);
-                  const designDone = p.design === "완료";
-                  const devDone = p.dev === "완료";
-                  if (designDone && devDone) return null;
+                  const showDesign = p.design === "검토중";
+                  const showDev    = p.dev    === "검토중";
+                  if (!showDesign && !showDev) return null;
                   return (
                     <div className="flex gap-1 mt-1.5">
-                      {!designDone && (
-                        <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.design === "검토중" ? "rgba(124,58,237,0.2)" : "rgba(75,85,99,0.2)", color: p.design === "검토중" ? "#a78bfa" : "#9ca3af", border: `1px solid ${p.design === "검토중" ? "rgba(124,58,237,0.3)" : "rgba(75,85,99,0.3)"}` }}>
-                          Design{p.design === "검토중" ? " 검토" : " 대기"}
+                      {showDesign && (
+                        <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(124,58,237,0.2)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.3)" }}>
+                          Design 검토
                         </span>
                       )}
-                      {!devDone && (
-                        <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: p.dev === "검토중" ? "rgba(59,130,246,0.2)" : "rgba(75,85,99,0.2)", color: p.dev === "검토중" ? "#60a5fa" : "#9ca3af", border: `1px solid ${p.dev === "검토중" ? "rgba(59,130,246,0.3)" : "rgba(75,85,99,0.3)"}` }}>
-                          Dev{p.dev === "검토중" ? " 검토" : " 대기"}
+                      {showDev && (
+                        <span className="px-1.5 py-0.5 rounded text-xs font-medium" style={{ background: "rgba(59,130,246,0.2)", color: "#60a5fa", border: "1px solid rgba(59,130,246,0.3)" }}>
+                          Dev 검토
                         </span>
                       )}
                     </div>
@@ -2978,14 +2978,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           const activeStyle =
                             s === "완료"     ? { background: "rgba(16,185,129,0.25)", borderColor: "rgba(16,185,129,0.5)", color: "#34d399" } :
                             s === "검토중"   ? (track === "design" ? { background: "rgba(124,58,237,0.25)", borderColor: "rgba(124,58,237,0.5)", color: "#a78bfa" } : { background: "rgba(59,130,246,0.25)", borderColor: "rgba(59,130,246,0.5)", color: "#60a5fa" }) :
-                            s === "대상아님" ? { background: "rgba(75,85,99,0.25)", borderColor: "rgba(75,85,99,0.5)", color: "#9ca3af" } :
-                                               { background: "rgba(75,85,99,0.15)", borderColor: "rgba(75,85,99,0.4)", color: "#6b7280" };
+                            s === "대상아님" ? { background: "rgba(100,116,139,0.3)", borderColor: "#94a3b8", color: "#cbd5e1" } :
+                            /* 대기중 */       { background: "rgba(100,116,139,0.25)", borderColor: "#64748b", color: "#94a3b8" };
+                          // 미선택: 조금 더 밝게 해서 클릭 가능함을 인지
+                          const inactiveStyle = { background: "#1c2128", borderColor: "#484f58", color: "#7d8590" };
                           return (
                             <button
                               key={s}
                               onClick={() => savePlanning(selected.key, track, s)}
-                              className="flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-colors hover:opacity-90"
-                              style={active ? activeStyle : { background: "#161b22", borderColor: "#30363d", color: "#484f58" }}
+                              className="flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-all hover:opacity-90"
+                              style={active ? activeStyle : inactiveStyle}
                             >{s}</button>
                           );
                         })}
