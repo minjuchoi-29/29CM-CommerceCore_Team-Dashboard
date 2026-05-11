@@ -2387,29 +2387,40 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     )}
                   </div>
 
-                  {/* 마일스톤 서브 행: 킥오프/배포/론치 날짜 칩 */}
+                  {/* 마일스톤 서브 행: 킥오프/배포/론치 날짜 칩 (미정 포함 항상 표시) */}
                   {!isDetailExpanded && (() => {
-                    const milestones = (schedules[t.key] ?? [])
-                      .filter(r => MILESTONE_ROLES.includes(r.role) && r.end);
-                    if (milestones.length === 0) return null;
+                    const existingMap = Object.fromEntries(
+                      (schedules[t.key] ?? [])
+                        .filter(r => MILESTONE_ROLES.includes(r.role))
+                        .map(r => [r.role, r])
+                    );
+                    const milestones: (RoleSchedule & { isMissing?: boolean })[] = MILESTONE_ROLES.map(role =>
+                      existingMap[role]
+                        ? existingMap[role]
+                        : { role, person: "-", start: "", end: "", status: "미정" as const, isMissing: true }
+                    );
                     return (
                       <div className="flex items-center gap-1.5 px-4 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
-                        {milestones.map((r, mi) => (
+                        {milestones.map((r, mi) => {
+                          const isDone    = r.status === "완료";
+                          const isMissing = !r.end || (r as { isMissing?: boolean }).isMissing;
+                          return (
                           <span
                             key={`${r.role}-${mi}`}
-                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium ${r.status === "완료" ? "opacity-40" : ""} ${MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium ${isDone ? "opacity-40" : ""} ${isMissing ? "opacity-60" : ""} ${MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
                           >
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${MILESTONE_DOT[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-60" : ""}`} />
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${MILESTONE_DOT[r.role] ?? "bg-gray-400"} ${isDone ? "opacity-60" : ""}`} />
                             {MILESTONE_KO[r.role] ?? r.role}
                             {r.detail && (
                               <span className="font-normal opacity-60 max-w-[12rem] truncate" title={r.detail}>
                                 · {r.detail}
                               </span>
                             )}
-                            <span className="font-normal opacity-75">{shortDate(r.end)}</span>
-                            {r.status === "완료" && <span className="text-[10px] font-semibold">✓</span>}
+                            <span className="font-normal opacity-75">{isMissing ? "미정" : shortDate(r.end)}</span>
+                            {isDone && <span className="text-[10px] font-semibold">✓</span>}
                           </span>
-                        ))}
+                          );
+                        })}
                       </div>
                     );
                   })()}
