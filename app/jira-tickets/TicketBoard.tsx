@@ -184,17 +184,21 @@ function makeViewFns(viewStart: number, viewEnd: number) {
   return { pct, datePct, barLeft, barWidth };
 }
 
+const THIS_YEAR = new Date().getFullYear();
+
 function formatDateWithDay(dateStr: string): string {
   if (!dateStr) return "-";
   const d = new Date(dateStr + "T00:00:00");
-  return `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
+  const prefix = d.getFullYear() !== THIS_YEAR ? `${d.getFullYear()}/` : "";
+  return `${prefix}${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
 }
 
-// 짧은 날짜 포맷: "2026-04-01" → "4/1"
+// 짧은 날짜 포맷: 요일 항상 표시, 올해 아니면 연도도 표시
 function shortDate(dateStr: string): string {
   if (!dateStr) return "";
   const d = new Date(dateStr + "T00:00:00");
-  return `${d.getMonth() + 1}/${d.getDate()}`;
+  const prefix = d.getFullYear() !== THIS_YEAR ? `${d.getFullYear()}/` : "";
+  return `${prefix}${d.getMonth() + 1}/${d.getDate()}(${DOW[d.getDay()]})`;
 }
 
 // 한국 공휴일 (2025~2026)
@@ -398,12 +402,14 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                   <div className="flex-1 relative h-5 rounded-sm overflow-hidden" style={{ background: "#1c2128" }}>
                     <div className="absolute top-0 bottom-0 w-px bg-red-400 z-10" style={{ left: `${todayPct}%` }} />
                     {r.status === "미정" ? (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-xs text-gray-400 italic">기간 산정중</span>
+                      <div className="absolute inset-0 flex items-center justify-center gap-1.5" style={{ background: "rgba(245,158,11,0.06)" }}>
+                        <span className="text-[10px] font-bold tracking-wide" style={{ color: "#f59e0b" }}>⚠</span>
+                        <span className="text-xs font-medium" style={{ color: "#f59e0b" }}>기간 산정 중</span>
                       </div>
                     ) : r.status === "확인필요" && !r.start ? (
-                      <div className="absolute inset-0 flex items-center justify-center">
-                        <span className="text-xs text-purple-400 italic">PM 확인 필요</span>
+                      <div className="absolute inset-0 flex items-center justify-center gap-1.5" style={{ background: "rgba(167,139,250,0.06)" }}>
+                        <span className="text-[10px] font-bold" style={{ color: "#a78bfa" }}>?</span>
+                        <span className="text-xs font-medium" style={{ color: "#a78bfa" }}>PM 확인 필요</span>
                       </div>
                     ) : barWidth(r.start, r.end) > 0 && (
                       <div
@@ -445,9 +451,13 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                   )}
                 </div>
                 {r.status === "미정" ? (
-                  <p className="text-xs text-orange-400 italic mt-0.5">기간 산정중</p>
+                  <p className="inline-flex items-center gap-1 text-[11px] font-medium mt-0.5 px-1.5 py-0.5 rounded" style={{ background: "rgba(245,158,11,0.1)", color: "#f59e0b", border: "1px solid rgba(245,158,11,0.2)" }}>
+                    기간 산정 중 — 날짜 확정 후 상태를 변경해주세요
+                  </p>
                 ) : r.status === "확인필요" && !r.start ? (
-                  <p className="text-xs text-purple-400 italic mt-0.5">담당 PM이 현황 확인 후 업데이트 필요</p>
+                  <p className="inline-flex items-center gap-1 text-[11px] font-medium mt-0.5 px-1.5 py-0.5 rounded" style={{ background: "rgba(167,139,250,0.1)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.25)" }}>
+                    담당 PM이 현황 확인 후 업데이트 필요
+                  </p>
                 ) : r.start && r.end && (
                   <p className="text-xs text-gray-500 whitespace-nowrap mt-0.5">
                     {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
@@ -540,6 +550,11 @@ const MILESTONE_DOT: Record<string, string> = {
   "Kick-Off": "bg-indigo-500",
   "Release":  "bg-orange-500",
   "Launch":   "bg-green-600",
+};
+const MILESTONE_DOT_HEX: Record<string, string> = {
+  "Kick-Off": "#6366f1",
+  "Release":  "#f97316",
+  "Launch":   "#16a34a",
 };
 const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "BE-메가존", "FE-CFE", "FE-DFE", "FE-Sotatek", "Mobile", "DA", "QA"];
 const ALL_PRESET_ROLES = [...MILESTONE_ROLES, ...PRESET_ROLES];
@@ -2582,7 +2597,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <span className="w-20 shrink-0 text-center">레벨</span>
                 <span className="w-16 shrink-0 text-center">프로젝트</span>
                 <span className="w-20 shrink-0 text-center">담당자</span>
-                <span className="w-28 shrink-0 text-center">상태</span>
+                <span className="w-36 shrink-0 text-center">상태</span>
                 <span className="w-28 shrink-0 text-center">시작일</span>
                 <span className="w-28 shrink-0 text-center">ETA</span>
                 <span className="w-6 shrink-0" />
@@ -2605,15 +2620,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <div
                   key={t.key}
                   data-ticket-key={t.key}
-                  className={`transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""}`}
+                  className={`cursor-pointer transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""}`}
                   style={{ borderBottom: "1px solid #21262d", background: isSelected ? "#1c2128" : isNew ? "rgba(16,185,129,0.08)" : isDuplicate ? "rgba(245,158,11,0.08)" : undefined }}
+                  onClick={() => handleSelect(t)}
                   onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "#1c2128"; }}
                   onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = isNew ? "rgba(16,185,129,0.08)" : isDuplicate ? "rgba(245,158,11,0.08)" : ""; }}
                 >
                   {/* 메인 행 */}
                   <div
-                    className="flex items-center px-4 py-3 cursor-pointer"
-                    onClick={() => handleSelect(t)}
+                    className="flex items-center px-4 py-3"
                   >
                     {isDetailExpanded ? (
                       /* 축소 뷰: 티켓 번호만 */
@@ -2729,7 +2744,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const dv = trackStyle(p.dev,    "dev");
 
                     return (
-                      <div className="flex items-center gap-1.5 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
+                      // 서브행: px-4(16) + w-6(24) + w-8(32) + w-32(128) = 200px → 타이틀 컬럼 시작에 정렬
+                      <div className="flex items-center flex-wrap gap-x-3 gap-y-1 pb-2.5 pr-4" style={{ paddingLeft: "200px" }}>
                         {/* 검토필요 배지 — 최우선 표시 */}
                         {p.reviewNeeded && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-bold"
@@ -2737,37 +2753,37 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             ⚡ 검토필요
                           </span>
                         )}
-                        {/* 마일스톤 칩 — 항상 표시 (2763/2878 등 일관성 유지)
-                            날짜 확정된 칩은 full opacity + font-medium으로 강조
-                            날짜 없는 칩(미정/확인필요)은 dim 처리 */}
+                        {/* 마일스톤 — 버튼형 제거, 인라인 텍스트 스타일 */}
+                        <span className="inline-flex items-center gap-2.5">
                         {milestones.map((r, mi) => {
                           const isDone      = r.status === "완료";
                           const isMissing   = !r.end || (r as { isMissing?: boolean }).isMissing;
                           const isNeedCheck = isMissing && r.status === "확인필요";
-                          const hasDate     = !isMissing && !isDone; // 실제 날짜 확정
+                          const hasDate     = !isMissing && !isDone;
                           const labelText   = isMissing ? r.status : shortDate(r.end);
-                          // 날짜 확정 → 강조 / 완료 → 매우 dim / 미정 → dim / 확인필요 → 중간
-                          const chipOpacity = isDone ? 0.28 : hasDate ? 1 : isNeedCheck ? 0.85 : 0.38;
+                          const chipOpacity = isDone ? 0.5 : 1;
+                          const dotColor    = isNeedCheck ? "#fb923c" : (MILESTONE_DOT_HEX[r.role] ?? "#6b7280");
+                          const nameColor   = isNeedCheck ? "#fb923c" : (MILESTONE_DOT_HEX[r.role] ?? "#9ca3af");
+                          // 날짜 확정 → 밝은 흰색 / 미정 → 충분히 밝은 회색 / 확인필요 → 주황
+                          const dateColor   = hasDate ? "#e6edf3" : isNeedCheck ? "#fb923c" : "#9ca3af";
                           return (
-                          <span
-                            key={`${r.role}-${mi}`}
-                            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[11px]
-                              ${hasDate ? "font-semibold" : "font-normal"}
-                              ${isNeedCheck
-                                ? "bg-orange-900/20 text-orange-400 border-orange-800/40"
-                                : MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
-                            style={{ opacity: chipOpacity }}
-                          >
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isNeedCheck ? "bg-orange-400" : MILESTONE_DOT[r.role] ?? "bg-gray-400"}`} />
-                            {MILESTONE_KO[r.role] ?? r.role}
-                            {r.detail && (
-                              <span className="opacity-80 max-w-[10rem] truncate" title={r.detail}>· {r.detail}</span>
-                            )}
-                            <span className={`ml-0.5 ${hasDate ? "opacity-100" : "opacity-75"}`}>{labelText}</span>
-                            {isDone && <span className="ml-0.5 opacity-60">✓</span>}
-                          </span>
+                            <span
+                              key={`${r.role}-${mi}`}
+                              className="inline-flex items-center gap-1 text-[11px]"
+                              style={{ opacity: chipOpacity }}
+                            >
+                              {mi > 0 && <span className="mr-1" style={{ color: "#30363d" }}>·</span>}
+                              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
+                              <span className="font-medium" style={{ color: nameColor }}>{MILESTONE_KO[r.role] ?? r.role}</span>
+                              {r.detail && (
+                                <span className="opacity-60 max-w-[8rem] truncate" title={r.detail}>({r.detail})</span>
+                              )}
+                              <span className={hasDate ? "font-semibold" : ""} style={{ color: dateColor }}>{labelText}</span>
+                              {isDone && <span style={{ color: "#34d399" }}>✓</span>}
+                            </span>
                           );
                         })}
+                        </span>
 
                         {/* 플래닝 상태 배지 */}
                         {(() => {
@@ -2788,7 +2804,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 <span key="pd" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
                                   style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
                                   <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
-                                  D · {p.design}
+                                  Design · {p.design}
                                 </span>
                               );
                             }
@@ -2818,7 +2834,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
                                   style={{ background: ds.bg, color: ds.text, border: `1px solid ${ds.border}`, opacity: p.design === "완료" || p.design === "대상아님" ? 0.4 : 1 }}>
                                   <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ds.dot }} />
-                                  D · {p.design}{p.design === "완료" ? " ✓" : ""}
+                                  Design · {p.design}{p.design === "완료" ? " ✓" : ""}
                                 </span>
                                 <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
                                   style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}`, opacity: p.dev === "완료" || p.dev === "대상아님" ? 0.4 : 1 }}>
@@ -3589,6 +3605,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               {/* 편집 모드 */}
               {editMode ? (
                 <div className="space-y-2">
+                  {/* 상단 작업 추가 버튼 */}
+                  <button
+                    onClick={() => setEditRows(prev => [newRow(), ...prev])}
+                    className="w-full text-xs font-medium text-indigo-400 hover:text-indigo-300 rounded-lg py-1.5 transition-colors" style={{ background: "rgba(99,102,241,0.07)", border: "1px dashed rgba(99,102,241,0.3)" }}
+                  >+ 작업 추가</button>
                   {editRows.map((row, i) => {
                     const custom    = isCustomRole(row.role);
                     const errRole   = !!editError && !row.role;
