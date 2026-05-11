@@ -1399,7 +1399,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   function startEdit(focusKey?: string) {
     if (!selected) return;
     setEditRows(getRoles(selected).length > 0
-      ? getRoles(selected).map(r => ({ ...r }))
+      ? [...getRoles(selected).map(r => ({ ...r }))].sort((a, b) => {
+          const aS = a.start ? new Date(a.start).getTime() : Infinity;
+          const bS = b.start ? new Date(b.start).getTime() : Infinity;
+          if (aS !== bS) return aS - bS;
+          const aE = a.end ? new Date(a.end).getTime() : Infinity;
+          const bE = b.end ? new Date(b.end).getTime() : Infinity;
+          return aE - bE;
+        })
       : [newRow()]
     );
     setEditFocusKey(focusKey ?? null);
@@ -2224,6 +2231,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${MILESTONE_DOT[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-60" : ""}`} />
                             {MILESTONE_KO[r.role] ?? r.role}
+                            {r.detail && (
+                              <span className="font-normal opacity-60 max-w-[12rem] truncate" title={r.detail}>
+                                · {r.detail}
+                              </span>
+                            )}
                             <span className="font-normal opacity-75">{shortDate(r.end)}</span>
                             {r.status === "완료" && <span className="text-[10px] font-semibold">✓</span>}
                           </span>
