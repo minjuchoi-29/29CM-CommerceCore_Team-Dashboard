@@ -1498,17 +1498,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   function startEdit(focusKey?: string) {
     if (!selected) return;
-    setEditRows(getRoles(selected).length > 0
-      ? [...getRoles(selected).map(r => ({ ...r }))].sort((a, b) => {
-          const aS = a.start ? new Date(a.start).getTime() : Infinity;
-          const bS = b.start ? new Date(b.start).getTime() : Infinity;
-          if (aS !== bS) return aS - bS;
-          const aE = a.end ? new Date(a.end).getTime() : Infinity;
-          const bE = b.end ? new Date(b.end).getTime() : Infinity;
-          return aE - bE;
-        })
-      : [newRow()]
+    const existing = getRoles(selected).map(r => ({ ...r }));
+    const existingMap = Object.fromEntries(existing.map(r => [r.role, r]));
+
+    // 마일스톤 3개는 항상 상단 고정 (기존 데이터 있으면 사용, 없으면 빈 기본값)
+    const isTicketActive = INPROGRESS_STATUSES.includes(selected.status) ||
+      ["론치완료", "완료", "배포완료"].includes(selected.status);
+    const milestoneRows: RoleSchedule[] = MILESTONE_ROLES.map(role =>
+      existingMap[role] ?? {
+        role,
+        person: "-",
+        start: "",
+        end: "",
+        status: (isTicketActive && role === "Kick-Off") ? "확인필요" as const : "미정" as const,
+      }
     );
+
+    // 나머지 작업 행 (마일스톤 제외), 오래된순 정렬
+    const workRows = existing
+      .filter(r => !MILESTONE_ROLES.includes(r.role))
+      .sort((a, b) => {
+        const aS = a.start ? new Date(a.start).getTime() : Infinity;
+        const bS = b.start ? new Date(b.start).getTime() : Infinity;
+        if (aS !== bS) return aS - bS;
+        const aE = a.end ? new Date(a.end).getTime() : Infinity;
+        const bE = b.end ? new Date(b.end).getTime() : Infinity;
+        return aE - bE;
+      });
+
+    setEditRows([...milestoneRows, ...workRows]);
     setEditFocusKey(focusKey ?? null);
     setEditMode(true);
   }
@@ -3101,21 +3119,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   <div className="flex items-center gap-2">
                     <div className="flex rounded-lg overflow-hidden text-xs" style={{ border: "1px solid #30363d" }}>
                       <button
-                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => {
-                          if (!a.start && !b.start) return 0;
-                          if (!a.start) return 1;
-                          if (!b.start) return -1;
-                          return a.start.localeCompare(b.start);
-                        }))}
+                        onClick={() => setEditRows(prev => {
+                          const milestones = prev.filter(r => MILESTONE_ROLES.includes(r.role));
+                          const works = prev.filter(r => !MILESTONE_ROLES.includes(r.role)).sort((a, b) => {
+                            if (!a.start && !b.start) return 0;
+                            if (!a.start) return 1;
+                            if (!b.start) return -1;
+                            return a.start.localeCompare(b.start);
+                          });
+                          return [...milestones, ...works];
+                        })}
                         className="px-2 py-1 hover:opacity-80 transition-colors" style={{ color: "#7d8590" }}
                       >오래된순</button>
                       <button
-                        onClick={() => setEditRows(prev => [...prev].sort((a, b) => {
-                          if (!a.start && !b.start) return 0;
-                          if (!a.start) return 1;
-                          if (!b.start) return -1;
-                          return b.start.localeCompare(a.start);
-                        }))}
+                        onClick={() => setEditRows(prev => {
+                          const milestones = prev.filter(r => MILESTONE_ROLES.includes(r.role));
+                          const works = prev.filter(r => !MILESTONE_ROLES.includes(r.role)).sort((a, b) => {
+                            if (!a.start && !b.start) return 0;
+                            if (!a.start) return 1;
+                            if (!b.start) return -1;
+                            return b.start.localeCompare(a.start);
+                          });
+                          return [...milestones, ...works];
+                        })}
                         className="px-2 py-1 hover:opacity-80 transition-colors" style={{ color: "#7d8590", borderLeft: "1px solid #30363d" }}
                       >최신순</button>
                     </div>
@@ -3155,13 +3181,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const errEnd    = !!editError && row.status !== "미정" && !row.end;
                     const errBorder = "border-red-400";
                     const okBorder  = "border-gray-300";
-                    const isFocused = editFocusKey === makeEditFocusKey(row);
+                    const isFocused   = editFocusKey === makeEditFocusKey(row);
+                    const isMilestone = MILESTONE_ROLES.includes(row.role);
                     return (
                       <div
                         key={i}
                         ref={el => { editRowRefs.current[i] = el; }}
-                        className={`rounded-lg p-2.5 space-y-1.5 transition-colors ${isFocused ? "ring-2 ring-indigo-500" : ""}`}
-                        style={{ background: isFocused ? "#1c2440" : "#161b22" }}
+                        className={`rounded-lg p-2.5 space-y-1.5 transition-colors ${isFocused ? "ring-2 ring-indigo-500" : ""} ${isMilestone ? "ring-1" : ""}`}
+                        style={{
+                          background: isFocused ? "#1c2440" : "#161b22",
+                          ...(isMilestone && !isFocused ? { ringColor: "#818cf8", borderColor: "rgba(129,140,248,0.2)" } : {}),
+                        }}
                       >
                         <div className="flex items-center gap-1.5">
                           {/* 작업 프리셋 선택 */}
@@ -3220,9 +3250,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               </select>
                             );
                           })()}
-                          {/* 삭제 */}
-                          <button onClick={() => { setEditError(null); setEditRows(prev => prev.filter((_, idx) => idx !== i)); }}
-                            className="hover:text-red-400 text-base leading-none shrink-0" style={{ color: "#484f58" }}>×</button>
+                          {/* 삭제 — 마일스톤은 고정 행이므로 비활성화 */}
+                          {isMilestone
+                            ? <span className="w-4 shrink-0" />
+                            : <button onClick={() => { setEditError(null); setEditRows(prev => prev.filter((_, idx) => idx !== i)); }}
+                                className="hover:text-red-400 text-base leading-none shrink-0" style={{ color: "#484f58" }}>×</button>
+                          }
                         </div>
                         {/* 상세 작업 (프리셋 선택 시에만 표시) */}
                         {!custom && (
