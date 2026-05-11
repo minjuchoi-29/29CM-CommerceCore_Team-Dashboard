@@ -552,6 +552,7 @@ type EtrTicketInfo = {
   key: string;
   summary?: string;
   requestDept?: string;
+  status?: string;
 };
 
 type WikiLink = {
@@ -1847,7 +1848,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(trimmed)}`);
       const data = await res.json();
       const info: EtrTicketInfo = data.ticket
-        ? { key: trimmed, summary: data.ticket.summary, requestDept: data.ticket.requestDept }
+        ? { key: trimmed, summary: data.ticket.summary, requestDept: data.ticket.requestDept, status: data.ticket.status }
         : { key: trimmed };
       const updated: TicketRequestInfo = { ...current, source: "ETR", etrStatus: "추가완료", etrTickets: [...prevTickets, info] };
       saveEtr({ ...etrMap, [ticketKey]: updated });
@@ -2577,31 +2578,44 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {/* 연결된 ETR 티켓 목록 */}
                   {(etrMap[selected.key]?.etrTickets ?? []).length > 0 ? (
                     <div className="space-y-1.5 mb-2">
-                      {(etrMap[selected.key]?.etrTickets ?? []).map(t => (
-                        <div key={t.key} className="flex items-start gap-2 rounded px-2 py-1.5" style={{ background: "#0d1117", border: "1px solid #21262d" }}>
-                          <a
-                            href={`${JIRA_BASE}${t.key}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-mono text-blue-500 hover:underline shrink-0 mt-0.5"
-                          >{t.key}</a>
-                          <div className="flex-1 min-w-0">
-                            {t.requestDept && (
-                              <span className="inline-block mr-1" style={{ color: "#7d8590" }}>[{t.requestDept}]</span>
-                            )}
-                            {t.summary && (
-                              <span className="break-words" style={{ color: "#e6edf3" }}>{t.summary}</span>
-                            )}
-                            {!t.requestDept && !t.summary && (
-                              <span className="italic" style={{ color: "#484f58" }}>정보 없음</span>
-                            )}
+                      {(etrMap[selected.key]?.etrTickets ?? []).map(t => {
+                        const st = t.status ?? "";
+                        const stStyle =
+                          DONE_STATUSES.includes(st)       ? { bg: "rgba(16,185,129,0.15)", color: "#34d399", border: "rgba(16,185,129,0.35)" } :
+                          INPROGRESS_STATUSES.includes(st) ? { bg: "rgba(129,140,248,0.15)", color: "#818cf8", border: "rgba(129,140,248,0.35)" } :
+                          PLANNED_STATUSES.includes(st)    ? { bg: "rgba(251,191,36,0.15)", color: "#fbbf24", border: "rgba(251,191,36,0.35)" } :
+                                                             { bg: "rgba(75,85,99,0.2)",    color: "#9ca3af", border: "rgba(75,85,99,0.4)" };
+                        return (
+                          <div key={t.key} className="rounded px-2 py-1.5" style={{ background: "#0d1117", border: "1px solid #21262d" }}>
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <a
+                                href={`${JIRA_BASE}${t.key}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="font-mono text-blue-500 hover:underline shrink-0 text-[11px]"
+                              >{t.key}</a>
+                              {st && (
+                                <span className="rounded px-1.5 py-0.5 text-[10px] font-medium shrink-0" style={{ background: stStyle.bg, color: stStyle.color, border: `1px solid ${stStyle.border}` }}>{st}</span>
+                              )}
+                              <button
+                                onClick={() => removeEtr(selected.key, t.key)}
+                                className="ml-auto hover:text-red-400 transition-colors shrink-0" style={{ color: "#484f58" }}
+                              >×</button>
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              {t.requestDept && (
+                                <span className="inline-block mr-1 text-[11px]" style={{ color: "#7d8590" }}>[{t.requestDept}]</span>
+                              )}
+                              {t.summary && (
+                                <span className="break-words text-[11px]" style={{ color: "#c9d1d9" }}>{t.summary}</span>
+                              )}
+                              {!t.requestDept && !t.summary && (
+                                <span className="italic text-[11px]" style={{ color: "#484f58" }}>정보 없음</span>
+                              )}
+                            </div>
                           </div>
-                          <button
-                            onClick={() => removeEtr(selected.key, t.key)}
-                            className="hover:text-red-400 transition-colors shrink-0 mt-0.5" style={{ color: "#484f58" }}
-                          >×</button>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <p className="text-orange-400 mb-2">외부 요청 티켓 연결 필요</p>
