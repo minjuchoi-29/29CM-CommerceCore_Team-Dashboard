@@ -2401,15 +2401,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
           {/* 티켓 추가 */}
           <div className="flex items-center gap-1.5 ml-1">
-            <input
-              type="text"
-              placeholder="예: TM-1234, TM-5678"
-              value={addKeyInput}
-              onChange={e => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
-              onKeyDown={e => e.key === "Enter" && addTickets(addKeyInput)}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-all"
-              style={{ background: "#1c2128", borderColor: "#30363d", color: "#e6edf3", outline: "none", width: "180px" }}
-            />
+            <div className="relative flex items-center">
+              <input
+                type="text"
+                placeholder="예: TM-1234, TM-5678"
+                value={addKeyInput}
+                onChange={e => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
+                onKeyDown={e => e.key === "Enter" && addTickets(addKeyInput)}
+                className="px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-all"
+                style={{ background: "#1c2128", borderColor: "#30363d", color: "#e6edf3", outline: "none", width: "180px", paddingRight: addKeyInput ? "1.75rem" : undefined }}
+              />
+              {addKeyInput && (
+                <button
+                  onClick={() => { setAddKeyInput(""); setAddKeyError(null); }}
+                  title="입력 초기화"
+                  className="absolute right-1.5 flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold transition-colors"
+                  style={{ color: "#484f58", background: "#30363d" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#e6edf3"; (e.currentTarget as HTMLElement).style.background = "#484f58"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#484f58"; (e.currentTarget as HTMLElement).style.background = "#30363d"; }}
+                >×</button>
+              )}
+            </div>
             <button
               onClick={() => addTickets(addKeyInput)}
               disabled={addKeyLoading || !addKeyInput.trim()}
@@ -2418,7 +2430,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             >
               {addKeyLoading ? (addKeyProgress ? `${addKeyProgress.current}/${addKeyProgress.total}` : "추가 중…") : "추가"}
             </button>
-            {addKeyError && <span className="text-xs" style={{ color: "#f87171" }}>{addKeyError}</span>}
+            {addKeyError && (() => {
+              // 이미 등록된 티켓 키 추출 → 클릭 시 해당 행으로 스크롤
+              const dupMatch = addKeyError.match(/^([A-Z][A-Z0-9]*-\d+)은\(는\) 이미 등록/);
+              const dupKey   = dupMatch ? dupMatch[1] : null;
+              const scrollTo = (key: string) => {
+                document.querySelector(`[data-ticket-key="${key}"]`)
+                  ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                setDuplicateKeys(new Set([key]));
+                setTimeout(() => setDuplicateKeys(new Set()), 2500);
+              };
+              return (
+                <span className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
+                  {dupKey ? (
+                    <>
+                      <button
+                        onClick={() => scrollTo(dupKey)}
+                        className="underline underline-offset-2 font-semibold transition-opacity hover:opacity-70"
+                        style={{ color: "#f87171" }}
+                        title="목록에서 위치 확인"
+                      >
+                        {dupKey}
+                      </button>
+                      은(는) 이미 등록되어 있습니다 ↑
+                    </>
+                  ) : addKeyError}
+                </span>
+              );
+            })()}
           </div>
         </div>
 
