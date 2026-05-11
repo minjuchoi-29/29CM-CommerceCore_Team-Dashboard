@@ -1636,6 +1636,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     });
   }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // 아래 요약 카드는 planningTab·statusTab 무관하게 항상 전체 티켓 기준 집계
+  const totalAll        = dedupedTickets.length;
+  const totalDone       = dedupedTickets.filter((t) => DONE_STATUSES.includes(t.status)).length;
+  const totalInProgress = dedupedTickets.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
+  const totalPlanned    = dedupedTickets.filter((t) => PLANNED_STATUSES.includes(t.status)).length;
+
+  // preFiltered 기반 카운트는 statusTab 필터에서만 내부적으로 사용
   const done       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
   const inProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
   const planned    = preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status)).length;
@@ -2012,26 +2019,31 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 요약 카드 */}
+        {/* 요약 카드 — 항상 전체 티켓(dedupedTickets) 기준 Jira 상태 분포 */}
         <div className={`grid grid-cols-4 gap-3 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
           {([
-            { label: "전체",      count: preFiltered.length, numColor: "text-gray-900",  ring: "ring-gray-400"  },
-            { label: "완료",      count: done,               numColor: "text-green-600", ring: "ring-green-400" },
-            { label: "진행중",    count: inProgress,         numColor: "text-blue-600",  ring: "ring-blue-400"  },
-            { label: "계획/대기", count: planned,            numColor: "text-gray-400",  ring: "ring-gray-300"  },
-          ] as const).map((s) => {
-            const active = statusTab === s.label;
+            { label: "전체",      filterKey: "전체",      count: totalAll,        numColor: "#e6edf3", desc: "등록된 전체 티켓" },
+            { label: "완료",      filterKey: "완료",      count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨" },
+            { label: "개발·QA중", filterKey: "진행중",    count: totalInProgress, numColor: "#818cf8", desc: "개발중·QA중·In Progress" },
+            { label: "기획·준비", filterKey: "계획/대기", count: totalPlanned,    numColor: "#fbbf24", desc: "기획중·디자인·HOLD 등" },
+          ]).map((s) => {
+            const active = statusTab === s.filterKey;
             return (
               <button
                 key={s.label}
-                onClick={() => setStatusTab(active ? "전체" : s.label)}
+                onClick={() => setStatusTab(active ? "전체" : s.filterKey as typeof statusTab)}
+                title={s.desc}
                 className="rounded-xl border px-4 py-3 text-left transition-all cursor-pointer"
                 style={{
                   background: active ? "#1c2128" : "#161b22",
                   borderColor: active ? "#7c3aed" : "#21262d",
                 }}
               >
-                <p className="text-xs" style={{ color: "#7d8590" }}>{s.label}</p>
-                <p className="text-2xl font-bold mt-1" style={{ color: s.label === "완료" ? "#34d399" : s.label === "진행중" ? "#818cf8" : s.label === "계획/대기" ? "#fbbf24" : "#e6edf3" }}>{s.count}</p>
+                <div className="flex items-center justify-between mb-1">
+                  <p className="text-xs" style={{ color: "#7d8590" }}>{s.label}</p>
+                  <p className="text-[10px]" style={{ color: "#484f58" }}>전체 기준</p>
+                </div>
+                <p className="text-2xl font-bold" style={{ color: s.numColor }}>{s.count}</p>
               </button>
             );
           })}
