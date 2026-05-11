@@ -1699,6 +1699,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => clearTimeout(timer);
   }, [editMode, editFocusKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // addKeyError 자동 해제 (5초 후)
+  useEffect(() => {
+    if (!addKeyError) return;
+    const t = setTimeout(() => setAddKeyError(null), 5000);
+    return () => clearTimeout(t);
+  }, [addKeyError]);
+
   const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
   const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료"]);
 
@@ -1713,8 +1720,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [tickets]);
 
   const planningCounts = useMemo(() => {
-    const counts: Record<string, number> = { "전체": dedupedTickets.length, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0 };
+    const counts: Record<string, number> = { "전체": dedupedTickets.length, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0, "요청 검토 중": 0 };
     for (const t of dedupedTickets) {
+      // ETR 티켓은 "요청 검토 중"에만 집계
+      if (t.key.startsWith("ETR-")) { counts["요청 검토 중"]++; continue; }
       const p = getPlanningVal(planning[t.key]);
       const bothDone = p.design === "완료" && p.dev === "완료";
       const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
@@ -1770,14 +1779,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           (wantQ1Q2 && isQ1Q2);
         if (!matches) return false;
       }
-      if (planningTab !== "전체") {
-        const p = getPlanningVal(planning[t.key]);
-        const bothDone = p.design === "완료" && p.dev === "완료";
-        const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
-        const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
-        if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone)) return false;
-        if (planningTab === "플래닝 대기·검토" && (bothDone || isJiraActive)) return false;
-        if (planningTab === "완료" && !isTicketDone) return false;
+      // ETR 티켓은 "요청 검토 중" 탭 전용 — 다른 탭(전체 포함)에는 미노출
+      const isEtr = t.key.startsWith("ETR-");
+      if (planningTab === "요청 검토 중") {
+        if (!isEtr) return false;
+      } else {
+        if (isEtr) return false; // ETR은 전체 포함 모든 탭에서 제외
+        if (planningTab !== "전체") {
+          const p = getPlanningVal(planning[t.key]);
+          const bothDone = p.design === "완료" && p.dev === "완료";
+          const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
+          const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
+          if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone)) return false;
+          if (planningTab === "플래닝 대기·검토" && (bothDone || isJiraActive)) return false;
+          if (planningTab === "완료" && !isTicketDone) return false;
+        }
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
@@ -2228,10 +2244,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         {/* 과제 상태 탭 */}
         <div className={`flex gap-1.5 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
           {([
-            { key: "전체",           label: "전체",           desc: "모든 과제" },
+            { key: "전체",           label: "전체",           desc: "모든 과제 (ETR 제외)" },
             { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중" },
             { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중" },
             { key: "완료",           label: "완료",           desc: "론치·배포 완료" },
+            { key: "요청 검토 중",   label: "요청 검토 중",   desc: "ETR 티켓 — 검토 후 TM 전환" },
           ] as const).map(({ key, label, desc }) => {
             const active = planningTab === key;
             return (
@@ -2245,18 +2262,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     ? key === "전체" ? "#21262d"
                     : key === "진행 중" ? "rgba(99,102,241,0.25)"
                     : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.2)"
-                    : "rgba(16,185,129,0.2)"
+                    : key === "완료" ? "rgba(16,185,129,0.2)"
+                    : "rgba(6,182,212,0.15)"   /* 요청 검토 중 — cyan */
                     : "#161b22",
                   border: `1px solid ${active
                     ? key === "전체" ? "#30363d"
                     : key === "진행 중" ? "rgba(99,102,241,0.5)"
                     : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.4)"
-                    : "rgba(16,185,129,0.4)"
+                    : key === "완료" ? "rgba(16,185,129,0.4)"
+                    : "rgba(6,182,212,0.45)"
                     : "#21262d"}`,
                   color: active
                     ? key === "진행 중" ? "#818cf8"
                     : key === "플래닝 대기·검토" ? "#fbbf24"
                     : key === "완료" ? "#34d399"
+                    : key === "요청 검토 중" ? "#22d3ee"
                     : "#e6edf3"
                     : "#7d8590",
                 }}
@@ -2401,27 +2421,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
           {/* 티켓 추가 */}
           <div className="flex items-center gap-1.5 ml-1">
-            <div className="relative flex items-center">
-              <input
-                type="text"
-                placeholder="예: TM-1234, TM-5678"
-                value={addKeyInput}
-                onChange={e => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
-                onKeyDown={e => e.key === "Enter" && addTickets(addKeyInput)}
-                className="px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-all"
-                style={{ background: "#1c2128", borderColor: "#30363d", color: "#e6edf3", outline: "none", width: "180px", paddingRight: addKeyInput ? "1.75rem" : undefined }}
-              />
-              {addKeyInput && (
-                <button
-                  onClick={() => { setAddKeyInput(""); setAddKeyError(null); }}
-                  title="입력 초기화"
-                  className="absolute right-1.5 flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold transition-colors"
-                  style={{ color: "#484f58", background: "#30363d" }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#e6edf3"; (e.currentTarget as HTMLElement).style.background = "#484f58"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#484f58"; (e.currentTarget as HTMLElement).style.background = "#30363d"; }}
-                >×</button>
-              )}
-            </div>
+            <input
+              type="text"
+              placeholder="예: TM-1234, TM-5678"
+              value={addKeyInput}
+              onChange={e => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
+              onKeyDown={e => e.key === "Enter" && addTickets(addKeyInput)}
+              className="px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-all"
+              style={{ background: "#1c2128", borderColor: "#30363d", color: "#e6edf3", outline: "none", width: "180px" }}
+            />
+            {addKeyInput && (
+              <button
+                onClick={() => { setAddKeyInput(""); setAddKeyError(null); }}
+                title="입력 초기화"
+                className="flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold transition-colors shrink-0"
+                style={{ color: "#7d8590", background: "#30363d" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#e6edf3"; (e.currentTarget as HTMLElement).style.background = "#484f58"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "#7d8590"; (e.currentTarget as HTMLElement).style.background = "#30363d"; }}
+              >×</button>
+            )}
             <button
               onClick={() => addTickets(addKeyInput)}
               disabled={addKeyLoading || !addKeyInput.trim()}
@@ -2435,10 +2453,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const dupMatch = addKeyError.match(/^([A-Z][A-Z0-9]*-\d+)은\(는\) 이미 등록/);
               const dupKey   = dupMatch ? dupMatch[1] : null;
               const scrollTo = (key: string) => {
-                document.querySelector(`[data-ticket-key="${key}"]`)
-                  ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                setDuplicateKeys(new Set([key]));
-                setTimeout(() => setDuplicateKeys(new Set()), 2500);
+                // ETR 티켓이면 해당 탭으로, 나머지는 전체 탭으로 전환 후 스크롤
+                setPlanningTab(key.startsWith("ETR-") ? "요청 검토 중" : "전체");
+                setStatusTab("전체");
+                setReviewFilter(false);
+                setTimeout(() => {
+                  document.querySelector(`[data-ticket-key="${key}"]`)
+                    ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                  setDuplicateKeys(new Set([key]));
+                  // 하이라이트 끝나면 에러 문구도 함께 제거
+                  setTimeout(() => {
+                    setDuplicateKeys(new Set());
+                    setAddKeyError(null);
+                  }, 2500);
+                }, 150);
               };
               return (
                 <span className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
@@ -2640,8 +2668,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         </span>
                         <span className="w-16 shrink-0 text-xs text-center" style={{ color: "#7d8590" }}>{t.project}</span>
                         <span className="w-20 shrink-0 text-sm font-semibold text-center truncate" style={{ color: "#e6edf3" }}>{t.assignee}</span>
-                        <span className="w-28 shrink-0 flex justify-center">
-                          <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-semibold ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
+                        <span className="w-36 shrink-0 flex justify-center">
+                          <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-semibold whitespace-nowrap ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
                             {t.status}
                           </span>
                         </span>
