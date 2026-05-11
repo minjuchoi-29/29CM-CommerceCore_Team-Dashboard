@@ -590,12 +590,29 @@ type TicketRequestInfo = {
 type TrackState = "대기중" | "검토중" | "완료" | "대상아님";
 const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료", "대상아님"];
 
-function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState; reviewNeeded: boolean } {
-  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중", reviewNeeded: false };
+type DevTrackKey = "SP" | "PP" | "CFE" | "기타";
+const DEV_TRACK_KEYS: DevTrackKey[] = ["SP", "PP", "CFE", "기타"];
+
+function aggregateDevState(devTracks: Partial<Record<DevTrackKey, TrackState>>): TrackState {
+  const values = Object.values(devTracks).filter(Boolean) as TrackState[];
+  if (values.length === 0) return "대기중";
+  if (values.every(v => v === "대상아님")) return "대상아님";
+  const active = values.filter(v => v !== "대상아님");
+  if (active.length === 0) return "대상아님";
+  if (active.some(v => v === "대기중")) return "대기중";
+  if (active.some(v => v === "검토중")) return "검토중";
+  return "완료";
+}
+
+function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState; devTracks: Partial<Record<DevTrackKey, TrackState>>; reviewNeeded: boolean } {
+  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중", devTracks: {}, reviewNeeded: false };
   const v = val as Record<string, unknown>;
+  const devTracks = (v.devTracks as Partial<Record<DevTrackKey, TrackState>>) ?? {};
+  const devTracksHasEntries = Object.keys(devTracks).length > 0;
   return {
     design:       (v.design as TrackState) ?? "대기중",
-    dev:          (v.dev   as TrackState) ?? "대기중",
+    dev:          devTracksHasEntries ? aggregateDevState(devTracks) : ((v.dev as TrackState) ?? "대기중"),
+    devTracks,
     reviewNeeded: (v.reviewNeeded as boolean) ?? false,
   };
 }
@@ -1722,7 +1739,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [addKeyError]);
 
   const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
-  const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료"]);
+  const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료", "개발완료"]);
 
   // key 기준 중복 제거 (배치 + 커스텀 동시 로드 시 race condition 방어)
   const dedupedTickets = useMemo(() => {
@@ -1740,7 +1757,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // ETR 티켓은 "요청 검토 중"에만 집계
       if (t.key.startsWith("ETR-")) { counts["요청 검토 중"]++; continue; }
       const p = getPlanningVal(planning[t.key]);
-      const bothDone = p.design === "완료" && p.dev === "완료";
+      const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
       const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
       const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
       if (isTicketDone) { counts["완료"]++; continue; }
@@ -1802,7 +1819,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (isEtr) return false; // ETR은 전체 포함 모든 탭에서 제외
         if (planningTab !== "전체") {
           const p = getPlanningVal(planning[t.key]);
-          const bothDone = p.design === "완료" && p.dev === "완료";
+          const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
           const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
           const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
           if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone)) return false;
@@ -1969,6 +1986,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "cc-planning", value: updated }),
     }).catch(() => {});
+  }
+
+  function toggleDevTrack(key: string, trackKey: DevTrackKey) {
+    const current = getPlanningVal(planning[key]);
+    const newDevTracks = { ...current.devTracks };
+    if (trackKey in newDevTracks) {
+      delete newDevTracks[trackKey];
+    } else {
+      newDevTracks[trackKey] = "대기중";
+    }
+    const newDev = Object.keys(newDevTracks).length > 0 ? aggregateDevState(newDevTracks) : current.dev;
+    const updated = { ...planning, [key]: { ...current, devTracks: newDevTracks, dev: newDev } };
+    setPlanning(updated);
+    fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-planning", value: updated }) }).catch(() => {});
+  }
+
+  function saveDevTrack(key: string, trackKey: DevTrackKey, state: TrackState) {
+    const current = getPlanningVal(planning[key]);
+    const newDevTracks = { ...current.devTracks, [trackKey]: state };
+    const newDev = aggregateDevState(newDevTracks);
+    const updated = { ...planning, [key]: { ...current, devTracks: newDevTracks, dev: newDev } };
+    setPlanning(updated);
+    fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-planning", value: updated }) }).catch(() => {});
   }
 
   function toggleReviewNeeded(key: string) {
@@ -3378,7 +3418,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <p className="text-xs font-semibold uppercase tracking-wide" style={{ color: "#7d8590" }}>플래닝 상태</p>
                     {(() => {
                       const p = getPlanningVal(planning[selected.key]);
-                      const allDone = p.design === "완료" && p.dev === "완료";
+                      const allDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
                       if (!allDone) return null;
                       return (
                         <div className="flex gap-1">
@@ -3401,35 +3441,95 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 {planningOpen && (
                   <>
                 <div className="space-y-1.5">
-                  {(["design", "dev"] as const).map((track) => {
+                  {/* Design 행 */}
+                  {(() => {
                     const p = getPlanningVal(planning[selected.key]);
-                    const current = p[track];
-                    const label = track === "design" ? "Design" : "Dev";
+                    const current = p.design;
                     return (
-                      <div key={track} className="flex items-center gap-1.5">
-                        <span className={`text-sm font-medium w-12 shrink-0 ${track === "design" ? "text-violet-600" : "text-blue-600"}`}>{label}</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-sm font-medium w-12 shrink-0 text-violet-500">Design</span>
                         {TRACK_STATES.map((s) => {
                           const active = current === s;
                           const activeStyle =
                             s === "완료"     ? { background: "rgba(16,185,129,0.2)",  borderColor: "#34d399", color: "#34d399",  boxShadow: "0 0 0 1px #34d399" } :
-                            s === "검토중"   ? (track === "design"
-                              ? { background: "rgba(124,58,237,0.2)",  borderColor: "#a78bfa", color: "#a78bfa", boxShadow: "0 0 0 1px #a78bfa" }
-                              : { background: "rgba(59,130,246,0.2)",  borderColor: "#60a5fa", color: "#60a5fa", boxShadow: "0 0 0 1px #60a5fa" }) :
+                            s === "검토중"   ? { background: "rgba(124,58,237,0.2)",  borderColor: "#a78bfa", color: "#a78bfa", boxShadow: "0 0 0 1px #a78bfa" } :
                             s === "대상아님" ? { background: "#2d333b", borderColor: "#e6edf3", color: "#e6edf3", boxShadow: "0 0 0 1px #e6edf3" } :
-                            /* 대기중 */       { background: "#2d333b", borderColor: "#c9d1d9", color: "#c9d1d9", boxShadow: "0 0 0 1px #c9d1d9" };
+                                               { background: "#2d333b", borderColor: "#c9d1d9", color: "#c9d1d9", boxShadow: "0 0 0 1px #c9d1d9" };
                           const inactiveStyle = { background: "#161b22", borderColor: "#30363d", color: "#484f58", boxShadow: "none" };
                           return (
-                            <button
-                              key={s}
-                              onClick={() => savePlanning(selected.key, track, s)}
+                            <button key={s} onClick={() => savePlanning(selected.key, "design", s)}
                               className="flex-1 py-1.5 px-2 rounded-lg text-xs font-medium border transition-all hover:opacity-90"
-                              style={active ? activeStyle : inactiveStyle}
-                            >{s}</button>
+                              style={active ? activeStyle : inactiveStyle}>{s}</button>
                           );
                         })}
                       </div>
                     );
-                  })}
+                  })()}
+
+                  {/* Dev 트랙 선택 + 서브 트랙 */}
+                  {(() => {
+                    const p = getPlanningVal(planning[selected.key]);
+                    const hasAny = Object.keys(p.devTracks).length > 0;
+                    return (
+                      <div className="pt-1">
+                        {/* Dev 헤더 + 트랙 토글 */}
+                        <div className="flex items-center gap-2 mb-1.5">
+                          <span className="text-sm font-medium w-12 shrink-0 text-blue-500">Dev</span>
+                          <div className="flex gap-1 flex-wrap">
+                            {DEV_TRACK_KEYS.map(tk => {
+                              const isActive = tk in p.devTracks;
+                              return (
+                                <button
+                                  key={tk}
+                                  onClick={() => toggleDevTrack(selected.key, tk)}
+                                  className="text-[11px] font-semibold px-2 py-0.5 rounded-full border transition-all"
+                                  style={isActive
+                                    ? { background: "rgba(59,130,246,0.2)", borderColor: "#60a5fa", color: "#60a5fa" }
+                                    : { background: "#161b22", borderColor: "#30363d", color: "#484f58" }}
+                                >
+                                  {isActive ? `${tk} ×` : `+ ${tk}`}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {/* 트랙 없을 때 레거시 dev 상태 표시 */}
+                          {!hasAny && (
+                            <span className="text-[11px] ml-1" style={{ color: "#484f58" }}>
+                              트랙 미설정 · 현재: {p.dev}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* 선택된 트랙별 상태 버튼 */}
+                        {hasAny && (
+                          <div className="space-y-1 pl-14">
+                            {DEV_TRACK_KEYS.filter(tk => tk in p.devTracks).map(tk => {
+                              const current = p.devTracks[tk]!;
+                              return (
+                                <div key={tk} className="flex items-center gap-1.5">
+                                  <span className="text-xs font-semibold w-6 shrink-0" style={{ color: "#60a5fa" }}>{tk}</span>
+                                  {TRACK_STATES.map(s => {
+                                    const active = current === s;
+                                    const activeStyle =
+                                      s === "완료"     ? { background: "rgba(16,185,129,0.2)",  borderColor: "#34d399", color: "#34d399",  boxShadow: "0 0 0 1px #34d399" } :
+                                      s === "검토중"   ? { background: "rgba(59,130,246,0.2)",  borderColor: "#60a5fa", color: "#60a5fa",  boxShadow: "0 0 0 1px #60a5fa" } :
+                                      s === "대상아님" ? { background: "#2d333b", borderColor: "#e6edf3", color: "#e6edf3", boxShadow: "0 0 0 1px #e6edf3" } :
+                                                         { background: "#2d333b", borderColor: "#c9d1d9", color: "#c9d1d9", boxShadow: "0 0 0 1px #c9d1d9" };
+                                    const inactiveStyle = { background: "#161b22", borderColor: "#30363d", color: "#484f58", boxShadow: "none" };
+                                    return (
+                                      <button key={s} onClick={() => saveDevTrack(selected.key, tk, s)}
+                                        className="flex-1 py-1 px-1.5 rounded-lg text-[11px] font-medium border transition-all hover:opacity-90"
+                                        style={active ? activeStyle : inactiveStyle}>{s}</button>
+                                    );
+                                  })}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* 검토필요 토글 */}
