@@ -2555,20 +2555,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <div className="flex gap-1.5 mb-3">
                 {(["자체발의", "ELT", "ETR"] as const).map(src => {
                   const active = etrMap[selected.key]?.source === src;
-                  const activeColor =
-                    src === "자체발의" ? "bg-indigo-600 text-white border-indigo-600" :
-                    src === "ELT"     ? "bg-amber-500 text-white border-amber-500" :
-                                        "bg-blue-600 text-white border-blue-600";
                   const label =
                     src === "자체발의" ? "자체발의" :
                     src === "ELT"     ? "ELT 요구사항" :
                                         "외부 부서 요청";
+                  // 선택됨: 색조만 남기고 조용하게
+                  const activeStyle =
+                    src === "자체발의" ? { background: "rgba(99,102,241,0.12)", borderColor: "rgba(99,102,241,0.35)", color: "#818cf8" } :
+                    src === "ELT"     ? { background: "rgba(245,158,11,0.12)", borderColor: "rgba(245,158,11,0.35)", color: "#fbbf24" } :
+                                        { background: "rgba(59,130,246,0.12)", borderColor: "rgba(59,130,246,0.35)", color: "#60a5fa" };
+                  // 미선택: 테두리·텍스트 더 밝게 → 클릭 유도
+                  const inactiveStyle = { background: "#1c2128", borderColor: "#484f58", color: "#c9d1d9" };
                   return (
                     <button
                       key={src}
                       onClick={() => setEtrSource(selected.key, src)}
-                      className={`flex-1 py-1.5 px-2 rounded-lg font-medium border transition-colors ${active ? activeColor : "hover:opacity-80"}`}
-                      style={active ? undefined : { background: "#21262d", borderColor: "#30363d", color: "#7d8590" }}
+                      className="flex-1 py-1.5 px-2 rounded-lg text-[11px] font-medium border transition-all"
+                      style={active ? activeStyle : inactiveStyle}
                     >{label}</button>
                   );
                 })}
@@ -2588,33 +2591,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           PLANNED_STATUSES.includes(st)    ? { bg: "rgba(251,191,36,0.15)", color: "#fbbf24", border: "rgba(251,191,36,0.35)" } :
                                                              { bg: "rgba(75,85,99,0.2)",    color: "#9ca3af", border: "rgba(75,85,99,0.4)" };
                         return (
-                          <div key={t.key} className="rounded px-2 py-1.5" style={{ background: "#0d1117", border: "1px solid #21262d" }}>
-                            <div className="flex items-center gap-2 mb-0.5">
+                          <div key={t.key} className="rounded-lg px-3 py-2.5" style={{ background: "#0d1117", border: "1px solid #30363d" }}>
+                            {/* 요약 텍스트 — 가장 눈에 띄게 */}
+                            {(t.summary || t.requestDept) && (
+                              <p className="text-xs font-medium mb-1.5 leading-snug" style={{ color: "#e6edf3" }}>
+                                {t.requestDept && <span className="mr-1" style={{ color: "#7d8590" }}>[{t.requestDept}]</span>}
+                                {t.summary}
+                              </p>
+                            )}
+                            {/* 메타: 키 + 상태 + 삭제 */}
+                            <div className="flex items-center gap-2">
                               <a
                                 href={`${JIRA_BASE}${t.key}`}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="font-mono text-blue-500 hover:underline shrink-0 text-[11px]"
+                                className="font-mono text-[11px] hover:underline shrink-0"
+                                style={{ color: "#60a5fa" }}
                               >{t.key}</a>
                               {st && (
                                 <span className="rounded px-1.5 py-0.5 text-[10px] font-medium shrink-0" style={{ background: stStyle.bg, color: stStyle.color, border: `1px solid ${stStyle.border}` }}>{st}</span>
                               )}
                               <button
                                 onClick={() => removeEtr(selected.key, t.key)}
-                                className="ml-auto hover:text-red-400 transition-colors shrink-0" style={{ color: "#484f58" }}
+                                className="ml-auto hover:text-red-400 transition-colors shrink-0 text-[13px]" style={{ color: "#484f58" }}
                               >×</button>
                             </div>
-                            <div className="flex-1 min-w-0">
-                              {t.requestDept && (
-                                <span className="inline-block mr-1 text-[11px]" style={{ color: "#7d8590" }}>[{t.requestDept}]</span>
-                              )}
-                              {t.summary && (
-                                <span className="break-words text-[11px]" style={{ color: "#c9d1d9" }}>{t.summary}</span>
-                              )}
-                              {!t.requestDept && !t.summary && (
-                                <span className="italic text-[11px]" style={{ color: "#484f58" }}>정보 없음</span>
-                              )}
-                            </div>
+                            {!t.summary && !t.requestDept && (
+                              <p className="text-[11px] italic" style={{ color: "#484f58" }}>정보 없음</p>
+                            )}
                           </div>
                         );
                       })}
@@ -2669,23 +2673,28 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 {(etrMap[selected.key]?.wikiLinks ?? []).length > 0 && (
                   <div className="space-y-1.5 mb-2">
                     {(etrMap[selected.key]?.wikiLinks ?? []).map(w => (
-                      <div key={w.url} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ background: "#0d1117", border: "1px solid #21262d" }}>
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0" style={{ color: "#818cf8" }}>
-                          <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-                          <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
-                        </svg>
-                        <a
-                          href={w.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="flex-1 min-w-0 truncate text-[11px] hover:underline"
-                          style={{ color: "#818cf8" }}
-                          title={w.url}
-                        >{w.title}</a>
-                        <button
-                          onClick={() => removeWikiLink(selected.key, w.url)}
-                          className="hover:text-red-400 transition-colors shrink-0" style={{ color: "#484f58" }}
-                        >×</button>
+                      <div key={w.url} className="rounded-lg px-3 py-2.5 group" style={{ background: "#0d1117", border: "1px solid #30363d" }}>
+                        <div className="flex items-start gap-2">
+                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "#818cf8" }}>
+                            <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                            <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
+                          </svg>
+                          <div className="flex-1 min-w-0">
+                            <a
+                              href={w.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block text-xs font-medium hover:underline leading-snug"
+                              style={{ color: "#e6edf3" }}
+                              title={w.url}
+                            >{w.title}</a>
+                            <p className="text-[10px] mt-0.5 truncate" style={{ color: "#484f58" }}>{w.url}</p>
+                          </div>
+                          <button
+                            onClick={() => removeWikiLink(selected.key, w.url)}
+                            className="hover:text-red-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100 text-[13px]" style={{ color: "#484f58" }}
+                          >×</button>
+                        </div>
                       </div>
                     ))}
                   </div>
