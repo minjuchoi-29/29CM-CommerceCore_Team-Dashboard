@@ -554,10 +554,16 @@ type EtrTicketInfo = {
   requestDept?: string;
 };
 
+type WikiLink = {
+  url: string;
+  title: string;
+};
+
 type TicketRequestInfo = {
   source: "자체발의" | "ELT" | "ETR";
   etrStatus?: "추가완료" | "추가필요";
   etrTickets?: EtrTicketInfo[];
+  wikiLinks?: WikiLink[];
 };
 
 type TrackState = "대기중" | "검토중" | "완료" | "대상아님";
@@ -772,6 +778,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [etrInput, setEtrInput]   = useState("");
   const [etrError, setEtrError]   = useState<string | null>(null);
   const [etrLoading, setEtrLoading] = useState<Set<string>>(new Set());
+  const [wikiInput, setWikiInput] = useState("");
+  const [wikiTitleInput, setWikiTitleInput] = useState("");
+  const [wikiError, setWikiError] = useState<string | null>(null);
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
 
   // 정렬
@@ -1855,6 +1864,50 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     saveEtr({ ...etrMap, [ticketKey]: { ...current, etrTickets: (current.etrTickets ?? []).filter(t => t.key !== etrKey) } });
   }
 
+  /** Confluence URL에서 페이지 제목 자동 추출 */
+  function extractWikiTitle(url: string): string {
+    try {
+      const u = new URL(url);
+      const segments = u.pathname.split("/").filter(Boolean);
+      // /wiki/spaces/SPACE/pages/ID/Page+Title 형태
+      const pagesIdx = segments.indexOf("pages");
+      if (pagesIdx !== -1 && segments.length > pagesIdx + 2) {
+        return decodeURIComponent(segments[pagesIdx + 2]).replace(/\+/g, " ");
+      }
+      // 마지막 세그먼트라도 사용
+      const last = segments[segments.length - 1];
+      return last ? decodeURIComponent(last).replace(/[_+]/g, " ") : url;
+    } catch {
+      return url;
+    }
+  }
+
+  function addWikiLink(ticketKey: string) {
+    const url = wikiInput.trim();
+    if (!url) return;
+    if (!/^https?:\/\//.test(url)) {
+      setWikiError("올바른 URL을 입력해주세요 (https://...)");
+      return;
+    }
+    const title = wikiTitleInput.trim() || extractWikiTitle(url);
+    const current = etrMap[ticketKey] ?? { source: "자체발의" as const };
+    const prev = current.wikiLinks ?? [];
+    if (prev.some(w => w.url === url)) {
+      setWikiError("이미 추가된 링크입니다");
+      return;
+    }
+    saveEtr({ ...etrMap, [ticketKey]: { ...current, wikiLinks: [...prev, { url, title }] } });
+    setWikiInput("");
+    setWikiTitleInput("");
+    setWikiError(null);
+  }
+
+  function removeWikiLink(ticketKey: string, url: string) {
+    const current = etrMap[ticketKey];
+    if (!current) return;
+    saveEtr({ ...etrMap, [ticketKey]: { ...current, wikiLinks: (current.wikiLinks ?? []).filter(w => w.url !== url) } });
+  }
+
   function handleSelect(t: Ticket) {
     const isSame = selected?.key === t.key;
     setSelected(isSame ? null : t);
@@ -2573,6 +2626,71 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {etrError && <p className="mt-1 text-red-500">{etrError}</p>}
                 </>
               )}
+
+              {/* Wiki 링크 섹션 */}
+              <div className="mt-3 pt-3" style={{ borderTop: "1px solid #21262d" }}>
+                <p className="text-[11px] font-semibold uppercase tracking-wide mb-2 flex items-center gap-1.5" style={{ color: "#7d8590" }}>
+                  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3" style={{ color: "#818cf8" }}>
+                    <path d="M8.75 2.75a.75.75 0 0 0-1.5 0v5.69L5.03 6.22a.75.75 0 0 0-1.06 1.06l3.5 3.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06L8.75 8.44V2.75Z" />
+                    <path d="M3.5 9.75a.75.75 0 0 0-1.5 0v1.5A2.75 2.75 0 0 0 4.75 14h6.5A2.75 2.75 0 0 0 14 11.25v-1.5a.75.75 0 0 0-1.5 0v1.5c0 .69-.56 1.25-1.25 1.25h-6.5c-.69 0-1.25-.56-1.25-1.25v-1.5Z" />
+                  </svg>
+                  Wiki 링크
+                </p>
+
+                {/* 등록된 Wiki 링크 목록 */}
+                {(etrMap[selected.key]?.wikiLinks ?? []).length > 0 && (
+                  <div className="space-y-1.5 mb-2">
+                    {(etrMap[selected.key]?.wikiLinks ?? []).map(w => (
+                      <div key={w.url} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ background: "#0d1117", border: "1px solid #21262d" }}>
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3 h-3 shrink-0" style={{ color: "#818cf8" }}>
+                          <path d="M7.25 3.688a8.035 8.035 0 0 0-4.872 2.862.75.75 0 1 1-1.226-.863 9.535 9.535 0 0 1 5.98-3.471.75.75 0 0 1 .118 1.472Zm1.5 0a.75.75 0 0 1 .118-1.472 9.534 9.534 0 0 1 5.98 3.471.75.75 0 1 1-1.226.863 8.035 8.035 0 0 0-4.872-2.862ZM10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0Zm-8.44 2.943a.75.75 0 1 0-1.12.994 9.535 9.535 0 0 0 5.98 3.471.75.75 0 0 0 .118-1.472 8.035 8.035 0 0 1-4.978-2.993Zm11 .994a.75.75 0 1 0-1.12-.994 8.035 8.035 0 0 1-4.978 2.993.75.75 0 0 0 .118 1.472 9.534 9.534 0 0 0 5.98-3.471Z" />
+                        </svg>
+                        <a
+                          href={w.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="flex-1 min-w-0 truncate hover:underline"
+                          style={{ color: "#818cf8" }}
+                          title={w.url}
+                        >{w.title}</a>
+                        <button
+                          onClick={() => removeWikiLink(selected.key, w.url)}
+                          className="hover:text-red-400 transition-colors shrink-0" style={{ color: "#484f58" }}
+                        >×</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Wiki URL 입력 */}
+                <div className="space-y-1.5">
+                  <input
+                    type="text"
+                    placeholder="Wiki URL (https://...atlassian.net/wiki/...)"
+                    value={wikiInput}
+                    onChange={(e) => { setWikiInput(e.target.value); setWikiError(null); }}
+                    onKeyDown={(e) => e.key === "Enter" && addWikiLink(selected.key)}
+                    className="w-full rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
+                  />
+                  <div className="flex gap-1.5">
+                    <input
+                      type="text"
+                      placeholder="페이지 제목 (비우면 URL에서 자동 추출)"
+                      value={wikiTitleInput}
+                      onChange={(e) => setWikiTitleInput(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && addWikiLink(selected.key)}
+                      className="flex-1 rounded px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-indigo-500" style={{ background: "#0d1117", border: "1px solid #30363d", color: "#e6edf3" }}
+                    />
+                    <button
+                      onClick={() => addWikiLink(selected.key)}
+                      disabled={!wikiInput.trim()}
+                      className="px-2.5 py-1 rounded text-xs font-medium disabled:opacity-40 transition-colors"
+                      style={{ background: "#7c3aed", color: "#fff" }}
+                    >추가</button>
+                  </div>
+                  {wikiError && <p className="text-red-500 text-[11px]">{wikiError}</p>}
+                </div>
+              </div>
             </div>
 
             <div className="pt-4" style={{ borderTop: "1px solid #21262d" }}>
