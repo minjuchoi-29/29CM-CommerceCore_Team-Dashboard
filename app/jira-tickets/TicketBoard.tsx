@@ -575,10 +575,14 @@ type TicketRequestInfo = {
 type TrackState = "대기중" | "검토중" | "완료" | "대상아님";
 const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료", "대상아님"];
 
-function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState } {
-  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중" };
-  const v = val as Record<string, string>;
-  return { design: (v.design as TrackState) ?? "대기중", dev: (v.dev as TrackState) ?? "대기중" };
+function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState; reviewNeeded: boolean } {
+  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중", reviewNeeded: false };
+  const v = val as Record<string, unknown>;
+  return {
+    design:       (v.design as TrackState) ?? "대기중",
+    dev:          (v.dev   as TrackState) ?? "대기중",
+    reviewNeeded: (v.reviewNeeded as boolean) ?? false,
+  };
 }
 
 function HealthBadge({ value }: { value: string }) {
@@ -764,8 +768,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 시트 우선순위 (key → priority 문자열)
   const [priorities, setPriorities] = useState<Record<string, string>>({});
   const [priorityError, setPriorityError] = useState<string | null>(null);
-  // 플래닝 상태 (key → { design: TrackState, dev: TrackState })
+  // 플래닝 상태 (key → { design: TrackState, dev: TrackState, reviewNeeded?: boolean })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
+  const [reviewFilter, setReviewFilter] = useState(false); // 검토필요 티켓만 필터
   const [planningTab, setPlanningTab] = useState("진행 중");
   const [kvLoaded, setKvLoaded]     = useState(false);
   const planningMigratedRef         = useRef(false);
@@ -1800,10 +1805,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
-    const result = statusTab === "전체" ? [...preFiltered]
+    let result = statusTab === "전체" ? [...preFiltered]
       : statusTab === "완료"     ? preFiltered.filter((t) => DONE_STATUSES.includes(t.status))
       : statusTab === "진행중"   ? preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status))
       :                            preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status));
+    // 검토필요 필터
+    if (reviewFilter) result = result.filter(t => getPlanningVal(planning[t.key]).reviewNeeded);
     const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
     if (sortBy === "priority") {
       result.sort((a: Ticket, b: Ticket) =>
@@ -1815,7 +1822,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       result.sort((a: Ticket, b: Ticket) => dateVal(a.eta) - dateVal(b.eta));
     }
     return result;
-  }, [preFiltered, statusTab, sortBy, priorities]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function nowDateStr(): string {
     const now = new Date();
@@ -1925,6 +1932,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   function savePlanning(key: string, track: "design" | "dev", state: TrackState) {
     const current = getPlanningVal(planning[key]);
     const updated = { ...planning, [key]: { ...current, [track]: state } };
+    setPlanning(updated);
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-planning", value: updated }),
+    }).catch(() => {});
+  }
+
+  function toggleReviewNeeded(key: string) {
+    const current = getPlanningVal(planning[key]);
+    const updated = { ...planning, [key]: { ...current, reviewNeeded: !current.reviewNeeded } };
     setPlanning(updated);
     fetch("/api/kv", {
       method: "POST",
@@ -2251,6 +2269,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             );
           })}
         </div>
+
+        {/* 검토필요 빠른 필터 */}
+        {(() => {
+          const reviewCount = preFiltered.filter(t => getPlanningVal(planning[t.key]).reviewNeeded).length;
+          if (reviewCount === 0 && !reviewFilter) return null;
+          return (
+            <div className={`flex items-center gap-2 mb-4 ${isDetailExpanded ? "hidden" : ""}`}>
+              <button
+                onClick={() => setReviewFilter(v => !v)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                style={{
+                  background: reviewFilter ? "rgba(239,68,68,0.15)" : "#161b22",
+                  border: `1px solid ${reviewFilter ? "#f87171" : "#30363d"}`,
+                  color: reviewFilter ? "#f87171" : "#7d8590",
+                  boxShadow: reviewFilter ? "0 0 0 1px #f87171" : "none",
+                }}
+              >
+                ⚡ 검토필요
+                <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                  style={{ background: reviewFilter ? "rgba(239,68,68,0.25)" : "#21262d", color: reviewFilter ? "#f87171" : "#484f58" }}>
+                  {reviewCount}
+                </span>
+              </button>
+              {reviewFilter && (
+                <span className="text-xs" style={{ color: "#484f58" }}>검토필요 티켓만 표시 중</span>
+              )}
+            </div>
+          );
+        })()}
 
         {/* 아젠다 미팅 서브 뷰 토글 */}
         {agenda.size > 0 && (
@@ -2616,6 +2663,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                     return (
                       <div className="flex items-center gap-1.5 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
+                        {/* 검토필요 배지 — 최우선 표시 */}
+                        {p.reviewNeeded && (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[11px] font-bold"
+                            style={{ background: "rgba(239,68,68,0.15)", border: "1px solid #f87171", color: "#f87171", boxShadow: "0 0 0 1px rgba(248,113,113,0.3)" }}>
+                            ⚡ 검토필요
+                          </span>
+                        )}
                         {/* 마일스톤 칩 — 항상 표시 (2763/2878 등 일관성 유지)
                             날짜 확정된 칩은 full opacity + font-medium으로 강조
                             날짜 없는 칩(미정/확인필요)은 dim 처리 */}
@@ -3294,6 +3348,42 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     );
                   })}
                 </div>
+
+                {/* 검토필요 토글 */}
+                {(() => {
+                  const p = getPlanningVal(planning[selected.key]);
+                  return (
+                    <div className="mt-3 pt-3" style={{ borderTop: "1px solid #21262d" }}>
+                      <button
+                        onClick={() => toggleReviewNeeded(selected.key)}
+                        className="w-full flex items-center justify-between px-3 py-2 rounded-lg border text-xs font-semibold transition-all"
+                        style={p.reviewNeeded ? {
+                          background: "rgba(239,68,68,0.12)",
+                          border: "1px solid #f87171",
+                          color: "#f87171",
+                          boxShadow: "0 0 0 1px rgba(248,113,113,0.25)",
+                        } : {
+                          background: "#161b22",
+                          border: "1px solid #30363d",
+                          color: "#484f58",
+                        }}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          <span>⚡</span>
+                          <span>{p.reviewNeeded ? "검토필요 — 스프린트 미팅 논의 대상" : "검토필요 표시"}</span>
+                        </span>
+                        <span className="text-[10px] font-normal opacity-60">
+                          {p.reviewNeeded ? "클릭하여 해제" : "클릭하여 표시"}
+                        </span>
+                      </button>
+                      {p.reviewNeeded && (
+                        <p className="mt-1.5 text-[11px]" style={{ color: "#484f58" }}>
+                          우선순위 또는 임박한 ETA를 고려해 스프린트 미팅에서 논의할 후보로 지정됨
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* 플래닝 코멘트 */}
                 <div className="mt-3">
