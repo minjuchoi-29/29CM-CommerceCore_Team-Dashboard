@@ -2722,7 +2722,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       <a href={`${JIRA_BASE}${t.key}`} target="_blank" rel="noopener noreferrer"
                         onClick={e => e.stopPropagation()}
                         className="font-mono text-sm font-semibold text-blue-400 hover:underline shrink-0">{t.key}</a>
-                      <span className="text-sm truncate flex-1 min-w-0" style={{ color: "#f0f6fc" }}>{t.summary}</span>
+                      <span className="text-base font-semibold truncate flex-1 min-w-0" style={{ color: "#f0f6fc" }}>{t.summary}</span>
                       <span className="text-xs shrink-0" style={{ color: "#7d8590" }}>{t.assignee}</span>
                       <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>{t.status}</span>
                     </div>
@@ -2849,7 +2849,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             P{activePriorities[t.key]}
                           </span>
                         )}
-                        <span className="flex-1 min-w-0 text-sm font-medium truncate pr-3" style={{ color: "#f0f6fc" }}>{t.summary}</span>
+                        <span className="flex-1 min-w-0 text-base font-semibold truncate pr-3" style={{ color: "#f0f6fc" }}>{t.summary}</span>
                         <span className="w-20 shrink-0 flex justify-center">
                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
                             {t.type}

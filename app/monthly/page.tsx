@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback } from "react";
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 const TICKET_CACHE_KEY = "cc-tickets-v1";
 const CUSTOM_TICKETS_KEY = "cc-custom-tickets";
+const HIDDEN_KEYS_KEY = "cc-hidden-keys";
 const CACHE_MAX_MS = 12 * 60 * 60 * 1000;
 
 function mergeCustomTickets(base: Ticket[], custom: Ticket[]): Ticket[] {
@@ -116,6 +117,7 @@ function formatDate(d: string): string {
 
 export default function MonthlyProgressPage() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [selectedMonth, setSelectedMonth] = useState(CURRENT_MONTH);
   const [collapsedDomains, setCollapsedDomains] = useState<Set<string>>(new Set());
@@ -128,6 +130,13 @@ export default function MonthlyProgressPage() {
     } catch { return []; }
   }
 
+  function readHiddenFromLocal(): string[] {
+    try {
+      const raw = localStorage.getItem(HIDDEN_KEYS_KEY);
+      return raw ? (JSON.parse(raw) as string[]) : [];
+    } catch { return []; }
+  }
+
   const loadTickets = useCallback(async (force = false) => {
     if (!force) {
       try {
@@ -136,6 +145,7 @@ export default function MonthlyProgressPage() {
           const cached = JSON.parse(raw) as { tickets: Ticket[]; fetchedAt: string };
           if (cached.tickets.length > 0 && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MAX_MS) {
             setTickets(mergeCustomTickets(cached.tickets, readCustomFromLocal()));
+            setHiddenKeys(new Set(readHiddenFromLocal()));
             setLoading(false);
             return;
           }
@@ -147,7 +157,7 @@ export default function MonthlyProgressPage() {
     try {
       const [jiraRes, kvRes] = await Promise.all([
         fetch("/api/jira-tickets"),
-        fetch("/api/kv?keys=cc-custom-tickets"),
+        fetch("/api/kv?keys=cc-custom-tickets,cc-hidden-keys"),
       ]);
       const jiraData = await jiraRes.json();
       const kvData = await kvRes.json();
@@ -156,6 +166,11 @@ export default function MonthlyProgressPage() {
       const kvCustom: Ticket[] = Array.isArray(kvData["cc-custom-tickets"]) ? kvData["cc-custom-tickets"] : [];
       // KV가 없으면 localStorage fallback
       const custom = kvCustom.length > 0 ? kvCustom : readCustomFromLocal();
+
+      const kvHidden: string[] = Array.isArray(kvData["cc-hidden-keys"]) ? kvData["cc-hidden-keys"] : [];
+      const localHidden = readHiddenFromLocal();
+      const mergedHidden = new Set([...kvHidden, ...localHidden]);
+      setHiddenKeys(mergedHidden);
 
       setTickets(mergeCustomTickets(base, custom));
     } catch {}
@@ -166,11 +181,14 @@ export default function MonthlyProgressPage() {
 
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
-  // 다른 탭에서 cc-custom-tickets / cc-tickets-v1 이 바뀌면 즉시 반영
+  // 다른 탭에서 cc-custom-tickets / cc-tickets-v1 / cc-hidden-keys 가 바뀌면 즉시 반영
   useEffect(() => {
     function onStorage(e: StorageEvent) {
       if (e.key === CUSTOM_TICKETS_KEY || e.key === TICKET_CACHE_KEY) {
         loadTickets();
+      }
+      if (e.key === HIDDEN_KEYS_KEY) {
+        setHiddenKeys(new Set(readHiddenFromLocal()));
       }
     }
     window.addEventListener("storage", onStorage);
@@ -186,7 +204,9 @@ export default function MonthlyProgressPage() {
   }, [tickets]);
 
   const domainGroups = useMemo(() => {
-    const active = tickets.filter(t => ticketActiveMonths(t).includes(selectedMonth));
+    const active = tickets.filter(t =>
+      !hiddenKeys.has(t.key) && ticketActiveMonths(t).includes(selectedMonth)
+    );
     const map = new Map<string, Ticket[]>();
     for (const t of active) {
       const d = extractDomain(t.summary);
@@ -198,7 +218,7 @@ export default function MonthlyProgressPage() {
       if (b[0] === "기타") return -1;
       return b[1].length - a[1].length;
     });
-  }, [tickets, selectedMonth]);
+  }, [tickets, hiddenKeys, selectedMonth]);
 
   const stats = useMemo(() => {
     const all = [...new Map(domainGroups.flatMap(([, ts]) => ts).map(t => [t.key, t])).values()];
