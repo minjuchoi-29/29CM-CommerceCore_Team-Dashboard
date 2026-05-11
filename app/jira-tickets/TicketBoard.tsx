@@ -1636,16 +1636,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     });
   }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 아래 요약 카드는 planningTab·statusTab 무관하게 항상 전체 티켓 기준 집계
-  const totalAll        = dedupedTickets.length;
-  const totalDone       = dedupedTickets.filter((t) => DONE_STATUSES.includes(t.status)).length;
-  const totalInProgress = dedupedTickets.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
-  const totalPlanned    = dedupedTickets.filter((t) => PLANNED_STATUSES.includes(t.status)).length;
+  // 요약 카드 — 현재 planningTab 기준(preFiltered) 집계, statusTab 무관
+  const totalAll        = preFiltered.length;
+  const totalDone       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
+  const totalInProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
+  const totalPlanned    = preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status)).length;
 
-  // preFiltered 기반 카운트는 statusTab 필터에서만 내부적으로 사용
-  const done       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
-  const inProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
-  const planned    = preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status)).length;
+  const done       = totalDone;
+  const inProgress = totalInProgress;
+  const planned    = totalPlanned;
 
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
@@ -2031,14 +2030,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             return (
               <button
                 key={s.label}
-                onClick={() => {
-                  if (active) {
-                    setStatusTab("전체");
-                  } else {
-                    setStatusTab(s.filterKey as typeof statusTab);
-                    setPlanningTab("전체"); // 카드 숫자(전체 기준)와 목록 일치를 위해 planningTab 리셋
-                  }
-                }}
+                onClick={() => setStatusTab(active ? "전체" : s.filterKey as typeof statusTab)}
                 title={s.desc}
                 className="rounded-xl border px-4 py-3 text-left transition-all cursor-pointer"
                 style={{
@@ -2048,7 +2040,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               >
                 <div className="flex items-center justify-between mb-1">
                   <p className="text-xs" style={{ color: "#7d8590" }}>{s.label}</p>
-                  <p className="text-[10px]" style={{ color: "#484f58" }}>전체 기준</p>
+                  <p className="text-[10px]" style={{ color: "#484f58" }}>{planningTab} 기준</p>
                 </div>
                 <p className="text-2xl font-bold" style={{ color: s.numColor }}>{s.count}</p>
               </button>
