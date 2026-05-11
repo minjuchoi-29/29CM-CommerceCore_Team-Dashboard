@@ -2913,8 +2913,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const trackStyle = (state: string, track: "design" | "dev") => {
                       if (state === "완료")     return { dot: "#34d399", text: "#34d399", bg: "rgba(16,185,129,0.1)",  border: "rgba(16,185,129,0.25)" };
                       if (state === "검토중")   return track === "design"
-                        ? { dot: "#a78bfa", text: "#a78bfa", bg: "rgba(124,58,237,0.1)", border: "rgba(124,58,237,0.25)" }
-                        : { dot: "#60a5fa", text: "#60a5fa", bg: "rgba(59,130,246,0.1)", border: "rgba(59,130,246,0.25)" };
+                        ? { dot: "#ffffff", text: "#ffffff", bg: "rgba(124,58,237,0.75)", border: "rgba(167,139,250,0.8)", shadow: "0 0 0 1px rgba(167,139,250,0.4)" }
+                        : { dot: "#ffffff", text: "#ffffff", bg: "rgba(37,99,235,0.75)",  border: "rgba(96,165,250,0.8)",  shadow: "0 0 0 1px rgba(96,165,250,0.4)" };
                       if (state === "대상아님") return { dot: "#6b7280", text: "#6b7280", bg: "rgba(75,85,99,0.08)",   border: "rgba(75,85,99,0.15)" };
                       /* 대기중 → 노란색 강조 */  return { dot: "#fbbf24", text: "#fbbf24", bg: "rgba(245,158,11,0.1)",  border: "rgba(245,158,11,0.3)" };
                     };
@@ -2970,8 +2970,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             if (planningBothDone) return null;
                             const wStyle = (state: string, track: "design" | "dev") => {
                               if (state === "검토중") return track === "design"
-                                ? { dot: "#a78bfa", text: "#a78bfa", bg: "rgba(124,58,237,0.15)", border: "rgba(124,58,237,0.4)" }
-                                : { dot: "#60a5fa", text: "#60a5fa", bg: "rgba(59,130,246,0.15)", border: "rgba(59,130,246,0.4)" };
+                                ? { dot: "#ffffff", text: "#ffffff", bg: "rgba(124,58,237,0.75)", border: "rgba(167,139,250,0.8)", shadow: "0 0 0 1px rgba(167,139,250,0.4)" }
+                                : { dot: "#ffffff", text: "#ffffff", bg: "rgba(37,99,235,0.75)",  border: "rgba(96,165,250,0.8)",  shadow: "0 0 0 1px rgba(96,165,250,0.4)" };
                               // 대기중 → amber 경고
                               return { dot: "#fbbf24", text: "#fbbf24", bg: "rgba(245,158,11,0.1)", border: "rgba(245,158,11,0.35)" };
                             };
@@ -2980,8 +2980,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               const ws = wStyle(p.design, "design");
                               pending.push(
                                 <span key="pd" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
-                                  style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
-                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
+                                  style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}`, boxShadow: (ws as {shadow?:string}).shadow }}>
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.design === "검토중" ? "animate-pulse" : ""}`} style={{ background: ws.dot }} />
                                   Design · {p.design}
                                 </span>
                               );
@@ -2989,26 +2989,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             {
                               const devEntries = Object.entries(p.devTracks) as [DevTrackKey, TrackState][];
                               if (devEntries.length > 0) {
-                                // 서브 트랙별 — 완료/대상아님은 제외하고 미완료만
                                 for (const [tk, state] of devEntries) {
                                   if (state !== "완료" && state !== "대상아님") {
                                     const ws = wStyle(state, "dev");
                                     pending.push(
                                       <span key={`pv-${tk}`} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
-                                        style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
-                                        <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
+                                        style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}`, boxShadow: (ws as {shadow?:string}).shadow }}>
+                                        <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${state === "검토중" ? "animate-pulse" : ""}`} style={{ background: ws.dot }} />
                                         {tk} · {state}
                                       </span>
                                     );
                                   }
                                 }
                               } else if (p.dev !== "완료" && p.dev !== "대상아님") {
-                                // 서브 트랙 미설정 시 레거시 aggregate
                                 const ws = wStyle(p.dev, "dev");
                                 pending.push(
                                   <span key="pv" className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
-                                    style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}` }}>
-                                    <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ws.dot }} />
+                                    style={{ background: ws.bg, color: ws.text, border: `1px solid ${ws.border}`, boxShadow: (ws as {shadow?:string}).shadow }}>
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.dev === "검토중" ? "animate-pulse" : ""}`} style={{ background: ws.dot }} />
                                     Dev · {p.dev}
                                   </span>
                                 );
@@ -3027,9 +3025,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             return (
                               <>
                                 <span className="mx-1 text-[10px]" style={{ color: "#30363d" }}>|</span>
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
-                                  style={{ background: ds.bg, color: ds.text, border: `1px solid ${ds.border}`, opacity: p.design === "완료" || p.design === "대상아님" ? 0.4 : 1 }}>
-                                  <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: ds.dot }} />
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
+                                  style={{ background: ds.bg, color: ds.text, border: `1px solid ${ds.border}`, boxShadow: (ds as {shadow?:string}).shadow, opacity: p.design === "완료" || p.design === "대상아님" ? 0.4 : 1 }}>
+                                  <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.design === "검토중" ? "animate-pulse" : ""}`} style={{ background: ds.dot }} />
                                   Design · {p.design}{p.design === "완료" ? " ✓" : ""}
                                 </span>
                                 {/* Dev: 서브 트랙 있으면 각각, 없으면 aggregate */}
@@ -3038,17 +3036,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                       const tvStyle = trackStyle(state, "dev");
                                       const isDone = state === "완료" || state === "대상아님";
                                       return (
-                                        <span key={`tv-${tk}`} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
-                                          style={{ background: tvStyle.bg, color: tvStyle.text, border: `1px solid ${tvStyle.border}`, opacity: isDone ? 0.4 : 1 }}>
-                                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: tvStyle.dot }} />
+                                        <span key={`tv-${tk}`} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
+                                          style={{ background: tvStyle.bg, color: tvStyle.text, border: `1px solid ${tvStyle.border}`, boxShadow: (tvStyle as {shadow?:string}).shadow, opacity: isDone ? 0.4 : 1 }}>
+                                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${state === "검토중" ? "animate-pulse" : ""}`} style={{ background: tvStyle.dot }} />
                                           {tk} · {state}{state === "완료" ? " ✓" : ""}
                                         </span>
                                       );
                                     })
                                   : (
-                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px]"
-                                      style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}`, opacity: p.dev === "완료" || p.dev === "대상아님" ? 0.4 : 1 }}>
-                                      <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dv.dot }} />
+                                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[11px] font-medium"
+                                      style={{ background: dv.bg, color: dv.text, border: `1px solid ${dv.border}`, boxShadow: (dv as {shadow?:string}).shadow, opacity: p.dev === "완료" || p.dev === "대상아님" ? 0.4 : 1 }}>
+                                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${p.dev === "검토중" ? "animate-pulse" : ""}`} style={{ background: dv.dot }} />
                                       Dev · {p.dev}{p.dev === "완료" ? " ✓" : ""}
                                     </span>
                                   )

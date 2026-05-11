@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>CC Dashboard — Design Preview (Command Center)</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            bg: '#0d1117',
+            surface: '#161b22',
+            border: '#21262d',
+            hover: '#1c2128',
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Noto Sans KR', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    * { box-sizing: border-box; }
+    body { background: #0d1117; color: #e6edf3; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans KR', sans-serif; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 4px; }
+    .ticket-row:hover { background: #1c2128; }
+    .ticket-row.selected { background: #1c2128; border-left: 2px solid #7c3aed; }
+    .status-qa { background: rgba(245,158,11,0.15); color: #fbbf24; border: 1px solid rgba(245,158,11,0.3); }
+    .status-plan { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.3); }
+    .status-dev { background: rgba(99,102,241,0.15); color: #a78bfa; border: 1px solid rgba(99,102,241,0.3); }
+    .status-design { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.3); }
+    .status-done { background: rgba(75,85,99,0.2); color: #9ca3af; border: 1px solid rgba(75,85,99,0.3); }
+    .status-hold { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid rgba(239,68,68,0.25); }
+    .status-suggest { background: rgba(168,85,247,0.15); color: #c084fc; border: 1px solid rgba(168,85,247,0.3); }
+    .milestone-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 500; }
+    .ms-launch { background: rgba(239,68,68,0.12); color: #f87171; border: 1px solid rgba(239,68,68,0.2); }
+    .ms-deploy { background: rgba(245,158,11,0.12); color: #fbbf24; border: 1px solid rgba(245,158,11,0.2); }
+    .ms-next { background: rgba(99,102,241,0.12); color: #818cf8; border: 1px solid rgba(99,102,241,0.2); }
+    .ms-prev { background: rgba(75,85,99,0.2); color: #9ca3af; border: 1px solid rgba(75,85,99,0.2); }
+    .tab-active { background: #7c3aed; color: #fff; }
+    .tab-inactive { color: #7d8590; }
+    .tab-inactive:hover { color: #e6edf3; background: #1c2128; }
+    .filter-select { background: #161b22; border: 1px solid #30363d; color: #e6edf3; border-radius: 6px; padding: 4px 24px 4px 10px; font-size: 12px; appearance: none; cursor: pointer; }
+    .filter-select:hover { border-color: #7c3aed; }
+    .filter-select:focus { outline: none; border-color: #7c3aed; box-shadow: 0 0 0 2px rgba(124,58,237,0.2); }
+    .detail-card { background: #1c2128; border: 1px solid #21262d; border-radius: 10px; padding: 16px; }
+    .eta-urgent { color: #f87171; }
+    .eta-soon { color: #fbbf24; }
+    .eta-ok { color: #7d8590; }
+    .gantt-bar { height: 22px; border-radius: 4px; position: relative; transition: filter 0.1s; }
+    .gantt-bar:hover { filter: brightness(1.15); }
+    .sidebar-item { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; color: #7d8590; transition: all 0.15s; }
+    .sidebar-item:hover { background: #1c2128; color: #e6edf3; }
+    .sidebar-item.active { background: rgba(124,58,237,0.15); color: #a78bfa; }
+    .search-input { background: #161b22; border: 1px solid #30363d; color: #e6edf3; border-radius: 6px; padding: 5px 12px; font-size: 12px; }
+    .search-input::placeholder { color: #7d8590; }
+    .search-input:focus { outline: none; border-color: #7c3aed; }
+    .priority-dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+    .badge { display: inline-flex; align-items: center; padding: 1px 7px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+    .level-initiative { background: rgba(124,58,237,0.2); color: #a78bfa; }
+    .level-epic { background: rgba(59,130,246,0.2); color: #60a5fa; }
+    .level-dev { background: rgba(16,185,129,0.15); color: #34d399; }
+    .health-green { color: #34d399; }
+    .today-line { position: absolute; top: 0; bottom: 0; width: 1px; background: #ef4444; z-index: 10; }
+    .today-label { position: absolute; top: -16px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-size: 10px; color: #f87171; font-weight: 600; }
+    .select-wrapper { position: relative; display: inline-flex; align-items: center; }
+    .select-wrapper::after { content: '▾'; position: absolute; right: 8px; font-size: 9px; color: #7d8590; pointer-events: none; }
+  </style>
+</head>
+<body class="h-screen overflow-hidden flex">
+
+<!-- ─── LEFT SIDEBAR ─── -->
+<aside style="width:200px; min-width:200px;" class="bg-surface border-r flex flex-col py-4 shrink-0" style="border-color:#21262d; background:#111318;">
+  <div style="background:#111318; border-right:1px solid #21262d;" class="flex flex-col h-full">
+    <!-- Logo -->
+    <div class="px-4 mb-6">
+      <div class="flex items-center gap-2.5">
+        <div class="w-7 h-7 rounded-md flex items-center justify-center text-white font-bold text-sm" style="background: linear-gradient(135deg,#7c3aed,#4f46e5);">C</div>
+        <div>
+          <div class="text-xs font-semibold text-white leading-tight">29CM</div>
+          <div class="text-[10px]" style="color:#7d8590;">Commerce Core</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Nav -->
+    <nav class="flex flex-col gap-0.5 px-2 flex-1">
+      <div class="text-[10px] font-semibold px-2 mb-1 uppercase tracking-widest" style="color:#484f58;">과제</div>
+      <div class="sidebar-item active">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        전체 과제 보기
+      </div>
+      <div class="sidebar-item">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg>
+        일별 진행 현황
+      </div>
+
+      <div class="text-[10px] font-semibold px-2 mb-1 mt-4 uppercase tracking-widest" style="color:#484f58;">뷰</div>
+      <div class="sidebar-item">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
+        타임라인 보기
+      </div>
+      <div class="sidebar-item">
+        <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+        스프린트 현황
+      </div>
+    </nav>
+
+    <!-- User -->
+    <div class="px-4 py-3 border-t flex items-center gap-2.5" style="border-color:#21262d;">
+      <div class="w-7 h-7 rounded-full bg-violet-600 flex items-center justify-center text-white text-xs font-semibold shrink-0">민</div>
+      <div class="min-w-0">
+        <div class="text-xs font-medium text-white truncate">최민주</div>
+        <div class="text-[10px] truncate" style="color:#7d8590;">Commerce Core PM</div>
+      </div>
+    </div>
+  </div>
+</aside>
+
+<!-- ─── MAIN ─── -->
+<div class="flex flex-col flex-1 min-w-0 overflow-hidden">
+
+  <!-- TOP HEADER -->
+  <header class="shrink-0 px-6 pt-5 pb-3" style="border-bottom:1px solid #21262d;">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h1 class="text-base font-semibold text-white">전체 과제 현황</h1>
+        <p class="text-xs mt-0.5" style="color:#7d8590;">Sub Group: 29CM-P Commerce Core</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-xs" style="color:#7d8590;">
+          <span class="text-green-400 mr-1">●</span> JIRA 동기화: 오늘 오전 10:47
+        </span>
+        <button class="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-md font-medium transition-all" style="background:#21262d; color:#e6edf3; border:1px solid #30363d;">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+          Jira Sync
+        </button>
+      </div>
+    </div>
+
+    <!-- TABS -->
+    <div class="flex items-center gap-1">
+      <button onclick="switchTab('all')" id="tab-all" class="tab-active flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all">
+        전체 <span class="text-[10px] px-1.5 py-0.5 rounded-full" style="background:rgba(255,255,255,0.15);">76</span>
+      </button>
+      <button onclick="switchTab('progress')" id="tab-progress" class="tab-inactive flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all">
+        진행 중 <span class="text-[10px] px-1.5 py-0.5 rounded-full" style="background:rgba(124,58,237,0.2); color:#a78bfa;">14</span>
+      </button>
+      <button onclick="switchTab('planning')" id="tab-planning" class="tab-inactive flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all">
+        플래닝 대기·검토 <span class="text-[10px] px-1.5 py-0.5 rounded-full" style="background:rgba(245,158,11,0.15); color:#fbbf24;">28</span>
+      </button>
+      <button onclick="switchTab('done')" id="tab-done" class="tab-inactive flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all">
+        완료 <span class="text-[10px] px-1.5 py-0.5 rounded-full" style="background:rgba(75,85,99,0.3); color:#9ca3af;">34</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- SUMMARY STATS -->
+  <div class="shrink-0 px-6 py-3 flex items-center gap-3" style="border-bottom:1px solid #21262d;">
+    <div class="flex items-center gap-2 px-4 py-2 rounded-lg" style="background:#1c2128; border:1px solid #30363d;">
+      <span class="text-xs" style="color:#7d8590;">전체</span>
+      <span class="text-lg font-bold text-white">14</span>
+    </div>
+    <div class="flex items-center gap-2 px-4 py-2 rounded-lg" style="background:#1c2128; border:1px solid #21262d;">
+      <span class="w-2 h-2 rounded-full bg-gray-500 shrink-0"></span>
+      <span class="text-xs" style="color:#7d8590;">완료</span>
+      <span class="text-base font-bold" style="color:#9ca3af;">0</span>
+    </div>
+    <div class="flex items-center gap-2 px-4 py-2 rounded-lg" style="background:#1c2128; border:1px solid #21262d;">
+      <span class="w-2 h-2 rounded-full bg-violet-500 shrink-0"></span>
+      <span class="text-xs" style="color:#7d8590;">진행중</span>
+      <span class="text-base font-bold text-violet-400">5</span>
+    </div>
+    <div class="flex items-center gap-2 px-4 py-2 rounded-lg" style="background:#1c2128; border:1px solid #21262d;">
+      <span class="w-2 h-2 rounded-full bg-amber-500 shrink-0"></span>
+      <span class="text-xs" style="color:#7d8590;">계획/대기</span>
+      <span class="text-base font-bold text-amber-400">9</span>
+    </div>
+    <div class="ml-auto flex items-center gap-1.5">
+      <span class="text-xs font-medium px-2.5 py-1 rounded-md" style="background:rgba(239,68,68,0.12); color:#f87171; border:1px solid rgba(239,68,68,0.2);">🔥 ETA 임박 3건</span>
+    </div>
+  </div>
+
+  <!-- FILTER BAR -->
+  <div class="shrink-0 px-6 py-2.5 flex items-center gap-2 flex-wrap" style="border-bottom:1px solid #21262d; background:#0d1117;">
+    <!-- Filters -->
+    <div class="flex items-center gap-1.5 flex-wrap">
+      <div class="select-wrapper">
+        <select class="filter-select">
+          <option>분기: 전체</option>
+          <option>Y26Q1</option><option>Q1+Q2</option><option>Y26Q2</option>
+        </select>
+      </div>
+      <div class="select-wrapper">
+        <select class="filter-select">
+          <option>레벨: 전체</option>
+          <option>Initiative</option><option>Epic</option><option>Dev</option>
+        </select>
+      </div>
+      <div class="select-wrapper">
+        <select class="filter-select">
+          <option>프로젝트: 전체</option>
+          <option>TM</option><option>CMALL</option><option>M29CMCCF</option>
+        </select>
+      </div>
+      <div class="select-wrapper">
+        <select class="filter-select">
+          <option>상태: 전체</option>
+          <option>론치완료/완료</option><option>개발중</option><option>QA중</option>
+        </select>
+      </div>
+      <div class="select-wrapper">
+        <select class="filter-select">
+          <option>담당자: 전체</option>
+          <option>좌예슬</option><option>김지영</option><option>정유민</option>
+        </select>
+      </div>
+      <div class="select-wrapper">
+        <select class="filter-select">
+          <option>도메인: 전체</option>
+          <option>커머스</option><option>결제</option><option>주문</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="w-px h-4 mx-1 shrink-0" style="background:#30363d;"></div>
+
+    <!-- Sort -->
+    <div class="select-wrapper">
+      <select class="filter-select" style="color:#a78bfa; border-color:rgba(124,58,237,0.4);">
+        <option>ETA순</option>
+        <option>등록순</option>
+        <option>우선순위 P11</option>
+        <option>시작일순</option>
+      </select>
+    </div>
+
+    <!-- Search -->
+    <div class="ml-auto">
+      <div class="relative">
+        <svg class="absolute left-2.5 top-1/2 -translate-y-1/2" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#7d8590" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" placeholder="티켓 번호 · 제목 · 담당자" class="search-input pl-7" style="width:200px;" />
+      </div>
+    </div>
+  </div>
+
+  <!-- BODY: LIST + DETAIL -->
+  <div class="flex flex-1 min-h-0 overflow-hidden">
+
+    <!-- TICKET LIST -->
+    <div id="ticket-list" class="flex flex-col overflow-hidden transition-all duration-200" style="width:100%;">
+
+      <!-- Table Header -->
+      <div class="shrink-0 px-6 py-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider" style="color:#484f58; border-bottom:1px solid #21262d;">
+        <span class="w-5 text-center">#</span>
+        <span style="width:80px;">티켓</span>
+        <span class="flex-1">제목</span>
+        <span style="width:72px;">레벨</span>
+        <span style="width:68px;">담당자</span>
+        <span style="width:90px;">상태</span>
+        <span style="width:90px;">시작일</span>
+        <span style="width:90px;">ETA</span>
+      </div>
+
+      <!-- Ticket Rows -->
+      <div class="flex-1 overflow-y-auto" id="ticket-rows">
+
+        <!-- Row 1 - Selected -->
+        <div class="ticket-row selected px-6 py-2.5 flex flex-col gap-1 cursor-pointer border-l-2" style="border-left-color:#7c3aed;" onclick="selectTicket(1)">
+          <div class="flex items-center gap-2">
+            <span class="w-5 text-center text-xs" style="color:#7d8590;">1</span>
+            <span class="font-mono text-xs text-violet-400" style="width:80px;">TM-1871</span>
+            <span class="flex-1 text-sm font-medium text-white truncate">[결제] [29CM] 교환 배송비 결제 시스템화</span>
+            <span class="badge level-initiative shrink-0" style="width:72px; justify-content:center;">Initiative</span>
+            <span class="text-xs shrink-0" style="width:68px; color:#e6edf3;">좌예슬</span>
+            <span class="status-qa text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0" style="width:90px; text-align:center;">QA중</span>
+            <span class="text-xs shrink-0" style="width:90px; color:#7d8590;">2026/3/10(화)</span>
+            <span class="text-xs font-semibold shrink-0 eta-urgent" style="width:90px;">2026/5/11(월)</span>
+          </div>
+          <div class="flex items-center gap-1.5 pl-7">
+            <span class="milestone-chip ms-launch">🚀 론치 5/11</span>
+            <span class="milestone-chip ms-deploy">📦 론치 · 모바일 5/13</span>
+          </div>
+        </div>
+
+        <!-- Row 2 -->
+        <div class="ticket-row px-6 py-2.5 flex flex-col gap-1 cursor-pointer" style="border-left:2px solid transparent;" onclick="selectTicket(2)">
+          <div class="flex items-center gap-2">
+            <span class="w-5 text-center text-xs" style="color:#7d8590;">2</span>
+            <span class="font-mono text-xs text-violet-400" style="width:80px;">TM-2853</span>
+            <span class="flex-1 text-sm font-medium text-white truncate">[카탈로그] [SCM Hub] O-SKU 전환 대응 29CM 상품등록 내부 API 신설</span>
+            <span class="badge level-initiative shrink-0" style="width:72px; justify-content:center;">Initiative</span>
+            <span class="text-xs shrink-0" style="width:68px; color:#e6edf3;">좌예슬</span>
+            <span class="status-qa text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0" style="width:90px; text-align:center;">QA중</span>
+            <span class="text-xs shrink-0" style="width:90px; color:#7d8590;">2026/4/10(금)</span>
+            <span class="text-xs font-semibold shrink-0 eta-soon" style="width:90px;">2026/5/20(수)</span>
+          </div>
+          <div class="flex items-center gap-1.5 pl-7">
+            <span class="milestone-chip ms-deploy">📦 배포 5/20</span>
+          </div>
+        </div>
+
+        <!-- Row 3 -->
+        <div class="ticket-row px-6 py-2.5 flex flex-col gap-1 cursor-pointer" style="border-left:2px solid transparent;" onclick="selectTicket(3)">
+          <div class="flex items-center gap-2">
+            <span class="w-5 text-center text-xs" style="color:#7d8590;">3</span>
+            <span class="font-mono text-xs text-violet-400" style="width:80px;">TM-2727</span>
+            <span class="flex-1 text-sm font-medium text-white truncate">[이구위크] 브랜드 첫구매 쿠폰 기능 및 모듈화</span>
+            <span class="badge level-initiative shrink-0" style="width:72px; justify-content:center;">Initiative</span>
+            <span class="text-xs shrink-0" style="width:68px; color:#e6edf3;">김지영</span>
+            <span class="status-plan text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0" style="width:90px; text-align:center;">기획중</span>
+            <span class="text-xs shrink-0" style="width:90px; color:#7d8590;">2026/4/9(목)</span>
+            <span class="text-xs font-semibold shrink-0 eta-soon" style="width:90px;">2026/5/26(화)</span>
+          </div>
+          <div class="flex items-center gap-1.5 pl-7">
+            <span class="milestone-chip ms-next">🔜 작으로 5/27</span>
+          </div>
+        </div>
+
+        <!-- Row 4 -->
+        <div class="ticket-row px-6 py-2.5 flex flex-col gap-1 cursor-pointer" style="border-left:2px solid transparent;" onclick="selectTicket(4)">
+          <div class="flex items-center gap-2">
+            <span class="w-5 text-center text-xs" style="color:#7d8590;">4</span>
+            <span class="font-mono text-xs text-violet-400" style="width:80px;">TM-2751</span>
+            <span class="flex-1 text-sm text-white truncate">
+              <span class="badge mr-1.5" style="background:rgba(75,85,99,0.3); color:#9ca3af; font-size:10px;">Design 대기</span>
+              <span class="badge mr-1.5" style="background:rgba(75,85,99,0.3); color:#9ca3af; font-size:10px;">Dev 대기</span>
+              [CS] AI Chat Agent 1:1문의 진입점 A/B 테스트
+            </span>
+            <span class="badge level-initiative shrink-0" style="width:72px; justify-content:center;">Initiative</span>
+            <span class="text-xs shrink-0" style="width:68px; color:#e6edf3;">좌예슬</span>
+            <span class="status-design text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0" style="width:90px; text-align:center;">디자인완료</span>
+            <span class="text-xs shrink-0" style="width:90px; color:#7d8590;">2026/4/13(월)</span>
+            <span class="text-xs font-semibold shrink-0 eta-soon" style="width:90px;">2026/5/29(금)</span>
+          </div>
+        </div>
+
+        <!-- Row 5 -->
+        <div class="ticket-row px-6 py-2.5 flex flex-col gap-1 cursor-pointer" style="border-left:2px solid transparent;" onclick="selectTicket(5)">
+          <div class="flex items-center gap-2">
+            <span class="w-5 text-center text-xs" style="color:#7d8590;">5</span>
+            <span class="font-mono text-xs text-violet-400" style="width:80px;">TM-2763</span>
+            <span class="flex-1 text-sm text-white truncate">
+              <span class="badge mr-1.5" style="background:rgba(75,85,99,0.3); color:#9ca3af; font-size:10px;">Design 대기</span>
+              <span class="badge mr-1.5" style="background:rgba(75,85,99,0.3); color:#9ca3af; font-size:10px;">Dev 대기</span>
+              쿠폰 전시가격 미노출 브랜드 설정 기능(블랙리스트) 개선
+            </span>
+            <span class="badge level-initiative shrink-0" style="width:72px; justify-content:center;">Initiative</span>
+            <span class="text-xs shrink-0" style="width:68px; color:#e6edf3;">정유민</span>
+            <span class="status-design text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0" style="width:90px; text-align:center;">디자인완료</span>
+            <span class="text-xs shrink-0" style="width:90px; color:#7d8590;">2026/4/10(금)</span>
+            <span class="text-xs font-semibold shrink-0 eta-soon" style="width:90px;">2026/5/29(금)</span>
+          </div>
+        </div>
+
+        <!-- Row 6 -->
+        <div class="ticket-row px-6 py-2.5 flex flex-col gap-1 cursor-pointer" style="border-left:2px solid transparent;" onclick="selectTicket(6)">
+          <div class="flex items-center gap-2">
+            <span class="w-5 text-center text-xs" style="color:#7d8590;">6</span>
+            <span class="font-mono text-xs text-violet-400" style="width:80px;">TM-1241</span>
+            <span class="flex-1 text-sm font-medium text-white truncate">[쿠폰] [29Connect] 파트너 쿠폰 대시보드 제공</span>
+            <span class="badge level-initiative shrink-0" style="width:72px; justify-content:center;">Initiative</span>
+            <span class="text-xs shrink-0" style="width:68px; color:#e6edf3;">김지영</span>
+            <span class="status-dev text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0" style="width:90px; text-align:center;">개발중</span>
+            <span class="text-xs shrink-0" style="width:90px; color:#7d8590;">2026/2/11(수)</span>
+            <span class="text-xs font-semibold shrink-0 eta-ok" style="width:90px;">2026/6/8(월)</span>
+          </div>
+        </div>
+
+        <!-- Row 7 -->
+        <div class="ticket-row px-6 py-2.5 flex flex-col gap-1 cursor-pointer" style="border-left:2px solid transparent;" onclick="selectTicket(7)">
+          <div class="flex items-center gap-2">
+            <span class="w-5 text-center text-xs" style="color:#7d8590;">7</span>
+            <span class="font-mono text-xs text-violet-400" style="width:80px;">TM-1842</span>
+            <span class="flex-1 text-sm font-medium text-white truncate">[쿠폰] [29Connect] 브랜드 장바구니 쿠폰 도입</span>
+            <span class="badge level-initiative shrink-0" style="width:72px; justify-content:center;">Initiative</span>
+            <span class="text-xs shrink-0" style="width:68px; color:#e6edf3;">김지영</span>
+            <span class="status-dev text-[11px] font-medium px-2 py-0.5 rounded-md shrink-0" style="width:90px; text-align:center;">개발중</span>
+            <span class="text-xs shrink-0" style="width:90px; color:#7d8590;">2026/1/5(월)</span>
+            <span class="text-xs font-semibold shrink-0 eta-ok" style="width:90px;">2026/6/22(월)</span>
+          </div>
+        </div>
+
+        <!-- More rows placeholder -->
+        <div class="px-6 py-8 text-center text-xs" style="color:#484f58;">
+          ... 및 7개 더
+        </div>
+
+      </div><!-- /ticket-rows -->
+    </div><!-- /ticket-list -->
+
+    <!-- DETAIL PANEL -->
+    <div id="detail-panel" class="flex flex-col overflow-hidden shrink-0 transition-all duration-200" style="width:420px; border-left:1px solid #21262d;">
+
+      <!-- Panel Header -->
+      <div class="shrink-0 px-5 py-4" style="border-bottom:1px solid #21262d;">
+        <div class="flex items-start justify-between gap-3 mb-2">
+          <h2 class="text-sm font-semibold text-white leading-snug">[결제] [29CM] 교환 배송비 결제 시스템화</h2>
+          <button class="text-lg leading-none shrink-0 mt-0.5" style="color:#7d8590;">✕</button>
+        </div>
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <a class="font-mono text-xs text-violet-400 hover:underline">TM-1871</a>
+          <span class="status-qa text-[10px] font-medium px-2 py-0.5 rounded-md">QA중</span>
+          <span class="badge level-initiative">Initiative</span>
+          <span class="text-[10px] px-2 py-0.5 rounded-md" style="background:rgba(16,185,129,0.12); color:#34d399; border:1px solid rgba(16,185,129,0.2);">● GREEN</span>
+        </div>
+      </div>
+
+      <!-- Panel Body -->
+      <div class="flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3">
+
+        <!-- Meta Grid -->
+        <div class="detail-card">
+          <div class="grid grid-cols-2 gap-x-4 gap-y-2.5">
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">담당자</div>
+              <div class="text-xs text-white font-medium">좌예슬</div>
+            </div>
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">프로젝트</div>
+              <div class="text-xs text-white font-medium">TM</div>
+            </div>
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">시작일</div>
+              <div class="text-xs text-white">2026/3/10(화)</div>
+            </div>
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">ETA</div>
+              <div class="text-xs font-semibold eta-urgent">2026/5/11(월) ⚠</div>
+            </div>
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">Main Subject</div>
+              <div class="text-xs text-white">21.주문/배송/클레임</div>
+            </div>
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">Story Points</div>
+              <div class="text-xs text-white">207.5</div>
+            </div>
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">상위 항목</div>
+              <div class="text-xs text-violet-400">TM-580</div>
+            </div>
+            <div>
+              <div class="text-[10px] mb-0.5 uppercase tracking-wider" style="color:#484f58;">우선순위</div>
+              <div class="text-xs text-white">Big-Rock</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ETR Source -->
+        <div class="detail-card">
+          <div class="text-[10px] font-semibold uppercase tracking-wider mb-2.5" style="color:#484f58;">요구사항 출처</div>
+          <div class="flex gap-2">
+            <button class="flex-1 text-xs py-2 rounded-md font-medium transition-all" style="background:#1c2128; border:1px solid #30363d; color:#7d8590;">자체발의</button>
+            <button class="flex-1 text-xs py-2 rounded-md font-medium transition-all" style="background:#1c2128; border:1px solid #30363d; color:#7d8590;">ELT 요구사항</button>
+            <button class="flex-1 text-xs py-2 rounded-md font-medium transition-all" style="background:#1c2128; border:1px solid #30363d; color:#7d8590;">외부 부서 요청</button>
+          </div>
+        </div>
+
+        <!-- Summary -->
+        <div class="detail-card">
+          <div class="flex items-center justify-between mb-2.5">
+            <div class="text-[10px] font-semibold uppercase tracking-wider" style="color:#484f58;">주요 내용 요약</div>
+            <div class="flex items-center gap-2">
+              <span class="text-[10px]" style="color:#7d8590;">AI 자동 생성 · 04-27</span>
+              <button class="text-[10px] text-violet-400 hover:text-violet-300">편집</button>
+            </div>
+          </div>
+          <ul class="flex flex-col gap-1.5">
+            <li class="flex gap-2 text-xs" style="color:#c9d1d9;">
+              <span class="shrink-0 mt-0.5 text-violet-400">›</span>
+              고객의 교환/반품 배송비 결제 불편 해소 및 빠른 교환 서비스 도입 기반 마련
+            </li>
+            <li class="flex gap-2 text-xs" style="color:#c9d1d9;">
+              <span class="shrink-0 mt-0.5 text-violet-400">›</span>
+              고객 귀책 사유 발생 시 추가 배송비 직접 결제 기능 구현
+            </li>
+            <li class="flex gap-2 text-xs" style="color:#c9d1d9;">
+              <span class="shrink-0 mt-0.5 text-violet-400">›</span>
+              교환/반품 배송비 직접 결제 기능 배포 및 빠른 교환 서비스 인동 기반 확보
+            </li>
+          </ul>
+          <button class="mt-2 text-[11px] text-violet-400 hover:text-violet-300">더 보기 ›</button>
+        </div>
+
+        <!-- Divider -->
+        <div style="height:1px; background:#21262d;"></div>
+
+        <!-- Memo -->
+        <div class="detail-card">
+          <div class="flex items-center justify-between mb-2.5">
+            <div class="text-[10px] font-semibold uppercase tracking-wider" style="color:#484f58;">메모</div>
+            <span class="text-[10px]" style="color:#484f58;">최민주 · 2026-05-11</span>
+          </div>
+          <p class="text-xs leading-relaxed mb-3" style="color:#c9d1d9;">ETA: 4월말(스타벅스 디렌단시) → 5/11 확정</p>
+          <div class="flex items-center gap-2">
+            <input placeholder="메모를 입력하세요 (⌘+Enter로 등록)" class="search-input flex-1 text-xs" style="background:#0d1117;" />
+            <button class="text-xs px-3 py-1.5 rounded-md font-medium" style="background:#7c3aed; color:white;">등록</button>
+          </div>
+        </div>
+
+        <!-- Planning Status -->
+        <div class="detail-card">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[10px] font-semibold uppercase tracking-wider" style="color:#484f58;">플래닝 상태</div>
+            <span class="text-[11px] px-2 py-0.5 rounded-md font-medium" style="background:rgba(16,185,129,0.15); color:#34d399; border:1px solid rgba(16,185,129,0.3);">✓ 플래닝 완료</span>
+          </div>
+        </div>
+
+        <!-- Schedule / Gantt -->
+        <div class="detail-card">
+          <div class="flex items-center justify-between mb-3">
+            <div class="text-[10px] font-semibold uppercase tracking-wider" style="color:#484f58;">작업별 일정</div>
+            <button class="text-[10px] text-violet-400 hover:text-violet-300">편집</button>
+          </div>
+
+          <!-- Month Headers -->
+          <div class="relative mb-2">
+            <!-- Month labels -->
+            <div class="flex text-[10px] font-medium mb-1" style="color:#484f58; padding-left:120px;">
+              <div style="flex:1; text-align:center;">5월</div>
+              <div style="flex:1; text-align:center;">6월</div>
+              <div style="flex:1; text-align:center;">7월</div>
+            </div>
+            <!-- Today line area -->
+            <div class="relative" style="padding-left:120px; height:16px;">
+              <div style="position:absolute; left:calc(120px + 5%); top:0; bottom:0; width:1px; background:#ef4444;">
+                <span style="position:absolute; top:0; left:2px; font-size:9px; color:#f87171; font-weight:600; white-space:nowrap;">📍 5/11(월)</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Gantt Rows -->
+          <div class="flex flex-col gap-2">
+
+            <!-- QA row -->
+            <div class="flex items-center gap-2">
+              <div class="shrink-0 flex items-center gap-1.5" style="width:120px;">
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:#fbbf24;"></span>
+                <div class="min-w-0">
+                  <div class="text-[11px] font-medium text-white truncate">QA</div>
+                  <div class="text-[10px] truncate" style="color:#7d8590;">-</div>
+                </div>
+              </div>
+              <div class="flex-1 relative" style="height:22px;">
+                <div class="gantt-bar absolute" style="left:0%; width:45%; background:rgba(251,191,36,0.25); border:1px solid rgba(251,191,36,0.4);">
+                  <span style="position:absolute; left:4px; top:50%; transform:translateY(-50%); font-size:9px; color:#fbbf24; white-space:nowrap;">4/20 ~ 5/8 · 13일</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 기획 row -->
+            <div class="flex items-center gap-2">
+              <div class="shrink-0 flex items-center gap-1.5" style="width:120px;">
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:#818cf8;"></span>
+                <div class="min-w-0">
+                  <div class="text-[11px] font-medium text-white truncate">기획</div>
+                  <div class="text-[10px] truncate" style="color:#7d8590;">좌예슬</div>
+                </div>
+              </div>
+              <div class="flex-1 relative" style="height:22px;">
+                <div class="gantt-bar absolute" style="left:32%; width:8%; background:rgba(129,140,248,0.2); border:1px solid rgba(129,140,248,0.35);">
+                  <span style="position:absolute; left:4px; top:50%; transform:translateY(-50%); font-size:9px; color:#818cf8; white-space:nowrap;">5/11 · 1일</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Launch row -->
+            <div class="flex items-center gap-2">
+              <div class="shrink-0 flex items-center gap-1.5" style="width:120px;">
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:#f87171;"></span>
+                <div class="min-w-0">
+                  <div class="text-[11px] font-medium text-white truncate text-red-400">Launch</div>
+                  <div class="text-[10px] truncate" style="color:#7d8590;">-</div>
+                </div>
+              </div>
+              <div class="flex-1 relative" style="height:22px;">
+                <div class="gantt-bar absolute" style="left:32%; width:5%; background:rgba(248,113,113,0.2); border:1px solid rgba(248,113,113,0.4);">
+                  <span style="position:absolute; left:4px; top:50%; transform:translateY(-50%); font-size:9px; color:#f87171; white-space:nowrap;">5/11 · 1일</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Launch Mobile row -->
+            <div class="flex items-center gap-2">
+              <div class="shrink-0 flex items-center gap-1.5" style="width:120px;">
+                <span class="w-1.5 h-1.5 rounded-full shrink-0" style="background:#f87171;"></span>
+                <div class="min-w-0">
+                  <div class="text-[11px] font-medium text-red-400 truncate">Launch</div>
+                  <div class="text-[10px] truncate" style="color:#7d8590;">박식민, 김준원</div>
+                </div>
+              </div>
+              <div class="flex-1 relative" style="height:22px;">
+                <div class="gantt-bar absolute" style="left:40%; width:5%; background:rgba(248,113,113,0.15); border:1px solid rgba(248,113,113,0.35);">
+                  <span style="position:absolute; left:4px; top:50%; transform:translateY(-50%); font-size:9px; color:#f87171; white-space:nowrap;">5/13 · 1일</span>
+                </div>
+              </div>
+            </div>
+
+          </div><!-- /gantt rows -->
+
+          <!-- Past done indicator -->
+          <div class="mt-3 pt-3 flex items-center gap-1.5" style="border-top:1px solid #21262d;">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#484f58" stroke-width="2"><path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+            <span class="text-[11px]" style="color:#7d8590;">이전 완료 일정 7건</span>
+            <button class="ml-auto text-[11px] text-violet-400 hover:text-violet-300">모두 보기</button>
+          </div>
+        </div>
+
+      </div><!-- /panel body -->
+    </div><!-- /detail-panel -->
+  </div><!-- /body -->
+</div><!-- /main -->
+
+<script>
+  function switchTab(tab) {
+    ['all','progress','planning','done'].forEach(t => {
+      const el = document.getElementById('tab-' + t);
+      if (t === tab) {
+        el.className = el.className.replace('tab-inactive','tab-active');
+      } else {
+        el.className = el.className.replace('tab-active','tab-inactive');
+      }
+    });
+  }
+  function selectTicket(n) {
+    document.querySelectorAll('.ticket-row').forEach((row, i) => {
+      if (i === n - 1) {
+        row.classList.add('selected');
+        row.style.borderLeftColor = '#7c3aed';
+      } else {
+        row.classList.remove('selected');
+        row.style.borderLeftColor = 'transparent';
+      }
+    });
+  }
+</script>
+</body>
+</html>
