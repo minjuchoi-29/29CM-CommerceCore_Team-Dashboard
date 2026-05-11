@@ -2023,9 +2023,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         <div className={`grid grid-cols-4 gap-3 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
           {([
             { label: "전체",      filterKey: "전체",      count: totalAll,        numColor: "#e6edf3", desc: "등록된 전체 티켓" },
-            { label: "완료",      filterKey: "완료",      count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨" },
-            { label: "개발·QA중", filterKey: "진행중",    count: totalInProgress, numColor: "#818cf8", desc: "개발중·QA중·In Progress" },
             { label: "기획·준비", filterKey: "계획/대기", count: totalPlanned,    numColor: "#fbbf24", desc: "기획중·디자인·HOLD 등" },
+            { label: "개발·QA중", filterKey: "진행중",    count: totalInProgress, numColor: "#818cf8", desc: "개발중·QA중·In Progress" },
+            { label: "완료",      filterKey: "완료",      count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨" },
           ]).map((s) => {
             const active = statusTab === s.filterKey;
             return (
