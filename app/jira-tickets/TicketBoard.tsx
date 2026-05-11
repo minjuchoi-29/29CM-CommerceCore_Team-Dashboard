@@ -2348,7 +2348,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           target="_blank"
                           rel="noopener noreferrer"
                           onClick={(e) => e.stopPropagation()}
-                          className="w-32 shrink-0 font-mono text-xs text-blue-500 hover:underline"
+                          className="w-32 shrink-0 font-mono text-sm font-semibold text-blue-400 hover:text-blue-300 hover:underline"
                         >
                           {t.key}
                         </a>
@@ -2382,7 +2382,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             </span>
                           );
                         })()}
-                        <span className="flex-1 min-w-0 text-sm truncate pr-3" style={{ color: "#e6edf3" }}>{t.summary}</span>
+                        <span className="flex-1 min-w-0 text-sm font-medium truncate pr-3" style={{ color: "#f0f6fc" }}>{t.summary}</span>
                         <span className="w-20 shrink-0 flex justify-center">
                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
                             {t.type}
@@ -2426,26 +2426,30 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       return { role, person: "-", start: "", end: "", status: defaultStatus, isMissing: true };
                     });
                     return (
-                      <div className="flex items-center gap-1.5 px-4 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
+                      <div className="flex items-center gap-1.5 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
                         {milestones.map((r, mi) => {
-                          const isDone       = r.status === "완료";
-                          const isMissing    = !r.end || (r as { isMissing?: boolean }).isMissing;
-                          const isNeedCheck  = isMissing && r.status === "확인필요";
-                          const labelText    = isMissing ? r.status : shortDate(r.end);
+                          const isDone      = r.status === "완료";
+                          const isMissing   = !r.end || (r as { isMissing?: boolean }).isMissing;
+                          const isNeedCheck = isMissing && r.status === "확인필요";
+                          const labelText   = isMissing ? r.status : shortDate(r.end);
                           return (
                           <span
                             key={`${r.role}-${mi}`}
-                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium ${isDone ? "opacity-40" : ""} ${isMissing && !isNeedCheck ? "opacity-60" : ""} ${isNeedCheck ? "bg-orange-900/30 text-orange-400 border-orange-700/50" : MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
+                            className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[11px] font-normal
+                              ${isDone ? "opacity-30" : isMissing && !isNeedCheck ? "opacity-40" : "opacity-70"}
+                              ${isNeedCheck
+                                ? "bg-orange-900/20 text-orange-400 border-orange-800/40"
+                                : MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
                           >
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isNeedCheck ? "bg-orange-400" : MILESTONE_DOT[r.role] ?? "bg-gray-400"} ${isDone ? "opacity-60" : ""}`} />
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isNeedCheck ? "bg-orange-400" : MILESTONE_DOT[r.role] ?? "bg-gray-400"}`} />
                             {MILESTONE_KO[r.role] ?? r.role}
                             {r.detail && (
-                              <span className="font-normal opacity-60 max-w-[12rem] truncate" title={r.detail}>
+                              <span className="opacity-70 max-w-[10rem] truncate" title={r.detail}>
                                 · {r.detail}
                               </span>
                             )}
-                            <span className="font-normal opacity-75">{labelText}</span>
-                            {isDone && <span className="text-[10px] font-semibold">✓</span>}
+                            <span className="opacity-80 ml-0.5">{labelText}</span>
+                            {isDone && <span className="ml-0.5 opacity-60">✓</span>}
                           </span>
                           );
                         })}
