@@ -2582,8 +2582,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     );
                     const hasAnyMilestoneData = Object.keys(existingMap).length > 0;
 
-                    // 플래닝 대기 상태(진행중·완료 아님) 티켓은 마일스톤 데이터 있을 때만 표시
-                    if (!isTicketActive && !hasAnyMilestoneData) return null;
+                    // 플래닝 상태 먼저 계산 (서브행 표시 조건에 사용)
+                    const p = getPlanningVal(planning[t.key]);
+                    const planningBothDone = p.design === "완료" && p.dev === "완료";
+                    // 플래닝이 기본값(대기중/대기중)이 아닌 경우 → 서브행 표시할 이유 있음
+                    const planningHasProgress = p.design !== "대기중" || p.dev !== "대기중";
+
+                    // 표시 조건: 진행중·완료 티켓 / 마일스톤 데이터 있음 / 플래닝 진행 상태 있음
+                    if (!isTicketActive && !hasAnyMilestoneData && !planningHasProgress) return null;
 
                     const milestones: (RoleSchedule & { isMissing?: boolean })[] = MILESTONE_ROLES.map(role => {
                       if (existingMap[role]) return existingMap[role];
@@ -2592,9 +2598,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         : "미정" as const;
                       return { role, person: "-", start: "", end: "", status: defaultStatus, isMissing: true };
                     });
-                    // 플래닝 상태 뱃지 스타일
-                    const p = getPlanningVal(planning[t.key]);
-                    const planningBothDone = p.design === "완료" && p.dev === "완료";
                     const trackStyle = (state: string, track: "design" | "dev") => {
                       if (state === "완료")     return { dot: "#34d399", text: "#34d399", bg: "rgba(16,185,129,0.1)",  border: "rgba(16,185,129,0.25)" };
                       if (state === "검토중")   return track === "design"
@@ -2608,8 +2611,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                     return (
                       <div className="flex items-center gap-1.5 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
-                        {/* 마일스톤 칩 */}
-                        {milestones.map((r, mi) => {
+                        {/* 마일스톤 칩 — 진행중·완료 티켓이거나 실제 마일스톤 데이터 있을 때만 표시
+                            (비활성+마일스톤 없는 티켓에서 "미정" 3개 노출 방지) */}
+                        {(isTicketActive || hasAnyMilestoneData) && milestones.map((r, mi) => {
                           const isDone      = r.status === "완료";
                           const isMissing   = !r.end || (r as { isMissing?: boolean }).isMissing;
                           const isNeedCheck = isMissing && r.status === "확인필요";
