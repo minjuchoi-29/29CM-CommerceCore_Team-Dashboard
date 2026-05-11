@@ -24,3 +24,25 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* 날짜 input 캘린더 아이콘 — 크기·색상 강화 */
+input[type="date"]::-webkit-calendar-picker-indicator {
+  width: 18px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  filter: invert(60%) sepia(20%) saturate(500%) hue-rotate(190deg) brightness(120%);
+  opacity: 0.7;
+  transition: opacity 0.15s, filter 0.15s;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  filter: invert(70%) sepia(40%) saturate(800%) hue-rotate(200deg) brightness(140%);
+}
+
+input[type="date"]:focus::-webkit-calendar-picker-indicator {
+  opacity: 1;
+  filter: invert(65%) sepia(60%) saturate(1000%) hue-rotate(210deg) brightness(160%);
+}

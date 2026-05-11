@@ -3241,7 +3241,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   return { ...r, start: newStart, end: newEnd };
                                 }));
                               }}
-                              className={`text-xs border ${errStart ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`} style={{ background: "#0d1117", color: "#e6edf3" }}
+                              className={`text-xs border ${errStart ? errBorder : okBorder} rounded px-2 py-1.5 flex-1`} style={{ background: "#0d1117", color: "#e6edf3" }}
                             />
                             <span className="text-xs shrink-0" style={{ color: "#7d8590" }}>~</span>
                             <input
@@ -3249,7 +3249,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               value={row.end}
                               min={row.start || undefined}
                               onChange={(e) => { setEditError(null); updateRow(i, "end", e.target.value); }}
-                              className={`text-xs border ${errEnd ? errBorder : okBorder} rounded px-1.5 py-1 flex-1`} style={{ background: "#0d1117", color: "#e6edf3" }}
+                              className={`text-xs border ${errEnd ? errBorder : okBorder} rounded px-2 py-1.5 flex-1`} style={{ background: "#0d1117", color: "#e6edf3" }}
                             />
                             <label className="flex items-center gap-1 text-xs shrink-0 cursor-pointer select-none hover:opacity-80" style={{ color: "#7d8590" }}>
                               <input
