@@ -233,12 +233,13 @@ function calcWorkingDays(start: string, end: string): number {
   return count;
 }
 
-function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, onEditRow }: {
+function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, ticketActive, onEditRow }: {
   roles?: RoleSchedule[];
   forceShowPastDone?: boolean;
   extendedView?: boolean;   // 펼치기: 과거 6개월 + 미래 2개월
   fitToContent?: boolean;   // 론치완료 요약: viewStart = 최초 role 시작일, pastDone 없이 표시
   ticketDone?: boolean;     // 완료 티켓: 확인필요 항목도 이전 완료 일정으로 분류
+  ticketActive?: boolean;   // 진행중·완료 티켓: Kick-Off 미입력 시 "확인필요", Release/Launch 미입력 시 "미정"
   onEditRow?: (r: RoleSchedule) => void; // 행 수정 버튼 클릭 콜백
 }) {
   const [showPastDone, setShowPastDone] = useState(false);
@@ -322,10 +323,14 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   const pastDoneRoles  = sortedRoles.filter(isPastDone);
   const rawVisible     = sortedRoles.filter(r => !isPastDone(r));
 
-  // Kick-Off / Release / Launch 가 없으면 "미정" 기본 행 추가
+  // Kick-Off / Release / Launch 가 없으면 기본 행 추가
+  // 진행중·완료 티켓(ticketActive): Kick-Off 미입력 → "확인필요", Release/Launch 미입력 → "미정"
   const milestoneDefaults: RoleSchedule[] = MILESTONE_ROLES
     .filter(role => !rawVisible.some(r => r.role === role))
-    .map(role => ({ role, person: "-", start: "", end: "", status: "미정" as const }));
+    .map(role => ({
+      role, person: "-", start: "", end: "",
+      status: (ticketActive && role === "Kick-Off") ? "확인필요" as const : "미정" as const,
+    }));
   const visibleRoles = [...rawVisible, ...milestoneDefaults];
 
   return (
@@ -2389,34 +2394,39 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                   {/* 마일스톤 서브 행: 킥오프/배포/론치 날짜 칩 (미정 포함 항상 표시) */}
                   {!isDetailExpanded && (() => {
+                    const isTicketActive = INPROGRESS_STATUSES.includes(t.status) || DONE_STATUSES.includes(t.status);
                     const existingMap = Object.fromEntries(
                       (schedules[t.key] ?? [])
                         .filter(r => MILESTONE_ROLES.includes(r.role))
                         .map(r => [r.role, r])
                     );
-                    const milestones: (RoleSchedule & { isMissing?: boolean })[] = MILESTONE_ROLES.map(role =>
-                      existingMap[role]
-                        ? existingMap[role]
-                        : { role, person: "-", start: "", end: "", status: "미정" as const, isMissing: true }
-                    );
+                    const milestones: (RoleSchedule & { isMissing?: boolean })[] = MILESTONE_ROLES.map(role => {
+                      if (existingMap[role]) return existingMap[role];
+                      const defaultStatus = (isTicketActive && role === "Kick-Off")
+                        ? "확인필요" as const
+                        : "미정" as const;
+                      return { role, person: "-", start: "", end: "", status: defaultStatus, isMissing: true };
+                    });
                     return (
                       <div className="flex items-center gap-1.5 px-4 pb-2.5" style={{ paddingLeft: "5.5rem" }}>
                         {milestones.map((r, mi) => {
-                          const isDone    = r.status === "완료";
-                          const isMissing = !r.end || (r as { isMissing?: boolean }).isMissing;
+                          const isDone       = r.status === "완료";
+                          const isMissing    = !r.end || (r as { isMissing?: boolean }).isMissing;
+                          const isNeedCheck  = isMissing && r.status === "확인필요";
+                          const labelText    = isMissing ? r.status : shortDate(r.end);
                           return (
                           <span
                             key={`${r.role}-${mi}`}
-                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium ${isDone ? "opacity-40" : ""} ${isMissing ? "opacity-60" : ""} ${MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-xs font-medium ${isDone ? "opacity-40" : ""} ${isMissing && !isNeedCheck ? "opacity-60" : ""} ${isNeedCheck ? "bg-orange-900/30 text-orange-400 border-orange-700/50" : MILESTONE_CHIP[r.role] ?? "bg-gray-50 text-gray-600 border-gray-200"}`}
                           >
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${MILESTONE_DOT[r.role] ?? "bg-gray-400"} ${isDone ? "opacity-60" : ""}`} />
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${isNeedCheck ? "bg-orange-400" : MILESTONE_DOT[r.role] ?? "bg-gray-400"} ${isDone ? "opacity-60" : ""}`} />
                             {MILESTONE_KO[r.role] ?? r.role}
                             {r.detail && (
                               <span className="font-normal opacity-60 max-w-[12rem] truncate" title={r.detail}>
                                 · {r.detail}
                               </span>
                             )}
-                            <span className="font-normal opacity-75">{isMissing ? "미정" : shortDate(r.end)}</span>
+                            <span className="font-normal opacity-75">{labelText}</span>
                             {isDone && <span className="text-[10px] font-semibold">✓</span>}
                           </span>
                           );
@@ -3331,6 +3341,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           extendedView={isDetailExpanded}
                           fitToContent={isDone && !isDetailExpanded}
                           ticketDone={isDone}
+                          ticketActive={INPROGRESS_STATUSES.includes(selected.status) || isDone}
                           onEditRow={r => startEdit(makeEditFocusKey(r))}
                         />
                       </>
