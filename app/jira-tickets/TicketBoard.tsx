@@ -2031,7 +2031,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             return (
               <button
                 key={s.label}
-                onClick={() => setStatusTab(active ? "전체" : s.filterKey as typeof statusTab)}
+                onClick={() => {
+                  if (active) {
+                    setStatusTab("전체");
+                  } else {
+                    setStatusTab(s.filterKey as typeof statusTab);
+                    setPlanningTab("전체"); // 카드 숫자(전체 기준)와 목록 일치를 위해 planningTab 리셋
+                  }
+                }}
                 title={s.desc}
                 className="rounded-xl border px-4 py-3 text-left transition-all cursor-pointer"
                 style={{
