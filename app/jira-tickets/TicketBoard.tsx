@@ -2317,7 +2317,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         {/* 빠른 필터 행: 검토필요 + 최근 2주 신규 */}
         {(() => {
-          const reviewCount = preFiltered.filter(t => getPlanningVal(planning[t.key]).reviewNeeded).length;
+          // 검토필요: 탭 무관하게 전체 기준 (플래닝 대기·검토 + 요청 검토 중 포함 총합)
+          const reviewCount = dedupedTickets.filter(t => getPlanningVal(planning[t.key]).reviewNeeded).length;
+          // 최근 2주 신규: 현재 탭 기준
           const newCount    = preFiltered.filter(t => isRecentTicket(t.key)).length;
           if (reviewCount === 0 && !reviewFilter && newCount === 0 && !newFilter) return null;
           return (
