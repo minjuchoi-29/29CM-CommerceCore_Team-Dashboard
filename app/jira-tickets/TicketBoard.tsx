@@ -832,6 +832,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [wikiTitleInput, setWikiTitleInput] = useState("");
   const [wikiError, setWikiError] = useState<string | null>(null);
   const [wikiAddOpen, setWikiAddOpen] = useState(false);
+  const [wikiEditUrl, setWikiEditUrl] = useState<string | null>(null); // 수정 중인 항목의 원래 URL
+  const [wikiEditInput, setWikiEditInput] = useState("");
+  const [wikiEditTitleInput, setWikiEditTitleInput] = useState("");
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
 
   // 정렬
@@ -1076,6 +1079,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const newTicket = data.ticket as Ticket;
         setTickets(prev => [...prev, newTicket]);
 
+        // JIRA startDate → 킥오프 자동 등록 (기존 일정 없을 때만)
+        if (newTicket.startDate && !schedules[trimmed]?.find(r => r.role === "Kick-Off")) {
+          const kickoffRow: RoleSchedule = {
+            role: "Kick-Off",
+            person: "-",
+            start: newTicket.startDate,
+            end: newTicket.startDate,
+            status: "예정",
+          };
+          const updatedSchedules = {
+            ...schedules,
+            [trimmed]: [kickoffRow, ...(schedules[trimmed] ?? []).filter(r => r.role !== "Kick-Off")],
+          };
+          setSchedules(updatedSchedules);
+          fetch("/api/kv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: "cc-schedules", value: updatedSchedules }),
+          }).catch(() => {});
+        }
+
         // 완료 상태 티켓은 플래닝 자동 완료 처리
         if (["론치완료", "완료", "배포완료"].includes(newTicket.status)) {
           const updatedPlanning = { ...planning, [trimmed]: { design: "완료" as TrackState, dev: "완료" as TrackState } };
@@ -1186,6 +1210,28 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
     if (fetched.length > 0) {
       setTickets(prev => [...prev, ...fetched]);
+
+      // JIRA startDate → 킥오프 자동 등록 (기존 일정 없을 때만)
+      const ticketsWithStart = fetched.filter(t => t.startDate && !schedules[t.key]?.find(r => r.role === "Kick-Off"));
+      if (ticketsWithStart.length > 0) {
+        const updatedSchedules = { ...schedules };
+        for (const t of ticketsWithStart) {
+          const kickoffRow: RoleSchedule = {
+            role: "Kick-Off",
+            person: "-",
+            start: t.startDate!,
+            end: t.startDate!,
+            status: "예정",
+          };
+          updatedSchedules[t.key] = [kickoffRow, ...(schedules[t.key] ?? []).filter(r => r.role !== "Kick-Off")];
+        }
+        setSchedules(updatedSchedules);
+        fetch("/api/kv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-schedules", value: updatedSchedules }),
+        }).catch(() => {});
+      }
 
       // 완료 상태 티켓은 플래닝 자동 완료 처리
       const doneTickets = fetched.filter(t => ["론치완료", "완료", "배포완료"].includes(t.status));
@@ -2073,20 +2119,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }
 
-  function addWikiLink(ticketKey: string) {
+  async function addWikiLink(ticketKey: string) {
     const url = wikiInput.trim();
     if (!url) return;
     if (!/^https?:\/\//.test(url)) {
       setWikiError("올바른 URL을 입력해주세요 (https://...)");
       return;
     }
-    const title = wikiTitleInput.trim() || extractWikiTitle(url);
     const current = etrMap[ticketKey] ?? { source: "자체발의" as const };
     const prev = current.wikiLinks ?? [];
     if (prev.some(w => w.url === url)) {
       setWikiError("이미 추가된 링크입니다");
       return;
     }
+
+    // 제목: 직접 입력 > API 조회 > URL 파싱 fallback
+    let title = wikiTitleInput.trim();
+    if (!title) {
+      try {
+        const res = await fetch(`/api/fetch-title?url=${encodeURIComponent(url)}`);
+        const data = await res.json();
+        title = data.title || extractWikiTitle(url);
+      } catch {
+        title = extractWikiTitle(url);
+      }
+    }
+
     saveEtr({ ...etrMap, [ticketKey]: { ...current, wikiLinks: [...prev, { url, title }] } });
     setWikiInput("");
     setWikiTitleInput("");
@@ -2098,6 +2156,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const current = etrMap[ticketKey];
     if (!current) return;
     saveEtr({ ...etrMap, [ticketKey]: { ...current, wikiLinks: (current.wikiLinks ?? []).filter(w => w.url !== url) } });
+  }
+
+  async function updateWikiLink(ticketKey: string, originalUrl: string) {
+    const url = wikiEditInput.trim();
+    if (!url) return;
+    if (!url.startsWith("http")) { setWikiError("URL은 http로 시작해야 합니다."); return; }
+    const current = etrMap[ticketKey];
+    const prev = current?.wikiLinks ?? [];
+    if (url !== originalUrl && prev.some(w => w.url === url)) { setWikiError("이미 추가된 링크입니다"); return; }
+
+    // 제목: 직접 입력 > API 조회 > URL 파싱 fallback
+    let title = wikiEditTitleInput.trim();
+    if (!title) {
+      try {
+        const res = await fetch(`/api/fetch-title?url=${encodeURIComponent(url)}`);
+        const data = await res.json();
+        title = data.title || extractWikiTitle(url);
+      } catch {
+        title = extractWikiTitle(url);
+      }
+    }
+
+    const updated = prev.map(w => w.url === originalUrl ? { url, title } : w);
+    saveEtr({ ...etrMap, [ticketKey]: { ...(current ?? {}), wikiLinks: updated } });
+    setWikiEditUrl(null);
+    setWikiEditInput("");
+    setWikiEditTitleInput("");
+    setWikiError(null);
   }
 
   function handleSelect(t: Ticket) {
@@ -3174,28 +3260,83 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 {(etrMap[selected.key]?.wikiLinks ?? []).length > 0 && (
                   <div className="space-y-1.5 mb-2">
                     {(etrMap[selected.key]?.wikiLinks ?? []).map(w => (
-                      <div key={w.url} className="rounded-lg px-3 py-2.5 group" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
-                        <div className="flex items-start gap-2">
-                          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "#818cf8" }}>
-                            <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-                            <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
-                          </svg>
-                          <div className="flex-1 min-w-0">
-                            <a
-                              href={w.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block text-xs font-medium hover:underline leading-snug"
-                              style={{ color: "var(--text-primary)" }}
-                              title={w.url}
-                            >{w.title}</a>
-                            <p className="text-[10px] mt-0.5 truncate" style={{ color: "var(--text-subtle)" }}>{w.url}</p>
+                      <div key={w.url} className="rounded-lg group" style={{ background: "var(--bg-canvas)", border: `1px solid ${wikiEditUrl === w.url ? "#7c3aed" : "var(--border-2)"}` }}>
+                        {wikiEditUrl === w.url ? (
+                          /* 인라인 수정 폼 */
+                          <div className="space-y-1.5 p-2.5">
+                            <input
+                              autoFocus
+                              type="text"
+                              value={wikiEditInput}
+                              onChange={e => { setWikiEditInput(e.target.value); setWikiError(null); }}
+                              onKeyDown={e => e.key === "Enter" && updateWikiLink(selected.key, w.url)}
+                              placeholder="URL (https://...)"
+                              className="w-full rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                              style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                            />
+                            <div className="flex gap-1.5">
+                              <input
+                                type="text"
+                                value={wikiEditTitleInput}
+                                onChange={e => setWikiEditTitleInput(e.target.value)}
+                                onKeyDown={e => e.key === "Enter" && updateWikiLink(selected.key, w.url)}
+                                placeholder="제목 (비우면 URL에서 자동 추출)"
+                                className="flex-1 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                              />
+                              <button
+                                onClick={() => updateWikiLink(selected.key, w.url)}
+                                disabled={!wikiEditInput.trim()}
+                                className="px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 transition-colors"
+                                style={{ background: "#7c3aed", color: "#fff" }}
+                              >저장</button>
+                              <button
+                                onClick={() => { setWikiEditUrl(null); setWikiError(null); }}
+                                className="px-2.5 py-1.5 rounded text-xs transition-colors"
+                                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+                              >취소</button>
+                            </div>
+                            {wikiError && <p className="text-red-500 text-[11px]">{wikiError}</p>}
                           </div>
-                          <button
-                            onClick={() => removeWikiLink(selected.key, w.url)}
-                            className="hover:text-red-400 transition-colors shrink-0 opacity-0 group-hover:opacity-100 text-[13px]" style={{ color: "var(--text-subtle)" }}
-                          >×</button>
-                        </div>
+                        ) : (
+                          /* 일반 표시 */
+                          <div className="flex items-start gap-2 px-3 py-2.5">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "#818cf8" }}>
+                              <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                              <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
+                            </svg>
+                            <div className="flex-1 min-w-0">
+                              <a
+                                href={w.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block text-xs font-medium hover:underline leading-snug"
+                                style={{ color: "var(--text-primary)" }}
+                                title={w.url}
+                              >{w.title}</a>
+                              <p className="text-[10px] mt-0.5 truncate" style={{ color: "var(--text-subtle)" }}>{w.url}</p>
+                            </div>
+                            {/* 수정/삭제 버튼 — hover 시 노출 */}
+                            <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                              <button
+                                onClick={() => { setWikiEditUrl(w.url); setWikiEditInput(w.url); setWikiEditTitleInput(w.title); setWikiError(null); setWikiAddOpen(false); }}
+                                className="w-5 h-5 flex items-center justify-center rounded transition-colors text-[11px]"
+                                style={{ color: "var(--text-subtle)" }}
+                                title="수정"
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#a78bfa"; (e.currentTarget as HTMLElement).style.background = "rgba(124,58,237,0.1)"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-subtle)"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                              >✎</button>
+                              <button
+                                onClick={() => removeWikiLink(selected.key, w.url)}
+                                className="w-5 h-5 flex items-center justify-center rounded transition-colors text-[13px]"
+                                style={{ color: "var(--text-subtle)" }}
+                                title="삭제"
+                                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "#f87171"; (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)"; }}
+                                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-subtle)"; (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                              >×</button>
+                            </div>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
