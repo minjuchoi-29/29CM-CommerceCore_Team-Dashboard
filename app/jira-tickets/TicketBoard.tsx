@@ -1447,8 +1447,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [kvLoaded, fetching, tickets, planning]);
 
   useEffect(() => {
-    // 공유 데이터: KV에서 로드 (planning, schedules, memos, custom-keys, custom-tickets, planning-notes)
-    fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-custom-tickets,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates")
+    // 공유 데이터: KV에서 로드 (두 요청으로 분리 — 메인 데이터 / 커스텀 티켓)
+    // 1) 메인 메타데이터 (상대적으로 작은 데이터)
+    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-custom-keys,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -1457,12 +1458,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (data["cc-memos-v2"])   setMemoHistory(data["cc-memos-v2"]);
         if (data["cc-etr"])        setEtrMap(data["cc-etr"]);
         if (data["cc-agenda"])     setAgenda(new Set(data["cc-agenda"] as string[]));
-        if (data["cc-planning-notes"]) {
-          setPlanningNotes(data["cc-planning-notes"]);
-        }
-        if (data["cc-ticket-notes"]) {
-          setTicketNotes(data["cc-ticket-notes"]);
-        }
+        if (data["cc-planning-notes"]) setPlanningNotes(data["cc-planning-notes"]);
+        if (data["cc-ticket-notes"])   setTicketNotes(data["cc-ticket-notes"]);
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
@@ -1479,25 +1476,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const kvKeys: string[] = Array.isArray(data["cc-custom-keys"]) ? data["cc-custom-keys"] : [];
         setCustomKeys(new Set(kvKeys));
 
-        // custom tickets: KV에서만 로드
-        const kvTickets: Ticket[] = Array.isArray(data["cc-custom-tickets"]) ? data["cc-custom-tickets"] : [];
-        if (kvTickets.length > 0) {
-          setTickets(prev => {
-            const jiraKeys = new Set(prev.map(t => t.key));
-            const extra = kvTickets.filter(t => !jiraKeys.has(t.key));
-            return extra.length > 0 ? [...prev, ...extra] : prev;
-          });
-        }
         // cc-ticket-added-dates: 신규 티켓 추가 날짜 추적
         const savedDates: Record<string, string> = data["cc-ticket-added-dates"] ?? {};
         setTicketAddedDates(savedDates);
-
-        setKvLoaded(true);
       })
-      .catch(() => {
-        setKvLoaded(true);
-        // KV 실패 시 기본값으로 초기화 (localStorage 폴백 제거)
-      });
+      .catch(() => {});
+
+    // 2) 커스텀 티켓 (별도 요청 — 데이터가 커서 분리)
+    const customFetch = fetch("/api/kv?keys=cc-custom-tickets")
+      .then((r) => r.json())
+      .then((data) => {
+        const kvTickets: Ticket[] = Array.isArray(data["cc-custom-tickets"]) ? data["cc-custom-tickets"] : [];
+        if (kvTickets.length > 0) {
+          setTickets(prev => {
+            const existingKeys = new Set(prev.map(t => t.key));
+            const extra = kvTickets.filter(t => !existingKeys.has(t.key));
+            return extra.length > 0 ? [...prev, ...extra] : prev;
+          });
+        }
+      })
+      .catch(() => {});
+
+    // 두 요청 모두 완료되면 kvLoaded = true
+    Promise.allSettled([mainFetch, customFetch]).then(() => setKvLoaded(true));
   }, []);
 
   // 새로 추가된 티켓이 생기면 첫 번째 행으로 스크롤
@@ -1650,7 +1651,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [tickets]);
 
   const planningCounts = useMemo(() => {
-    const counts: Record<string, number> = { "전체": dedupedTickets.length, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0, "요청 검토 중": 0 };
+    // "전체"는 ETR 제외 (preFiltered와 동일 기준, 탭 카운트 = 실제 표시 행 수 일치)
+    const nonEtrCount = dedupedTickets.filter(t => !t.key.startsWith("ETR-")).length;
+    const counts: Record<string, number> = { "전체": nonEtrCount, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0, "요청 검토 중": 0 };
     for (const t of dedupedTickets) {
       // ETR 티켓은 "요청 검토 중"에만 집계
       if (t.key.startsWith("ETR-")) { counts["요청 검토 중"]++; continue; }
