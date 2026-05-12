@@ -1546,17 +1546,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   //   티켓 상세 열기   → pushState  (뒤로가기: 패널 닫힘)
   //   티켓 간 전환     → replaceState (뒤로가기: 패널 닫힘, 중간 티켓 스택 미생성)
   //   패널 닫기(X/토글)→ history.back() (pushState 역방향 소비)
+  //   펼치기/접기 토글 → replaceState (현재 항목 갱신, 별도 스택 미생성)
   //   페이지 최초 진입 → replaceState (히스토리 오염 없음)
+  // expanded 를 state에 포함: ticket=null 복원 시 항상 false, 티켓 열림 복원 시 저장값 사용
 
   // 최초 진입 시 현재 상태를 replaceState로 기록
   useEffect(() => {
-    window.history.replaceState({ tab: planningTab, ticket: null }, "");
+    window.history.replaceState({ tab: planningTab, ticket: null, expanded: false }, "");
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 탭 전환 — 유저 액션 전용 래퍼 (pushState 포함)
   function changeTab(newTab: string) {
     setPlanningTab(newTab);
-    window.history.pushState({ tab: newTab, ticket: null }, "");
+    window.history.pushState({ tab: newTab, ticket: null, expanded: false }, "");
   }
 
   // 새로 추가된 티켓이 생기면 첫 번째 행으로 스크롤
@@ -1711,19 +1713,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // popstate: 뒤로가기/앞으로가기 시 상태 복원 (dedupedTickets 선언 후 배치)
   useEffect(() => {
     const handler = (e: PopStateEvent) => {
-      const s = e.state as { tab?: string; ticket?: string | null } | null;
+      const s = e.state as { tab?: string; ticket?: string | null; expanded?: boolean } | null;
       if (!s) return;
       if (s.tab) setPlanningTab(s.tab);
       if (s.ticket) {
         const t = dedupedTickets.find(t => t.key === s.ticket);
         if (t) {
           setSelected(t);
+          setIsDetailExpanded(s.expanded ?? false);
           setEditMode(false);
           setMemoEditMode(false);
           setMemoText(getCurrentMemo(t.key)?.text ?? "");
         }
       } else {
         setSelected(null);
+        setIsDetailExpanded(false); // 패널 닫힐 때 항상 expanded 리셋 — 공백 방지
         setEditMode(false);
         setMemoEditMode(false);
       }
@@ -2186,10 +2190,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
     if (selected) {
       // 다른 티켓으로 전환: 히스토리 스택 중복 방지 → replace
-      window.history.replaceState({ tab: planningTab, ticket: t.key }, "");
+      window.history.replaceState({ tab: planningTab, ticket: t.key, expanded: isDetailExpanded }, "");
     } else {
       // 새로 열기 → push (뒤로가기로 닫을 수 있게)
-      window.history.pushState({ tab: planningTab, ticket: t.key }, "");
+      window.history.pushState({ tab: planningTab, ticket: t.key, expanded: isDetailExpanded }, "");
     }
 
     setSelected(t);
@@ -3148,7 +3152,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           >
             <button
               onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setIsDetailExpanded(v => !v)}
+              onClick={() => {
+                const next = !isDetailExpanded;
+                setIsDetailExpanded(next);
+                // 현재 히스토리 항목에 expanded 상태 갱신 (별도 스택 미생성)
+                window.history.replaceState(
+                  { ...(window.history.state ?? {}), expanded: next }, ""
+                );
+              }}
               title={isDetailExpanded ? "접기" : "펼치기"}
               className="absolute top-1/2 -translate-y-1/2 -left-3 w-6 h-12 rounded-full flex items-center justify-center transition-all z-20 text-xs"
               style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
