@@ -1540,6 +1540,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     Promise.allSettled([mainFetch, customFetch]).then(() => setKvLoaded(true));
   }, []);
 
+  // ── 브라우저 히스토리 관리 ─────────────────────────────────────
+  // 정의:
+  //   탭 전환          → pushState  (뒤로가기: 이전 탭 복원)
+  //   티켓 상세 열기   → pushState  (뒤로가기: 패널 닫힘)
+  //   티켓 간 전환     → replaceState (뒤로가기: 패널 닫힘, 중간 티켓 스택 미생성)
+  //   패널 닫기(X/토글)→ history.back() (pushState 역방향 소비)
+  //   페이지 최초 진입 → replaceState (히스토리 오염 없음)
+
+  // 최초 진입 시 현재 상태를 replaceState로 기록
+  useEffect(() => {
+    window.history.replaceState({ tab: planningTab, ticket: null }, "");
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 탭 전환 — 유저 액션 전용 래퍼 (pushState 포함)
+  function changeTab(newTab: string) {
+    setPlanningTab(newTab);
+    window.history.pushState({ tab: newTab, ticket: null }, "");
+  }
+
   // 새로 추가된 티켓이 생기면 첫 번째 행으로 스크롤
   useEffect(() => {
     if (newlyAddedKeys.size === 0) return;
@@ -1688,6 +1707,30 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       return true;
     });
   }, [tickets]);
+
+  // popstate: 뒤로가기/앞으로가기 시 상태 복원 (dedupedTickets 선언 후 배치)
+  useEffect(() => {
+    const handler = (e: PopStateEvent) => {
+      const s = e.state as { tab?: string; ticket?: string | null } | null;
+      if (!s) return;
+      if (s.tab) setPlanningTab(s.tab);
+      if (s.ticket) {
+        const t = dedupedTickets.find(t => t.key === s.ticket);
+        if (t) {
+          setSelected(t);
+          setEditMode(false);
+          setMemoEditMode(false);
+          setMemoText(getCurrentMemo(t.key)?.text ?? "");
+        }
+      } else {
+        setSelected(null);
+        setEditMode(false);
+        setMemoEditMode(false);
+      }
+    };
+    window.addEventListener("popstate", handler);
+    return () => window.removeEventListener("popstate", handler);
+  }, [dedupedTickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const planningCounts = useMemo(() => {
     // "전체"는 ETR 제외 (preFiltered와 동일 기준, 탭 카운트 = 실제 표시 행 수 일치)
@@ -2134,7 +2177,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   function handleSelect(t: Ticket) {
     const isSame = selected?.key === t.key;
-    setSelected(isSame ? null : t);
+
+    if (isSame) {
+      // 같은 티켓 재클릭 = 닫기 → 히스토리 되감기
+      window.history.back();
+      return;
+    }
+
+    if (selected) {
+      // 다른 티켓으로 전환: 히스토리 스택 중복 방지 → replace
+      window.history.replaceState({ tab: planningTab, ticket: t.key }, "");
+    } else {
+      // 새로 열기 → push (뒤로가기로 닫을 수 있게)
+      window.history.pushState({ tab: planningTab, ticket: t.key }, "");
+    }
+
+    setSelected(t);
     setEditMode(false);
     setMemoEditMode(false);
     setMemoCollapsed(true);
@@ -2144,11 +2202,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setNoteInput("");
     setEtrInput("");
     setEtrError(null);
-    if (!isSame) {
-      setMemoText(getCurrentMemo(t.key)?.text ?? "");
-      const p = getPlanningVal(planning[t.key]);
-      setPlanningOpen(!(p.design === "완료" && p.dev === "완료"));
-    }
+    setMemoText(getCurrentMemo(t.key)?.text ?? "");
+    const p = getPlanningVal(planning[t.key]);
+    setPlanningOpen(!(p.design === "완료" && p.dev === "완료"));
   }
 
   if (fetching && tickets.length === 0) {
@@ -2300,7 +2356,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             return (
               <button
                 key={key}
-                onClick={() => setPlanningTab(key)}
+                onClick={() => changeTab(key)}
                 title={desc}
                 className="flex-1 py-2.5 px-3 rounded-xl text-sm font-semibold transition-all"
                 style={{
@@ -2785,7 +2841,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <div
                   key={t.key}
                   data-ticket-key={t.key}
-                  className={`cursor-pointer transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""}`}
+                  className={`transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""} ${isDetailExpanded ? "" : "cursor-pointer"}`}
                   style={{
                     borderBottom: "1px solid var(--border)",
                     borderLeft: etaWarnLevel === "overdue" ? "3px solid #f87171"
@@ -2793,7 +2849,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               : "3px solid transparent",
                     background: rowBg,
                   }}
-                  onClick={() => handleSelect(t)}
+                  onClick={isDetailExpanded ? undefined : () => handleSelect(t)}
                   onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-item)"; }}
                   onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = rowBg ?? ""; }}
                 >
@@ -2802,16 +2858,33 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="flex items-center px-4 py-3"
                   >
                     {isDetailExpanded ? (
-                      /* 축소 뷰: 티켓 번호만 */
-                      <a
-                        href={`${JIRA_BASE}${t.key}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={(e) => e.stopPropagation()}
-                        className="flex-1 min-w-0 font-mono text-xs text-blue-500 hover:underline truncate"
-                      >
-                        {t.key}
-                      </a>
+                      /* 축소 뷰: JIRA 링크 + 상세 보기 버튼 분리 */
+                      <>
+                        <a
+                          href={`${JIRA_BASE}${t.key}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="flex-1 min-w-0 font-mono text-xs text-blue-500 hover:underline truncate"
+                          title="JIRA에서 열기"
+                        >
+                          {t.key}
+                        </a>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleSelect(t); }}
+                          title={isSelected ? "상세 닫기" : "상세 보기"}
+                          className="shrink-0 ml-1 w-5 h-5 flex items-center justify-center rounded transition-colors"
+                          style={{
+                            color: isSelected ? "var(--text-primary)" : "var(--text-muted)",
+                            background: isSelected ? "var(--bg-item-alt)" : "transparent",
+                          }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                            <rect x="1" y="1" width="10" height="10" rx="1.5" stroke="currentColor" strokeWidth="1.2"/>
+                            <path d="M4.5 4.5h3M4.5 6h3M4.5 7.5h2" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
+                          </svg>
+                        </button>
+                      </>
                     ) : (
                       /* 기본 뷰: 전체 컬럼 */
                       <>
@@ -3111,7 +3184,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 })()}
               </div>
               <button
-                onClick={() => { setSelected(null); setEditMode(false); }}
+                onClick={() => window.history.back()}
                 className="text-lg leading-none shrink-0" style={{ color: "var(--text-muted)" }}
               >×</button>
             </div>
