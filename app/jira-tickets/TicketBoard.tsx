@@ -4,22 +4,22 @@ import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "rea
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
 const STATUS_COLOR: Record<string, string> = {
-  "론치완료": "bg-emerald-900/40 text-emerald-400 border border-emerald-700/40",
-  "완료": "bg-emerald-900/40 text-emerald-400 border border-emerald-700/40",
-  "배포완료": "bg-emerald-900/40 text-emerald-400 border border-emerald-700/40",
-  "개발중": "bg-blue-900/40 text-blue-400 border border-blue-700/40",
-  "In Progress": "bg-blue-900/40 text-blue-400 border border-blue-700/40",
-  "QA중": "bg-amber-900/40 text-amber-400 border border-amber-700/40",
-  "디자인완료": "bg-purple-900/40 text-purple-400 border border-purple-700/40",
-  "기획중": "bg-orange-900/40 text-orange-400 border border-orange-700/40",
-  "기획완료": "bg-teal-900/40 text-teal-400 border border-teal-700/40",
-  "SUGGESTED": "bg-gray-800/60 text-gray-400 border border-gray-700/40",
-  "HOLD": "bg-yellow-900/40 text-yellow-400 border border-yellow-700/40",
-  "Postponed": "bg-yellow-900/40 text-yellow-400 border border-yellow-700/40",
-  "철회/반려/취소": "bg-red-900/40 text-red-400 border border-red-700/40",
-  "준비중": "bg-yellow-900/30 text-yellow-300 border border-yellow-700/30",
-  "디자인중": "bg-purple-900/30 text-purple-300 border border-purple-700/30",
-  "Backlog": "bg-gray-800/40 text-gray-500 border border-gray-700/30",
+  "론치완료": "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700/40",
+  "완료":     "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700/40",
+  "배포완료": "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700/40",
+  "개발중":   "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700/40",
+  "In Progress": "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700/40",
+  "QA중":     "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-700/40",
+  "디자인완료": "bg-purple-100 dark:bg-purple-900/40 text-purple-700 dark:text-purple-400 border border-purple-300 dark:border-purple-700/40",
+  "기획중":   "bg-orange-100 dark:bg-orange-900/40 text-orange-700 dark:text-orange-400 border border-orange-300 dark:border-orange-700/40",
+  "기획완료": "bg-teal-100 dark:bg-teal-900/40 text-teal-700 dark:text-teal-400 border border-teal-300 dark:border-teal-700/40",
+  "SUGGESTED": "bg-gray-100 dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-gray-700/40",
+  "HOLD":     "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400 border border-yellow-300 dark:border-yellow-700/40",
+  "Postponed": "bg-yellow-100 dark:bg-yellow-900/40 text-yellow-700 dark:text-yellow-400 border border-yellow-300 dark:border-yellow-700/40",
+  "철회/반려/취소": "bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-400 border border-red-300 dark:border-red-700/40",
+  "준비중":   "bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-300 border border-yellow-200 dark:border-yellow-700/30",
+  "디자인중": "bg-purple-50 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 border border-purple-200 dark:border-purple-700/30",
+  "Backlog":  "bg-gray-100 dark:bg-gray-800/40 text-gray-500 dark:text-gray-500 border border-gray-200 dark:border-gray-700/30",
 };
 
 const ROLE_COLOR: Record<string, string> = {
@@ -77,9 +77,9 @@ type MemoVersion = {
 };
 
 const TYPE_COLOR: Record<string, string> = {
-  "Initiative": "bg-violet-900/40 text-violet-400 border border-violet-700/40",
-  "Epic":       "bg-blue-900/40 text-blue-400 border border-blue-700/40",
-  "Dev":        "bg-gray-800/60 text-gray-400 border border-gray-700/40",
+  "Initiative": "bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-400 border border-violet-300 dark:border-violet-700/40",
+  "Epic":       "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700/40",
+  "Dev":        "bg-gray-100 dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 border border-gray-300 dark:border-gray-700/40",
 };
 
 export type Ticket = {
@@ -484,10 +484,11 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
       </div>
 
       {pastDoneRoles.length > 0 && (
-        <div className="mt-3 border-t border-gray-800 pt-2">
+        <div className="mt-3 border-t border-gray-800 pt-2" style={{ borderColor: "var(--border)" }}>
           <button
             onClick={() => setShowPastDone(v => !v)}
-            className="flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-300 transition-colors"
+            className="flex items-center gap-1.5 text-sm transition-colors"
+            style={{ color: "var(--text-muted)" }}
           >
             <span>{effectiveShowPastDone ? "▾" : "▸"}</span>
             <span>이전 완료 일정 {pastDoneRoles.length}건</span>
@@ -542,9 +543,9 @@ const MILESTONE_KO: Record<string, string> = {
   "Launch":   "론치",
 };
 const MILESTONE_CHIP: Record<string, string> = {
-  "Kick-Off": "bg-indigo-50 text-indigo-600 border-indigo-200",
-  "Release":  "bg-orange-50 text-orange-600 border-orange-200",
-  "Launch":   "bg-green-50 text-green-700 border-green-200",
+  "Kick-Off": "bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-700/40",
+  "Release":  "bg-orange-50 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-700/40",
+  "Launch":   "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 border-green-200 dark:border-green-700/40",
 };
 const MILESTONE_DOT: Record<string, string> = {
   "Kick-Off": "bg-indigo-500",
@@ -624,12 +625,12 @@ function HealthBadge({ value }: { value: string }) {
   const isRed    = ["레드", "red", "위험", "danger", "critical", "bad"].some(k => v.includes(k));
   const dotCls = isGreen ? "bg-green-500" : isYellow ? "bg-yellow-400" : isRed ? "bg-red-500" : "bg-gray-400";
   const badgeCls = isGreen
-    ? "bg-green-50 text-green-700 border-green-200"
+    ? "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 border-green-200 dark:border-green-700/40"
     : isYellow
-    ? "bg-yellow-50 text-yellow-700 border-yellow-200"
+    ? "bg-yellow-50 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 border-yellow-200 dark:border-yellow-700/40"
     : isRed
-    ? "bg-red-50 text-red-700 border-red-200"
-    : "bg-gray-100 text-gray-600 border-gray-200";
+    ? "bg-red-50 dark:bg-red-900/30 text-red-700 dark:text-red-400 border-red-200 dark:border-red-700/40"
+    : "bg-gray-100 dark:bg-gray-800/60 text-gray-600 dark:text-gray-400 border-gray-200 dark:border-gray-700/40";
   return (
     <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-xs font-medium ${badgeCls}`}>
       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotCls}`} />
@@ -2066,13 +2067,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   if (fetching && tickets.length === 0) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+      <div className="flex items-center justify-center min-h-screen" style={{ background: "var(--bg-canvas)" }}>
         <div className="text-center">
           <svg className="w-8 h-8 animate-spin text-indigo-400 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          <p className="text-sm text-gray-400">JIRA에서 티켓 불러오는 중…</p>
-          <p className="text-xs text-gray-300 mt-1">응답 없으면 20초 후 자동 종료됩니다</p>
+          <p className="text-sm" style={{ color: "var(--text-muted)" }}>JIRA에서 티켓 불러오는 중…</p>
+          <p className="text-xs mt-1" style={{ color: "var(--text-subtle)" }}>응답 없으면 20초 후 자동 종료됩니다</p>
         </div>
       </div>
     );
@@ -2146,7 +2147,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
         </div>
         {fetchError && (
-          <div className="mb-4 px-4 py-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-600 font-mono break-all">
+          <div className="mb-4 px-4 py-2.5 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-700/40 rounded-lg text-xs text-red-600 dark:text-red-400 font-mono break-all">
             {fetchError}
           </div>
         )}
@@ -2303,17 +2304,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         {/* 아젠다 미팅 서브 뷰 토글 */}
         {agenda.size > 0 && (
-          <div className="flex items-center gap-2 mb-4 p-2.5 bg-orange-50 border border-orange-200 rounded-xl">
-            <span className="text-xs text-orange-600 font-medium mr-1">미팅 모드:</span>
+          <div className="flex items-center gap-2 mb-4 p-2.5 bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-700/30 rounded-xl">
+            <span className="text-xs text-orange-600 dark:text-orange-400 font-medium mr-1">미팅 모드:</span>
             <button
               onClick={() => setAgendaView(false)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${!agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white border border-orange-200 text-orange-600 hover:bg-orange-50"}`}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${!agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white dark:bg-transparent border border-orange-200 dark:border-orange-700/40 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20"}`}
             >
               플래닝 현황
             </button>
             <button
               onClick={() => setAgendaView(true)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white border border-orange-200 text-orange-600 hover:bg-orange-50"}`}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white dark:bg-transparent border border-orange-200 dark:border-orange-700/40 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20"}`}
             >
               🗓 아젠다 미팅
               <span className="ml-1 opacity-80">({agenda.size})</span>
@@ -2321,7 +2322,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {agendaView && (
               <button
                 onClick={() => { saveAgenda(new Set()); setAgendaView(false); }}
-                className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold bg-white border border-red-200 text-red-500 hover:bg-red-50 transition-all"
+                className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-transparent border border-red-200 dark:border-red-700/40 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
               >
                 미팅 종료 ✕
               </button>
@@ -2473,19 +2474,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         {/* 아젠다 미팅 뷰 */}
         {agendaView && (
-          <div className="bg-white rounded-xl border border-orange-200 overflow-hidden mb-4">
-            <div className="px-4 py-3 bg-orange-50 border-b border-orange-200 flex items-center gap-2">
-              <span className="text-sm font-bold text-orange-700">🗓 아젠다 미팅</span>
-              <span className="text-xs text-orange-500">— 논의할 티켓을 순서대로 확인하고 플래닝 상태를 업데이트하세요</span>
+          <div className="rounded-xl border border-orange-200 dark:border-orange-700/30 overflow-hidden mb-4" style={{ background: "var(--bg-canvas)" }}>
+            <div className="px-4 py-3 bg-orange-50 dark:bg-orange-900/15 border-b border-orange-200 dark:border-orange-700/30 flex items-center gap-2">
+              <span className="text-sm font-bold text-orange-700 dark:text-orange-400">🗓 아젠다 미팅</span>
+              <span className="text-xs text-orange-500 dark:text-orange-400/70">— 논의할 티켓을 순서대로 확인하고 플래닝 상태를 업데이트하세요</span>
             </div>
             {tickets.filter(t => agenda.has(t.key)).length === 0 ? (
-              <div className="py-10 text-center text-sm text-gray-400">아젠다에 등록된 티켓이 없습니다.</div>
+              <div className="py-10 text-center text-sm" style={{ color: "var(--text-muted)" }}>아젠다에 등록된 티켓이 없습니다.</div>
             ) : (
               tickets.filter(t => agenda.has(t.key)).map((t, idx) => {
                 const p = getPlanningVal(planning[t.key]);
                 const isDiscussed = p.design === "완료" && p.dev === "완료";
                 return (
-                  <div key={t.key} className={`border-b border-orange-100 last:border-0 transition-colors ${isDiscussed ? "bg-green-50" : "bg-white"}`}>
+                  <div key={t.key} className={`border-b border-orange-100 dark:border-orange-700/20 last:border-0 transition-colors ${isDiscussed ? "bg-green-50 dark:bg-green-900/10" : ""}`} style={isDiscussed ? {} : { background: "var(--bg-canvas)" }}>
                     <div className="flex items-start gap-3 px-4 py-3">
                       <span className="shrink-0 w-5 text-center text-xs text-orange-400 font-mono mt-1">{idx + 1}</span>
                       <div className="flex-1 min-w-0">
@@ -2498,13 +2499,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >
                             {t.key}
                           </a>
-                          <span className="text-sm font-medium text-gray-800 truncate">{t.summary}</span>
+                          <span className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>{t.summary}</span>
                           {isDiscussed && (
-                            <span className="shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700 border border-green-200">논의 완료</span>
+                            <span className="shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-700/40">논의 완료</span>
                           )}
                         </div>
                         <div className="flex items-center gap-3 flex-wrap">
-                          <span className="text-xs text-gray-500">디자인</span>
+                          <span className="text-xs text-gray-500 dark:text-gray-500">디자인</span>
                           <div className="flex gap-1">
                             {TRACK_STATES.map(s => (
                               <button
@@ -2512,13 +2513,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 onClick={() => savePlanning(t.key, "design", s)}
                                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${p.design === s
                                   ? s === "완료" ? "bg-green-500 text-white border-green-500" : s === "검토중" ? "bg-violet-500 text-white border-violet-500" : "bg-gray-500 text-white border-gray-500"
-                                  : "bg-white text-gray-400 border-gray-200 hover:border-gray-400"}`}
+                                  : "bg-white dark:bg-transparent text-gray-500 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500"}`}
                               >
                                 {s}
                               </button>
                             ))}
                           </div>
-                          <span className="text-xs text-gray-500 ml-2">개발</span>
+                          <span className="text-xs text-gray-500 dark:text-gray-500 ml-2">개발</span>
                           <div className="flex gap-1">
                             {TRACK_STATES.map(s => (
                               <button
@@ -2526,7 +2527,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 onClick={() => savePlanning(t.key, "dev", s)}
                                 className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${p.dev === s
                                   ? s === "완료" ? "bg-green-500 text-white border-green-500" : s === "검토중" ? "bg-blue-500 text-white border-blue-500" : "bg-gray-500 text-white border-gray-500"
-                                  : "bg-white text-gray-400 border-gray-200 hover:border-gray-400"}`}
+                                  : "bg-white dark:bg-transparent text-gray-500 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500"}`}
                               >
                                 {s}
                               </button>
@@ -2534,7 +2535,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           </div>
                           <button
                             onClick={() => toggleAgenda(t.key)}
-                            className="ml-auto shrink-0 text-xs text-gray-300 hover:text-orange-400 transition-colors"
+                            className="ml-auto shrink-0 text-xs text-gray-400 dark:text-gray-500 hover:text-orange-400 transition-colors"
                             title="아젠다에서 제거"
                           >
                             ✕ 제거

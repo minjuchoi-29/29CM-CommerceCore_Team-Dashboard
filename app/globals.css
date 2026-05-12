@@ -1,5 +1,8 @@
 @import "tailwindcss";
 
+/* Tailwind dark: 클래스를 data-theme="dark" 속성과 연동 */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* ── Theme Variables ── */
 :root,
 [data-theme="dark"] {
@@ -55,8 +58,43 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+/* ── Light mode: Tailwind 유틸리티 클래스 대비 보정 ── */
+[data-theme="light"] .text-gray-300 { color: #57606a; }
+[data-theme="light"] .text-gray-400 { color: #57606a; }
+[data-theme="light"] .text-gray-500 { color: #6e7781; }
+[data-theme="light"] .text-gray-800 { color: #1f2328; }
+[data-theme="light"] .hover\:text-gray-300:hover { color: #57606a; }
+[data-theme="light"] .border-gray-800 { border-color: #d0d7de; }
+[data-theme="light"] .bg-gray-900 { background-color: #1f2328; } /* tooltip은 유지 */
+
+/* ── Dark mode: 라이트 계열 배경/텍스트 보정 ── */
+[data-theme="dark"] .bg-white { background-color: var(--bg-item); }
+[data-theme="dark"] .text-gray-800 { color: var(--text-primary); }
+[data-theme="dark"] .border-gray-200 { border-color: var(--border-2); }
+[data-theme="dark"] .hover\:border-gray-400:hover { border-color: var(--text-muted); }
+[data-theme="dark"] .bg-orange-50 { background-color: rgba(249,115,22,0.08); }
+[data-theme="dark"] .border-orange-200 { border-color: rgba(249,115,22,0.25); }
+[data-theme="dark"] .text-orange-600 { color: #fb923c; }
+[data-theme="dark"] .hover\:bg-orange-50:hover { background-color: rgba(249,115,22,0.15); }
+[data-theme="dark"] .bg-red-50 { background-color: rgba(239,68,68,0.08); }
+[data-theme="dark"] .border-red-200 { border-color: rgba(239,68,68,0.25); }
+[data-theme="dark"] .text-red-700 { color: #f87171; }
+[data-theme="dark"] .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.12); }
+[data-theme="dark"] .bg-green-100 { background-color: rgba(34,197,94,0.1); }
+[data-theme="dark"] .border-green-200 { border-color: rgba(34,197,94,0.25); }
+[data-theme="dark"] .text-green-700 { color: #34d399; }
+[data-theme="dark"] .text-green-800 { color: #34d399; }
+[data-theme="dark"] .bg-yellow-50 { background-color: rgba(234,179,8,0.08); }
+[data-theme="dark"] .border-yellow-200 { border-color: rgba(234,179,8,0.2); }
+[data-theme="dark"] .text-yellow-700 { color: #fbbf24; }
+[data-theme="dark"] .bg-indigo-50 { background-color: rgba(99,102,241,0.1); }
+[data-theme="dark"] .border-indigo-200 { border-color: rgba(99,102,241,0.3); }
+[data-theme="dark"] .text-indigo-600 { color: #818cf8; }
+[data-theme="dark"] .hover\:bg-indigo-50:hover { background-color: rgba(99,102,241,0.15); }
+
 /* 날짜 input 캘린더 아이콘 — 크기·색상 강화 */
-input[type="date"]::-webkit-calendar-picker-indicator {
+/* 다크모드: 아이콘 밝게 */
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator {
   width: 18px;
   height: 18px;
   padding: 2px;
@@ -66,13 +104,27 @@ input[type="date"]::-webkit-calendar-picker-indicator {
   opacity: 0.7;
   transition: opacity 0.15s, filter 0.15s;
 }
-
-input[type="date"]::-webkit-calendar-picker-indicator:hover {
+[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
   filter: invert(70%) sepia(40%) saturate(800%) hue-rotate(200deg) brightness(140%);
 }
-
-input[type="date"]:focus::-webkit-calendar-picker-indicator {
+[data-theme="dark"] input[type="date"]:focus::-webkit-calendar-picker-indicator {
   opacity: 1;
   filter: invert(65%) sepia(60%) saturate(1000%) hue-rotate(210deg) brightness(160%);
+}
+
+/* 라이트모드: 아이콘 자연색 */
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator {
+  width: 18px;
+  height: 18px;
+  padding: 2px;
+  border-radius: 4px;
+  cursor: pointer;
+  filter: invert(30%) sepia(20%) saturate(400%) hue-rotate(190deg) brightness(90%);
+  opacity: 0.6;
+  transition: opacity 0.15s, filter 0.15s;
+}
+[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+  filter: invert(30%) sepia(40%) saturate(600%) hue-rotate(210deg) brightness(80%);
 }
