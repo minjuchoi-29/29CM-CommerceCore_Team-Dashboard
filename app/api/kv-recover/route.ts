@@ -1,12 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
-import { TICKET_OVERRIDES } from "@/app/jira-tickets/tickets-data";
+import { TICKET_OVERRIDES, TICKET_KEYS } from "@/app/jira-tickets/tickets-data";
 
 export const dynamic = "force-dynamic";
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 const FETCH_TIMEOUT_MS = 15_000;
+
+// TICKET_KEYS에 포함된 배치 티켓 — cc-custom-keys 복원 대상에서 제외
+const BATCH_TICKET_KEYS = new Set(TICKET_KEYS);
 
 /** customfield URL 값 추출 — 문자열이면 그대로, 객체면 url/href 키 사용 */
 function extractUrl(val: unknown): string | undefined {
@@ -122,8 +125,9 @@ async function fetchJiraTicket(key: string): Promise<Ticket | null> {
   }
 }
 
-function isNonTMKey(key: string): boolean {
-  return /^[A-Z][A-Z0-9]*-\d+$/.test(key) && !key.startsWith("TM-");
+/** JIRA 티켓 키 형식 검증 (배치 티켓은 제외) */
+function isValidCustomKey(key: string): boolean {
+  return /^[A-Z][A-Z0-9]*-\d+$/.test(key) && !BATCH_TICKET_KEYS.has(key);
 }
 
 export async function POST(req: NextRequest) {
@@ -140,81 +144,131 @@ export async function POST(req: NextRequest) {
   const { dryRun = false } = body;
 
   try {
-    // Step 1: Read cc-etr to extract ETR/OPS ticket keys from etrTickets arrays
+    const allKeys = new Set<string>();
+    const sources: Record<string, string[]> = {};
+
+    // ── Source 1: cc-custom-keys (현재 KV — 일부만 남아있을 수 있음) ───────
+    console.log("Reading cc-custom-keys...");
+    const existingCustomKeys = await redis.get<string[]>("cc-custom-keys");
+    const customKeysList: string[] = [];
+    if (Array.isArray(existingCustomKeys)) {
+      existingCustomKeys.forEach(key => {
+        if (typeof key === "string" && isValidCustomKey(key)) {
+          allKeys.add(key);
+          customKeysList.push(key);
+        }
+      });
+    }
+    sources["cc-custom-keys"] = customKeysList;
+
+    // ── Source 2: cc-ticket-added-dates (전체 키 포함, 배치 티켓만 제외) ──
+    console.log("Reading cc-ticket-added-dates...");
+    const ticketAddedDates = await redis.get<Record<string, any>>("cc-ticket-added-dates");
+    const addedKeysList: string[] = [];
+    if (ticketAddedDates && typeof ticketAddedDates === "object") {
+      Object.keys(ticketAddedDates).forEach(key => {
+        if (isValidCustomKey(key)) {
+          allKeys.add(key);
+          addedKeysList.push(key);
+        }
+      });
+    }
+    sources["cc-ticket-added-dates"] = addedKeysList;
+
+    // ── Source 3: cc-planning (가장 광범위 — 대부분의 커스텀 티켓 포함) ─────
+    console.log("Reading cc-planning...");
+    const planningData = await redis.get<Record<string, any>>("cc-planning");
+    const planningKeysList: string[] = [];
+    if (planningData && typeof planningData === "object") {
+      Object.keys(planningData).forEach(key => {
+        if (isValidCustomKey(key)) {
+          allKeys.add(key);
+          planningKeysList.push(key);
+        }
+      });
+    }
+    sources["cc-planning"] = planningKeysList;
+
+    // ── Source 4: cc-schedules (스케줄 데이터가 있는 티켓) ──────────────────
+    console.log("Reading cc-schedules...");
+    const schedulesData = await redis.get<Record<string, any>>("cc-schedules");
+    const schedulesKeysList: string[] = [];
+    if (schedulesData && typeof schedulesData === "object") {
+      Object.keys(schedulesData).forEach(key => {
+        if (isValidCustomKey(key)) {
+          allKeys.add(key);
+          schedulesKeysList.push(key);
+        }
+      });
+    }
+    sources["cc-schedules"] = schedulesKeysList;
+
+    // ── Source 5: cc-memos-v2 (메모가 있는 티켓) ────────────────────────────
+    console.log("Reading cc-memos-v2...");
+    const memosData = await redis.get<Record<string, any>>("cc-memos-v2");
+    const memosKeysList: string[] = [];
+    if (memosData && typeof memosData === "object") {
+      Object.keys(memosData).forEach(key => {
+        if (isValidCustomKey(key)) {
+          allKeys.add(key);
+          memosKeysList.push(key);
+        }
+      });
+    }
+    sources["cc-memos-v2"] = memosKeysList;
+
+    // ── Source 6: cc-etr (ETR 티켓 참조) ─────────────────────────────────────
     console.log("Reading cc-etr...");
     const etrData = await redis.get<Record<string, any>>("cc-etr");
-    const etrKeys = new Set<string>();
-
+    const etrKeysList: string[] = [];
     if (etrData && typeof etrData === "object") {
       Object.values(etrData).forEach(entry => {
         if (entry && typeof entry === "object" && Array.isArray(entry.etrTickets)) {
-          // etrTickets는 { key: string, ... } 객체 배열
           entry.etrTickets.forEach((item: unknown) => {
             const k = typeof item === "string" ? item
                     : (item && typeof item === "object" ? (item as Record<string, unknown>).key as string : null);
-            if (k && isNonTMKey(k)) etrKeys.add(k);
+            if (k && isValidCustomKey(k)) {
+              allKeys.add(k);
+              etrKeysList.push(k);
+            }
           });
         }
       });
     }
+    sources["cc-etr"] = [...new Set(etrKeysList)];
 
-    // Step 2: Read cc-ticket-added-dates to extract non-TM ticket keys
-    console.log("Reading cc-ticket-added-dates...");
-    const ticketAddedDates = await redis.get<Record<string, any>>("cc-ticket-added-dates");
-    const addedKeys = new Set<string>();
-
-    if (ticketAddedDates && typeof ticketAddedDates === "object") {
-      Object.keys(ticketAddedDates).forEach(key => {
-        if (isNonTMKey(key)) {
-          addedKeys.add(key);
-        }
-      });
-    }
-
-    // Step 3: Read cc-custom-keys from KV (might be empty)
-    console.log("Reading cc-custom-keys...");
-    const existingCustomKeys = await redis.get<string[]>("cc-custom-keys");
-    const customKeys = new Set<string>();
-
-    if (Array.isArray(existingCustomKeys)) {
-      existingCustomKeys.forEach(key => {
-        if (typeof key === "string" && isNonTMKey(key)) {
-          customKeys.add(key);
-        }
-      });
-    }
-
-    // Step 4: Combine all unique non-TM keys found
-    const allKeys = new Set([...etrKeys, ...addedKeys, ...customKeys]);
     const allKeysArray = Array.from(allKeys).sort();
-
-    console.log(`Found keys - ETR: ${etrKeys.size}, Added: ${addedKeys.size}, Custom: ${customKeys.size}, Total unique: ${allKeys.size}`);
+    console.log(`총 복구 대상: ${allKeysArray.length}개`);
+    console.log("소스별 건수:", Object.entries(sources).map(([k, v]) => `${k}:${v.length}`).join(", "));
 
     if (dryRun) {
       return NextResponse.json({
         dryRun: true,
         summary: {
-          etrKeys: Array.from(etrKeys).sort(),
-          addedKeys: Array.from(addedKeys).sort(),
-          customKeys: Array.from(customKeys).sort(),
           allKeys: allKeysArray,
           totalKeys: allKeys.size,
+          sources: Object.fromEntries(
+            Object.entries(sources).map(([k, v]) => [k, [...new Set(v)].sort()])
+          ),
         },
       });
     }
 
-    // Step 5: For each key, fetch ticket data from JIRA
-    console.log(`Fetching ticket data for ${allKeysArray.length} keys...`);
-    const ticketList: Ticket[] = [];  // cc-custom-tickets는 배열 형식
-    const fetchedKeys: string[] = [];
+    // ── 기존 cc-custom-tickets 읽어 safe-merge 기반으로 복구 ────────────────
+    console.log("Reading existing cc-custom-tickets for safe-merge...");
+    const existingTickets = await redis.get<Ticket[]>("cc-custom-tickets") ?? [];
+    const existingByKey = new Map(existingTickets.map(t => [t.key, t]));
+
+    // 순차 fetch (병렬 시 Vercel timeout 위험 — 안전성 우선)
+    console.log(`Fetching ${allKeysArray.length} tickets from JIRA (sequential)...`);
+    const fetchedByKey = new Map<string, Ticket>();
     const failedKeys: string[] = [];
 
     for (const key of allKeysArray) {
       try {
         const ticket = await fetchJiraTicket(key);
         if (ticket) {
-          ticketList.push(ticket);
-          fetchedKeys.push(key);
+          fetchedByKey.set(key, ticket);
         } else {
           failedKeys.push(key);
         }
@@ -224,32 +278,35 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    console.log(`Fetched ${fetchedKeys.length} tickets successfully, ${failedKeys.length} failed`);
+    // SAFE-MERGE: fetch 성공 = 새 데이터, 실패 = 기존 KV 데이터 보존
+    const mergedTickets: Ticket[] = allKeysArray
+      .map(key => fetchedByKey.get(key) ?? existingByKey.get(key))
+      .filter((t): t is Ticket => t !== undefined);
 
-    // Step 6: cc-custom-tickets(배열)와 cc-custom-keys 저장
-    if (fetchedKeys.length > 0) {
-      console.log("Saving to KV...");
-      await Promise.all([
-        redis.set("cc-custom-tickets", ticketList),   // Ticket[] 배열로 저장
-        redis.set("cc-custom-keys", fetchedKeys),
-      ]);
-    }
+    const mergedKeys = mergedTickets.map(t => t.key);
 
-    // Step 7: Return a summary of what was recovered
+    console.log(`Fetched ${fetchedByKey.size}, preserved ${failedKeys.filter(k => existingByKey.has(k)).length}, lost ${failedKeys.filter(k => !existingByKey.has(k)).length}`);
+
+    // KV 저장
+    console.log(`Saving ${mergedKeys.length} tickets to KV...`);
+    await Promise.all([
+      redis.set("cc-custom-tickets", mergedTickets),
+      redis.set("cc-custom-keys", mergedKeys),
+    ]);
+
     return NextResponse.json({
       success: true,
       summary: {
         totalKeysFound: allKeys.size,
-        ticketsFetched: fetchedKeys.length,
-        ticketsFailed: failedKeys.length,
-        savedToKV: fetchedKeys.length > 0,
-        breakdown: {
-          fromEtr: etrKeys.size,
-          fromAddedDates: addedKeys.size,
-          fromCustomKeys: customKeys.size,
-        },
-        fetchedKeys: fetchedKeys.sort(),
+        ticketsFetched: fetchedByKey.size,
+        ticketsPreserved: failedKeys.filter(k => existingByKey.has(k)).length,
+        ticketsLost: failedKeys.filter(k => !existingByKey.has(k)).length,
+        savedToKV: mergedKeys.length,
+        sources: Object.fromEntries(
+          Object.entries(sources).map(([k, v]) => [k, [...new Set(v)].length])
+        ),
         failedKeys: failedKeys.sort(),
+        savedKeys: mergedKeys.sort(),
       },
     });
   } catch (err) {

@@ -29,6 +29,7 @@ async function fetchWithTimeout(url: string, options: RequestInit): Promise<Resp
 
 // Vercel Cron이 호출하는 핸들러 (매일 09:00 KST)
 // KV의 cc-custom-keys를 읽어 JIRA 재조회 → cc-custom-tickets KV 갱신
+// ⚠️ SAFE-MERGE: fetch 실패 티켓은 기존 KV 데이터를 그대로 보존 (덮어쓰기 금지)
 export async function GET(request: Request) {
   // Vercel Cron 인증: 프로덕션에서는 CRON_SECRET 환경변수로 보호
   const authHeader = request.headers.get("authorization");
@@ -50,7 +51,13 @@ export async function GET(request: Request) {
       return NextResponse.json({ ok: true, message: "커스텀 티켓 없음", refreshed: 0 });
     }
 
-    // 2. JIRA에서 커스텀 티켓 재조회
+    // ─── SAFE-MERGE: 기존 KV 데이터를 먼저 읽어 Map으로 색인 ───────────────
+    // fetch 실패 시 기존 데이터를 보존하기 위해 반드시 먼저 읽어야 함
+    const existingTickets = await redis.get<Ticket[]>("cc-custom-tickets") ?? [];
+    const existingByKey = new Map(existingTickets.map(t => [t.key, t]));
+    console.log(`[daily-refresh] 기존 KV 티켓: ${existingTickets.length}개, cc-custom-keys: ${customKeys.length}개`);
+
+    // 2. JIRA에서 커스텀 티켓 재조회 (병렬 처리)
     const auth = Buffer.from(`${email}:${token}`).toString("base64");
     const headers = { Authorization: `Basic ${auth}`, Accept: "application/json" };
     const FIELDS = [
@@ -63,7 +70,9 @@ export async function GET(request: Request) {
       "customfield_14402",
     ].join(",");
 
-    const freshTickets: Ticket[] = [];
+    const freshByKey = new Map<string, Ticket>();
+    const failedKeys: string[] = [];
+
     await Promise.all(
       customKeys.map(async (key) => {
         try {
@@ -71,9 +80,15 @@ export async function GET(request: Request) {
             `${JIRA_HOST}/rest/api/3/search/jql?` +
             new URLSearchParams({ jql: `key = ${key}`, maxResults: "1", fields: FIELDS });
           const res = await fetchWithTimeout(url, { headers, cache: "no-store" });
-          if (!res.ok) return;
+          if (!res.ok) {
+            failedKeys.push(key);
+            return;
+          }
           const data = await res.json();
-          if (!data.issues || (data.issues as unknown[]).length === 0) return;
+          if (!data.issues || (data.issues as unknown[]).length === 0) {
+            failedKeys.push(key);
+            return;
+          }
           const issue = (data.issues as Array<Record<string, unknown>>)[0];
           const f = issue.fields as Record<string, unknown>;
           const status = f.status as Record<string, unknown>;
@@ -84,7 +99,7 @@ export async function GET(request: Request) {
           const priority = f.priority as Record<string, unknown> | null;
           const healthCheck = f.customfield_10071 as Record<string, unknown> | null;
           const requestDept = f.customfield_14402 as Record<string, unknown> | null;
-          freshTickets.push({
+          freshByKey.set(key, {
             key: issue.key as string,
             summary: f.summary as string,
             status: status.name as string,
@@ -100,17 +115,41 @@ export async function GET(request: Request) {
             requestPriority: priority?.name as string | undefined,
             parent: parent?.key as string | undefined,
           });
-        } catch {}
+        } catch (err) {
+          console.warn(`[daily-refresh] ${key} fetch 실패:`, err);
+          failedKeys.push(key);
+        }
       })
     );
 
-    // 3. KV 갱신
-    await redis.set("cc-custom-tickets", freshTickets);
+    // ─── SAFE-MERGE: 성공한 티켓은 새 데이터, 실패한 티켓은 기존 데이터 유지 ──
+    // 순서는 cc-custom-keys 기준으로 정렬
+    const mergedTickets: Ticket[] = customKeys
+      .map(key => freshByKey.get(key) ?? existingByKey.get(key))
+      .filter((t): t is Ticket => t !== undefined);
+
+    const refreshedCount = freshByKey.size;
+    const preservedCount = failedKeys.filter(k => existingByKey.has(k)).length;
+    const lostCount = failedKeys.filter(k => !existingByKey.has(k)).length;
+
+    console.log(`[daily-refresh] 갱신: ${refreshedCount}개, 기존보존: ${preservedCount}개, 유실: ${lostCount}개`);
+
+    // 3. KV 갱신 (SAFE-MERGE 결과만 저장 — 절대 부분 덮어쓰기 금지)
+    if (mergedTickets.length > 0) {
+      await redis.set("cc-custom-tickets", mergedTickets);
+      console.log(`[daily-refresh] cc-custom-tickets 갱신 완료: ${mergedTickets.length}개`);
+    } else {
+      console.warn("[daily-refresh] mergedTickets가 비어있어 KV 쓰기 생략");
+    }
 
     return NextResponse.json({
       ok: true,
-      refreshed: freshTickets.length,
+      refreshed: refreshedCount,
+      preserved: preservedCount,
+      lost: lostCount,
       total: customKeys.length,
+      merged: mergedTickets.length,
+      failedKeys: failedKeys.length > 0 ? failedKeys : undefined,
       refreshedAt: new Date().toISOString(),
     });
   } catch (e) {
