@@ -2224,7 +2224,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   return (
     <div className="flex min-h-screen" style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}>
       {/* ── 리스트 패널 ── */}
-      <div className={`${isDetailExpanded ? "shrink-0 overflow-hidden" : "flex-1 min-w-0"} px-3 py-8 overflow-hidden`} style={{ background: "var(--bg-canvas)", ...(isDetailExpanded ? { width: "176px" } : {}) }}>
+      <div className={`${isDetailExpanded ? "shrink-0 overflow-hidden" : "flex-1 min-w-0"} px-3 py-8 overflow-hidden relative`} style={{ background: "var(--bg-canvas)", ...(isDetailExpanded ? { width: "176px" } : {}) }}>
+        {/* 좌측 패널 토글 버튼 — 항상 우상단 고정 */}
+        <button
+          onClick={() => setIsDetailExpanded(v => !v)}
+          title={isDetailExpanded ? "목록 펼치기" : "목록 접기"}
+          className="absolute top-4 right-2 w-6 h-6 flex items-center justify-center rounded transition-all z-10 text-xs"
+          style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+        >
+          {isDetailExpanded ? "»" : "«"}
+        </button>
         {isDetailExpanded && (
           <div className="mb-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-subtle)" }}>티켓</div>
         )}
