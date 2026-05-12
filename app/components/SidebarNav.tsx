@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useTheme } from "@/app/components/ThemeProvider";
+import GuideModal from "@/app/components/GuideModal";
 
 type Props = {
   user?: { name?: string | null; email?: string | null };
@@ -11,6 +12,7 @@ type Props = {
 
 export default function SidebarNav({ user, logoutAction }: Props) {
   const [visible, setVisible] = useState(true);
+  const [guideOpen, setGuideOpen] = useState(false);
   const { theme, toggle } = useTheme();
   const isDark = theme === "dark";
 
@@ -90,6 +92,37 @@ export default function SidebarNav({ user, logoutAction }: Props) {
           월별 진행 현황
         </Link>
       </nav>
+
+      {/* 사용 가이드 */}
+      <div className="px-3 pb-2">
+        <button
+          onClick={() => setGuideOpen(true)}
+          className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-xs font-medium transition-all"
+          style={{
+            background: "var(--bg-item)",
+            border: "1px solid var(--border-2)",
+            color: "var(--text-primary)",
+          }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLElement).style.borderColor = "#60a5fa";
+            (e.currentTarget as HTMLElement).style.color = "#60a5fa";
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLElement).style.borderColor = "var(--border-2)";
+            (e.currentTarget as HTMLElement).style.color = "var(--text-primary)";
+          }}
+        >
+          <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/>
+          </svg>
+          <span className="flex-1 text-left">사용 가이드</span>
+          <svg className="w-3 h-3 shrink-0 opacity-40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+        </button>
+      </div>
+
+      {guideOpen && <GuideModal onClose={() => setGuideOpen(false)} />}
 
       {/* 테마 토글 */}
       <div className="px-4 pb-3">
