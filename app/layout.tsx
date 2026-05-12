@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { auth, signOut } from "@/auth";
 import SidebarNav from "@/app/components/SidebarNav";
+import ThemeProvider from "@/app/components/ThemeProvider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -32,18 +33,20 @@ export default async function RootLayout({
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex">
-        <SidebarNav
-          user={session?.user}
-          logoutAction={async () => {
-            "use server";
-            await signOut({ redirectTo: "/api/auth/signin" });
-          }}
-        />
+        <ThemeProvider>
+          <SidebarNav
+            user={session?.user}
+            logoutAction={async () => {
+              "use server";
+              await signOut({ redirectTo: "/api/auth/signin" });
+            }}
+          />
 
-        {/* 메인 콘텐츠 */}
-        <div className="flex-1 min-w-0">
-          {children}
-        </div>
+          {/* 메인 콘텐츠 */}
+          <div className="flex-1 min-w-0">
+            {children}
+          </div>
+        </ThemeProvider>
       </body>
     </html>
   );
