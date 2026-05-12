@@ -978,18 +978,38 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         } catch {}
       }));
 
-      // cc-custom-tickets KV 최신화
+      // ─── 안전한 cc-custom-tickets 최신화 ───────────────────────────────
+      // 기존 KV 값을 읽어온 뒤 "성공적으로 재조회된 것만 업데이트"하고
+      // 재조회에 실패한 티켓은 기존 값을 그대로 유지 → 데이터 유실 방지
+      let existingKvCustom: Ticket[] = [];
+      try {
+        const kvExRes = await fetch("/api/kv?keys=cc-custom-tickets");
+        const kvExData = await kvExRes.json();
+        existingKvCustom = Array.isArray(kvExData["cc-custom-tickets"]) ? kvExData["cc-custom-tickets"] : [];
+      } catch {}
+
+      const freshByKey = new Map(freshCustom.map(t => [t.key, t]));
+      // 기존 목록: 재조회 성공한 것은 최신 데이터로 교체, 실패한 것은 기존 유지
+      const mergedCustom: Ticket[] = existingKvCustom.map(t => freshByKey.get(t.key) ?? t);
+      // 신규 추가 (기존 목록에 없던 키)
+      const existingKvKeys = new Set(existingKvCustom.map(t => t.key));
+      for (const t of freshCustom) {
+        if (!existingKvKeys.has(t.key)) mergedCustom.push(t);
+      }
+
       fetch("/api/kv", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "cc-custom-tickets", value: freshCustom }),
+        body: JSON.stringify({ key: "cc-custom-tickets", value: mergedCustom }),
       }).catch(() => {});
+      // ──────────────────────────────────────────────────────────────────
 
-      // 화면 반영 + cc-tickets-v1 갱신
+      // 화면 반영 + localStorage 갱신
       const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
-      // hiddenKeys 필터 적용 (삭제된 티켓 재등장 방지)
       const hiddenSync = hiddenKeys;
-      setTickets([...(data.tickets as Ticket[]), ...freshCustom].filter(t => !hiddenSync.has(t.key)));
+      // mergedCustom 중 JIRA 배치에 없는 것만 병합 (중복 방지)
+      const displayCustom = mergedCustom.filter(t => !jiraKeySet.has(t.key));
+      setTickets([...(data.tickets as Ticket[]), ...displayCustom].filter(t => !hiddenSync.has(t.key)));
       setSyncedAt(at);
       try {
         localStorage.setItem(
@@ -1482,10 +1502,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       })
       .catch(() => {});
 
-    // 2) 커스텀 티켓 (별도 요청 — 데이터가 커서 분리)
-    const customFetch = fetch("/api/kv?keys=cc-custom-tickets")
-      .then((r) => r.json())
-      .then((data) => {
+    // 2) 커스텀 티켓 (별도 요청 — 데이터가 커서 분리, 실패 시 1회 재시도)
+    const fetchCustomTickets = async (retry = false): Promise<void> => {
+      try {
+        const r = await fetch("/api/kv?keys=cc-custom-tickets");
+        if (!r.ok) throw new Error(`status ${r.status}`);
+        const data = await r.json();
         const kvTickets: Ticket[] = Array.isArray(data["cc-custom-tickets"]) ? data["cc-custom-tickets"] : [];
         if (kvTickets.length > 0) {
           setTickets(prev => {
@@ -1494,8 +1516,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             return extra.length > 0 ? [...prev, ...extra] : prev;
           });
         }
-      })
-      .catch(() => {});
+      } catch (e) {
+        if (!retry) {
+          // 1초 후 1회 재시도
+          await new Promise(res => setTimeout(res, 1000));
+          return fetchCustomTickets(true);
+        }
+        console.error("[KV customFetch] 실패 (재시도 포함):", e);
+      }
+    };
+    const customFetch = fetchCustomTickets();
 
     // 두 요청 모두 완료되면 kvLoaded = true
     Promise.allSettled([mainFetch, customFetch]).then(() => setKvLoaded(true));
