@@ -59,7 +59,7 @@ export default function GuideModal({ onClose }: Props) {
       onClick={onClose}
     >
       <div
-        className="relative w-full max-w-md rounded-xl shadow-2xl overflow-hidden"
+        className="relative w-full max-w-xl rounded-xl shadow-2xl overflow-hidden"
         style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)" }}
         onClick={e => e.stopPropagation()}
       >
@@ -90,6 +90,17 @@ export default function GuideModal({ onClose }: Props) {
 
         {/* 본문 */}
         <div className="px-5 py-4 space-y-4 text-xs" style={{ color: "var(--text-muted)", maxHeight: "70vh", overflowY: "auto" }}>
+
+          {/* 필수 공지 */}
+          <div className="flex items-start gap-2.5 rounded-lg px-3 py-3" style={{ background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.3)" }}>
+            <span className="text-base leading-none mt-0.5 shrink-0">🚨</span>
+            <div>
+              <p className="font-semibold mb-1" style={{ color: "#f87171" }}>필수 티켓 등록</p>
+              <p style={{ color: "var(--text-muted)" }}>
+                <span style={{ color: "#fca5a5", fontWeight: 600 }}>OKR · BAU · KTLO</span> 티켓은 빠짐없이 추가해야 합니다.
+              </p>
+            </div>
+          </div>
 
           {/* 주요 기능 */}
           <section>
@@ -162,11 +173,48 @@ export default function GuideModal({ onClose }: Props) {
             </div>
           </section>
 
+          {/* 티켓 제목 규칙 */}
+          <section>
+            <div className="flex items-center gap-2 mb-2">
+              <p className="text-[11px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-subtle)" }}>티켓 제목 규칙</p>
+              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded" style={{ background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24" }}>룰 정의 예정</span>
+            </div>
+            <div className="rounded-lg px-3 py-3 space-y-2.5" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+              <p style={{ color: "var(--text-muted)" }}>도메인·대상 필터와 월별 현황이 제목 형식을 기준으로 자동 분류됩니다.</p>
+              <div className="rounded px-2.5 py-2 font-mono text-[11px] leading-relaxed" style={{ background: "var(--bg-item)", color: "var(--text-primary)" }}>
+                [도메인][29CM] 제목<br />
+                [도메인][29Connect] 제목
+              </div>
+              <div className="space-y-1.5 text-[11px]">
+                {[
+                  { tag: "[결제], [카탈로그] …", desc: "첫 번째 태그 → 도메인 필터 및 월별 현황에 반영" },
+                  { tag: "[29CM]", desc: "두 번째 태그 → 대상 필터 \"29CM\" 으로 분류" },
+                  { tag: "[29Connect]", desc: "두 번째 태그 → 대상 필터 \"29Connect\" 로 분류" },
+                  { tag: "두 번째 태그 없음", desc: "대상 필터에서 미분류" },
+                  { tag: "첫 번째 태그 없음", desc: "도메인 → \"기타\" 로 분류됨" },
+                ].map(({ tag, desc }) => (
+                  <div key={tag} className="flex items-start gap-2">
+                    <code className="shrink-0 px-1.5 py-0.5 rounded text-[10px]" style={{ background: "var(--bg-item)", color: "#60a5fa", border: "1px solid var(--border-2)" }}>{tag}</code>
+                    <span style={{ color: "var(--text-muted)" }}>{desc}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </section>
+
           {/* FAQ */}
           <section>
             <p className="text-[11px] font-semibold mb-2 uppercase tracking-wider" style={{ color: "var(--text-subtle)" }}>자주 묻는 질문</p>
             <div className="space-y-2">
               {[
+                {
+                  q: "필터의 \"대상\" 은 무엇인가요?",
+                  a: "티켓 제목이 [29CM] 또는 [29Connect] 로 시작하는지 기준으로 구분합니다.",
+                },
+                {
+                  q: "도메인 필터에서 \"기타\" 로 뜨는 티켓이 있어요",
+                  a: "제목에 [29CM][도메인] 또는 [29Connect][도메인] 형식이 없으면 기타로 분류됩니다. 제목 수정 후 Jira Sync를 누르면 반영됩니다.",
+                },
                 {
                   q: "내가 바꾼 플래닝 상태를 동료가 못 보는 경우",
                   a: "동료가 F5로 새로고침하면 즉시 반영됩니다.",

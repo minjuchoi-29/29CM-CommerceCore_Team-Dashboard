@@ -133,14 +133,17 @@ const ALL_LEVELS   = ["Initiative", "Epic", "Dev"];
 
 const TARGET_LABELS = new Set(["29CM", "29Connect"]);
 
+// 제목 규칙: [도메인][대상] 제목
+// 예) [결제][29CM] 주문 API 개선
 function extractTarget(summary: string): string | null {
-  const m = summary.match(/^\[([^\]]+)\]/);
+  // 두 번째 [...]에서 대상 추출 (두 태그 사이 공백 허용)
+  const m = summary.match(/^\[[^\]]+\]\s*\[([^\]]+)\]/);
   return m && TARGET_LABELS.has(m[1]) ? m[1] : null;
 }
 
 function extractDomain(summary: string): string {
-  const s = summary.replace(/^\[(29CM|29Connect)\]\s*/, "");
-  const m = s.match(/^\[([^\]]+)\]/);
+  // 첫 번째 [...]에서 도메인 추출
+  const m = summary.match(/^\[([^\]]+)\]/);
   return m ? m[1] : "기타";
 }
 
@@ -2448,49 +2451,60 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
         )}
 
-        {/* 필터 */}
-        <div className={`flex items-center gap-2 mb-4 flex-wrap ${isDetailExpanded ? "hidden" : ""}`}>
-          <MultiSelectDropdown label="분기" items={ALL_QUARTERS} selected={quarters} onToggle={v => setQuarters(p => toggle(p, v))} onClear={() => setQuarters(new Set())} />
-          <MultiSelectDropdown label="레벨" items={ALL_LEVELS} selected={levels} onToggle={v => setLevels(p => toggle(p, v))} onClear={() => setLevels(new Set())} />
-          <MultiSelectDropdown label="프로젝트" items={ALL_PROJECTS} selected={projects} onToggle={v => setProjects(p => toggle(p, v))} onClear={() => setProjects(new Set())} />
-          <MultiSelectDropdown label="상태" items={ALL_STATUSES} selected={statuses} onToggle={v => setStatuses(p => toggle(p, v))} onClear={() => setStatuses(new Set())} />
-          <MultiSelectDropdown label="담당자" items={allAssignees} selected={assigneeFilter} onToggle={v => setAssigneeFilter(p => toggle(p, v))} onClear={() => setAssigneeFilter(new Set())} />
-          <MultiSelectDropdown label="도메인" items={allDomains} selected={domainFilter} onToggle={v => setDomainFilter(p => toggle(p, v))} onClear={() => setDomainFilter(new Set())} />
-          <MultiSelectDropdown label="대상" items={allTargets} selected={targetFilter} onToggle={v => setTargetFilter(p => toggle(p, v))} onClear={() => setTargetFilter(new Set())} />
+        {/* 필터 바 */}
+        <div className={`flex items-center gap-1.5 mb-4 flex-wrap ${isDetailExpanded ? "hidden" : ""}`}>
 
-          <div className="w-px h-4 mx-1 shrink-0" style={{ background: "var(--border-2)" }} />
-
-          {/* 정렬 */}
-          <div className="relative" style={{ display: "inline-block" }}>
-            <select
-              value={sortBy}
-              onChange={e => setSortBy(e.target.value as typeof sortBy)}
-              className="appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-xs font-medium cursor-pointer border transition-all"
-              style={{ background: "var(--bg-item)", borderColor: "#7c3aed", color: "#a78bfa", outline: "none" }}
-            >
-              <option value="eta">ETA순</option>
-              <option value="default">등록순</option>
-              <option value="priority">우선순위 P1↑</option>
-              <option value="startDate">시작일순</option>
-            </select>
-            <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px]" style={{ color: "#a78bfa" }}>▾</span>
+          {/* 필터 그룹 */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>필터</span>
+            <MultiSelectDropdown label="분기" items={ALL_QUARTERS} selected={quarters} onToggle={v => setQuarters(p => toggle(p, v))} onClear={() => setQuarters(new Set())} />
+            <MultiSelectDropdown label="레벨" items={ALL_LEVELS} selected={levels} onToggle={v => setLevels(p => toggle(p, v))} onClear={() => setLevels(new Set())} />
+            <MultiSelectDropdown label="프로젝트" items={ALL_PROJECTS} selected={projects} onToggle={v => setProjects(p => toggle(p, v))} onClear={() => setProjects(new Set())} />
+            <MultiSelectDropdown label="상태" items={ALL_STATUSES} selected={statuses} onToggle={v => setStatuses(p => toggle(p, v))} onClear={() => setStatuses(new Set())} />
+            <MultiSelectDropdown label="담당자" items={allAssignees} selected={assigneeFilter} onToggle={v => setAssigneeFilter(p => toggle(p, v))} onClear={() => setAssigneeFilter(new Set())} />
+            <MultiSelectDropdown label="도메인" items={allDomains} selected={domainFilter} onToggle={v => setDomainFilter(p => toggle(p, v))} onClear={() => setDomainFilter(new Set())} />
+            <MultiSelectDropdown label="대상" items={allTargets} selected={targetFilter} onToggle={v => setTargetFilter(p => toggle(p, v))} onClear={() => setTargetFilter(new Set())} />
           </div>
 
-          {/* 검색 */}
-          <div className="relative ml-1">
-            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-            <input
-              type="text"
-              placeholder="티켓 번호 · 제목 · 담당자"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              className="pl-7 pr-3 py-1.5 rounded-lg text-xs border transition-all"
-              style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none", width: "190px" }}
-            />
+          {/* 정렬 그룹 */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>정렬</span>
+            <div className="relative" style={{ display: "inline-block" }}>
+              <select
+                value={sortBy}
+                onChange={e => setSortBy(e.target.value as typeof sortBy)}
+                className="appearance-none pl-2.5 pr-7 py-1.5 rounded-lg text-xs font-medium cursor-pointer border transition-all"
+                style={{ background: "var(--bg-item)", borderColor: "#7c3aed", color: "#a78bfa", outline: "none" }}
+              >
+                <option value="eta">ETA순</option>
+                <option value="default">등록순</option>
+                <option value="priority">우선순위 P1↑</option>
+                <option value="startDate">시작일순</option>
+              </select>
+              <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px]" style={{ color: "#a78bfa" }}>▾</span>
+            </div>
           </div>
 
-          {/* 티켓 추가 */}
-          <div className="flex items-center gap-1.5 ml-1">
+          {/* 검색 그룹 */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>검색</span>
+            <div className="relative">
+              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+              <input
+                type="text"
+                placeholder="티켓 번호 · 제목 · 담당자"
+                value={search}
+                onChange={e => setSearch(e.target.value)}
+                className="pl-7 pr-3 py-1.5 rounded-lg text-xs border transition-all"
+                style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none", width: "190px" }}
+              />
+            </div>
+          </div>
+
+          {/* 티켓 추가 그룹 */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>추가</span>
+            <div className="flex items-center gap-1.5">
             <input
               type="text"
               placeholder="예: TM-1234, TM-5678"
@@ -2556,6 +2570,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </span>
               );
             })()}
+            </div>
           </div>
         </div>
 
