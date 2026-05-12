@@ -834,7 +834,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("eta");
-  const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기">("전체");
+  const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기" | "기획" | "디자인" | "준비중" | "개발" | "QA">("전체");
 
   // 사용자 직접 추가 티켓 관리
   const [addKeyInput, setAddKeyInput]     = useState("");
@@ -1757,6 +1757,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 기획·준비 = 개발중·QA중도 아니고 완료도 아닌 것 전부 (화이트리스트가 아닌 배제 방식 → 미분류 상태도 포함)
   const totalPlanned    = preFiltered.filter((t) => !INPROGRESS_STATUSES.includes(t.status) && !DONE_STATUSES.includes(t.status)).length;
 
+  // 세분화 카운트
+  const totalPlan    = preFiltered.filter((t) => ["기획중", "기획완료"].includes(t.status)).length;
+  const totalDesign  = preFiltered.filter((t) => ["디자인중", "디자인완료"].includes(t.status)).length;
+  const totalReady   = preFiltered.filter((t) => t.status === "준비중").length;
+  const totalDev     = preFiltered.filter((t) => ["개발중", "In Progress"].includes(t.status)).length;
+  const totalQA      = preFiltered.filter((t) => t.status === "QA중").length;
+
   const done       = totalDone;
   const inProgress = totalInProgress;
   const planned    = totalPlanned;
@@ -1813,9 +1820,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
-    let result = statusTab === "전체" ? [...preFiltered]
+    let result = statusTab === "전체"   ? [...preFiltered]
       : statusTab === "완료"     ? preFiltered.filter((t) => DONE_STATUSES.includes(t.status))
       : statusTab === "진행중"   ? preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status))
+      : statusTab === "기획"     ? preFiltered.filter((t) => ["기획중", "기획완료"].includes(t.status))
+      : statusTab === "디자인"   ? preFiltered.filter((t) => ["디자인중", "디자인완료"].includes(t.status))
+      : statusTab === "준비중"   ? preFiltered.filter((t) => t.status === "준비중")
+      : statusTab === "개발"     ? preFiltered.filter((t) => ["개발중", "In Progress"].includes(t.status))
+      : statusTab === "QA"       ? preFiltered.filter((t) => t.status === "QA중")
       :                            preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status));
     // 검토필요 필터
     if (reviewFilter) result = result.filter(t => getPlanningVal(planning[t.key]).reviewNeeded);
@@ -2260,8 +2272,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             { key: "전체",           label: "전체",           desc: "모든 과제 (ETR 제외)" },
             { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중" },
             { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중" },
-            { key: "완료",           label: "완료",           desc: "론치·배포 완료" },
             { key: "요청 검토 중",   label: "요청 검토 중",   desc: "ETR 티켓 — 검토 후 TM 전환" },
+            { key: "완료",           label: "완료",           desc: "론치·배포 완료" },
           ] as const).map(({ key, label, desc }) => {
             const active = planningTab === key;
             return (
@@ -2401,24 +2413,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
           </div>
         ) : (
-          /* 기타 탭 — JIRA 상태 기준 4개 카드 */
-          <div className={`grid grid-cols-4 gap-3 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
+          /* 기타 탭 — JIRA 상태 기준 7개 카드 */
+          <div className={`grid grid-cols-7 gap-2 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
             {([
-              { label: "전체",      filterKey: "전체",      count: totalAll,        numColor: "var(--text-primary)", desc: "등록된 전체 티켓" },
-              { label: "기획·준비", filterKey: "계획/대기", count: totalPlanned,    numColor: "#fbbf24", desc: "기획중·디자인·HOLD 등" },
-              { label: "개발·QA중", filterKey: "진행중",    count: totalInProgress, numColor: "#818cf8", desc: "개발중·QA중·In Progress" },
-              { label: "완료",      filterKey: "완료",      count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨" },
-            ]).map((s) => {
+              { label: "전체",   filterKey: "전체",   count: totalAll,        numColor: "var(--text-primary)", desc: "등록된 전체 티켓",            accentColor: undefined },
+              { label: "기획",   filterKey: "기획",   count: totalPlan,       numColor: "#f97316", desc: "기획중 · 기획완료",               accentColor: "#f97316" },
+              { label: "디자인", filterKey: "디자인", count: totalDesign,     numColor: "#c084fc", desc: "디자인중 · 디자인완료",            accentColor: "#c084fc" },
+              { label: "준비중", filterKey: "준비중", count: totalReady,      numColor: "#fbbf24", desc: "준비중",                          accentColor: "#fbbf24" },
+              { label: "개발",   filterKey: "개발",   count: totalDev,        numColor: "#60a5fa", desc: "개발중 · In Progress",            accentColor: "#60a5fa" },
+              { label: "QA",     filterKey: "QA",     count: totalQA,         numColor: "#f59e0b", desc: "QA중",                           accentColor: "#f59e0b" },
+              { label: "완료",   filterKey: "완료",   count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨",           accentColor: "#34d399" },
+            ] as { label: string; filterKey: typeof statusTab; count: number; numColor: string; desc: string; accentColor: string | undefined }[]).map((s) => {
               const active = statusTab === s.filterKey;
               return (
                 <button
                   key={s.label}
-                  onClick={() => setStatusTab(active ? "전체" : s.filterKey as typeof statusTab)}
+                  onClick={() => setStatusTab(active ? "전체" : s.filterKey)}
                   title={s.desc}
-                  className="rounded-xl border px-4 py-3 text-left transition-all cursor-pointer"
+                  className="rounded-xl border px-3 py-3 text-left transition-all cursor-pointer"
                   style={{
                     background: active ? "var(--bg-item)" : "var(--bg-overlay)",
-                    borderColor: active ? "#7c3aed" : "var(--border)",
+                    borderColor: active && s.accentColor ? s.accentColor + "80" : active ? "#7c3aed" : "var(--border)",
                   }}
                 >
                   <div className="flex items-center justify-between mb-1">
