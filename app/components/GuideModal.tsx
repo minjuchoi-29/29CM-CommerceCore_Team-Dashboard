@@ -60,7 +60,7 @@ export default function GuideModal({ onClose }: Props) {
     >
       <div
         className="relative w-full max-w-md rounded-xl shadow-2xl overflow-hidden"
-        style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
+        style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)" }}
         onClick={e => e.stopPropagation()}
       >
         {/* 헤더 */}
