@@ -1114,14 +1114,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setAddKeyLoading(true);
     setAddKeyError(null);
     try {
-      const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(trimmed)}`);
+      // JIRA fetch + KV 현재값 읽기를 병렬 실행 (latency 최소화 + 안전한 read-modify-write 보장)
+      const [res, kvKeysRes, kvTicketsRes] = await Promise.all([
+        apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(trimmed)}`),
+        fetch("/api/kv?keys=cc-custom-keys").catch(() => null),
+        fetch("/api/kv?keys=cc-custom-tickets").catch(() => null),
+      ]);
       const data = await res.json();
       if (!res.ok || data.error) {
         setAddKeyError(data.error ?? "티켓을 가져올 수 없습니다.");
       } else {
         const newTicket = data.ticket as Ticket;
-        const newCustomKeys = new Set([...customKeys, trimmed]);
-        setCustomKeys(newCustomKeys);
+        setCustomKeys(prev => new Set([...prev, trimmed]));
         setTickets(prev => [...prev, newTicket]);
 
         // 완료 상태 티켓은 플래닝 자동 완료 처리
@@ -1135,20 +1139,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           }).catch(() => {});
         }
 
-        const newCustomKeysArr = [...newCustomKeys];
-        const currentCustomTickets = tickets.filter(t => customKeys.has(t.key));
-        const newCustomTickets = [...currentCustomTickets.filter(t => t.key !== trimmed), newTicket];
+        // ─── SAFE read-modify-write: KV에서 읽은 최신값 기준으로 append ──────────
+        // React 상태(customKeys/tickets)가 stale할 수 있으므로 KV를 단일 소스로 사용
+        const kvKeysData = kvKeysRes ? await kvKeysRes.json().catch(() => ({})) : {};
+        const kvTicketsData = kvTicketsRes ? await kvTicketsRes.json().catch(() => ({})) : {};
+        const kvCurrentKeys: string[] = Array.isArray(kvKeysData["cc-custom-keys"])
+          ? kvKeysData["cc-custom-keys"]
+          : [...customKeys]; // KV 읽기 실패 시 React 상태 fallback
+        const kvCurrentTickets: Ticket[] = Array.isArray(kvTicketsData["cc-custom-tickets"])
+          ? kvTicketsData["cc-custom-tickets"]
+          : [];
 
-        // KV에 저장 (팀 공유)
+        const newKvKeys = [...new Set([...kvCurrentKeys, trimmed])];
+        const kvTicketMap = new Map(kvCurrentTickets.map(t => [t.key, t]));
+        kvTicketMap.set(trimmed, newTicket); // 추가 or 업데이트
+        const newKvTickets = Array.from(kvTicketMap.values());
+
+        // KV에 저장 (팀 공유) — KV 최신값 기반이므로 데이터 유실 없음
         fetch("/api/kv", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: "cc-custom-keys", value: newCustomKeysArr }),
+          body: JSON.stringify({ key: "cc-custom-keys", value: newKvKeys }),
         }).catch(() => {});
         fetch("/api/kv", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }),
+          body: JSON.stringify({ key: "cc-custom-tickets", value: newKvTickets }),
         }).catch(() => {});
         setAddKeyInput("");
         setPlanningTab("플래닝 대기·검토");
@@ -1240,8 +1256,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
 
     if (fetched.length > 0) {
-      const newCustomKeys = new Set([...customKeys, ...fetched.map(t => t.key)]);
-      setCustomKeys(newCustomKeys);
+      setCustomKeys(prev => new Set([...prev, ...fetched.map(t => t.key)]));
       setTickets(prev => [...prev, ...fetched]);
 
       // 완료 상태 티켓은 플래닝 자동 완료 처리
@@ -1259,12 +1274,37 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }).catch(() => {});
       }
 
-      const newCustomKeysArr = [...newCustomKeys];
-      const currentCustomTickets = tickets.filter(t => customKeys.has(t.key));
-      const newCustomTickets = [...currentCustomTickets, ...fetched];
+      // ─── SAFE read-modify-write: KV 최신값 기준으로 append ─────────────────
+      try {
+        const [kvKeysRes, kvTicketsRes] = await Promise.all([
+          fetch("/api/kv?keys=cc-custom-keys"),
+          fetch("/api/kv?keys=cc-custom-tickets"),
+        ]);
+        const kvKeysData = await kvKeysRes.json();
+        const kvTicketsData = await kvTicketsRes.json();
+        const kvCurrentKeys: string[] = Array.isArray(kvKeysData["cc-custom-keys"])
+          ? kvKeysData["cc-custom-keys"]
+          : [...customKeys];
+        const kvCurrentTickets: Ticket[] = Array.isArray(kvTicketsData["cc-custom-tickets"])
+          ? kvTicketsData["cc-custom-tickets"]
+          : [];
 
-      fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-keys", value: newCustomKeysArr }) }).catch(() => {});
-      fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }) }).catch(() => {});
+        const fetchedKeySet = new Set(fetched.map(t => t.key));
+        const newKvKeys = [...new Set([...kvCurrentKeys, ...fetchedKeySet])];
+        const kvTicketMap = new Map(kvCurrentTickets.map(t => [t.key, t]));
+        for (const t of fetched) kvTicketMap.set(t.key, t);
+        const newKvTickets = Array.from(kvTicketMap.values());
+
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-keys", value: newKvKeys }) }).catch(() => {});
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-tickets", value: newKvTickets }) }).catch(() => {});
+      } catch {
+        // KV 읽기 실패 시 React 상태 기반으로 fallback (최후 수단)
+        console.warn("[addTickets] KV read failed, using React state fallback");
+        const newCustomKeys = new Set([...customKeys, ...fetched.map(t => t.key)]);
+        const currentCustomTickets = tickets.filter(t => customKeys.has(t.key));
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-keys", value: [...newCustomKeys] }) }).catch(() => {});
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-custom-tickets", value: [...currentCustomTickets, ...fetched] }) }).catch(() => {});
+      }
 
       // 신규 추가 티켓 날짜 기록
       const today = new Date().toISOString().split("T")[0];
