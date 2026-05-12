@@ -810,6 +810,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [planningTab, setPlanningTab] = useState("진행 중");
   const [kvLoaded, setKvLoaded]     = useState(false);
   const planningMigratedRef         = useRef(false);
+  // hiddenKeys의 최신값을 항상 참조할 수 있는 ref (stale closure 방지)
+  const hiddenKeysRef = useRef<Set<string>>(new Set());
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
   const [noteInput, setNoteInput]         = useState("");
@@ -1384,6 +1386,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // ── cc-hidden-keys: KV에서 직접 읽어 병합 (로컬 stale state 의존 제거) ──
     // 로컬 state 업데이트는 즉각 반영용; KV 저장은 서버 현재값 기준으로 안전하게 처리
     const newHiddenKeys = new Set([...hiddenKeys, key]);
+    hiddenKeysRef.current = newHiddenKeys;
     setHiddenKeys(newHiddenKeys);
 
     // cc-hidden-keys: KV 현재값 읽기 → key 추가 → 저장 (race-safe)
@@ -1421,6 +1424,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // hiddenKeys / hiddenMeta에서 제거
     const newHiddenKeys = new Set([...hiddenKeys].filter(k => k !== key));
     const newHiddenMeta = hiddenMeta.filter(m => m.key !== key);
+    hiddenKeysRef.current = newHiddenKeys;
     setHiddenKeys(newHiddenKeys);
     setHiddenMeta(newHiddenMeta);
 
@@ -1532,7 +1536,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
-        setHiddenKeys(new Set(kvHidden));
+        const kvHiddenSet = new Set(kvHidden);
+        hiddenKeysRef.current = kvHiddenSet;
+        setHiddenKeys(kvHiddenSet);
         if (kvHidden.length > 0) {
           setTickets(prev => prev.filter(t => !kvHidden.includes(t.key)));
         }
@@ -1551,7 +1557,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       })
       .catch(() => {});
 
-    // 2) 커스텀 티켓 (별도 요청 — 데이터가 커서 분리, 실패 시 1회 재시도)
+    // 2) 커스텀 티켓 — mainFetch 완료 후 실행 (hiddenKeys 로드 후 필터 적용)
     const fetchCustomTickets = async (retry = false): Promise<void> => {
       try {
         const r = await fetch("/api/kv?keys=cc-custom-tickets");
@@ -1559,9 +1565,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const data = await r.json();
         const kvTickets: Ticket[] = Array.isArray(data["cc-custom-tickets"]) ? data["cc-custom-tickets"] : [];
         if (kvTickets.length > 0) {
+          // hiddenKeysRef.current: mainFetch가 먼저 완료돼 있으면 최신 hiddenKeys 반영
+          const currentHidden = hiddenKeysRef.current;
           setTickets(prev => {
             const existingKeys = new Set(prev.map(t => t.key));
-            const extra = kvTickets.filter(t => !existingKeys.has(t.key));
+            // 이미 있는 키 + 숨김 키 모두 제외
+            const extra = kvTickets.filter(t => !existingKeys.has(t.key) && !currentHidden.has(t.key));
             return extra.length > 0 ? [...prev, ...extra] : prev;
           });
         }
@@ -1574,7 +1583,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         console.error("[KV customFetch] 실패 (재시도 포함):", e);
       }
     };
-    const customFetch = fetchCustomTickets();
+    // mainFetch 완료 후 customFetch 실행 → hiddenKeys가 반드시 설정된 뒤 커스텀 티켓 로드
+    const customFetch = mainFetch.then(() => fetchCustomTickets()).catch(() => fetchCustomTickets());
 
     // 두 요청 모두 완료되면 kvLoaded = true
     Promise.allSettled([mainFetch, customFetch]).then(() => setKvLoaded(true));
