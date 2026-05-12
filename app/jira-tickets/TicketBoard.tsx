@@ -1683,7 +1683,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return [...set].sort((a, b) => a.localeCompare(b, "ko"));
   }, [tickets]);
 
-  const DONE_STATUSES      = [...DONE_PRIORITY_STATUSES];
+  // 요약 카드·필터 기준 — 상단 탭 planningCounts와 동일하게 PLANNING_DONE_STATUSES 사용
+  const DONE_STATUSES      = [...PLANNING_DONE_STATUSES];
   const INPROGRESS_STATUSES = ["개발중", "In Progress", "QA중"];
   const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
 
@@ -1746,11 +1747,54 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const totalAll        = preFiltered.length;
   const totalDone       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
   const totalInProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
-  const totalPlanned    = preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status)).length;
+  // 기획·준비 = 개발중·QA중도 아니고 완료도 아닌 것 전부 (화이트리스트가 아닌 배제 방식 → 미분류 상태도 포함)
+  const totalPlanned    = preFiltered.filter((t) => !INPROGRESS_STATUSES.includes(t.status) && !DONE_STATUSES.includes(t.status)).length;
 
   const done       = totalDone;
   const inProgress = totalInProgress;
   const planned    = totalPlanned;
+
+  // 플래닝 대기·검토 탭 전용 — 팀별(Design / SP / PP / CFE / 기타) 상태 집계
+  const planningTeamCounts = useMemo(() => {
+    type Bucket = { 대기중: number; 검토중: number; 완료: number; 대상아님: number };
+    const empty = (): Bucket => ({ 대기중: 0, 검토중: 0, 완료: 0, 대상아님: 0 });
+    const design: Bucket = empty();
+    const sp: Bucket     = empty();
+    const pp: Bucket     = empty();
+    const cfe: Bucket    = empty();
+    const etc: Bucket    = empty();
+    const devLegacy: Bucket = empty(); // devTracks 없는 구형 dev 필드
+
+    for (const t of preFiltered) {
+      const p = getPlanningVal(planning[t.key]);
+      // 디자인 트랙
+      design[p.design]++;
+      // dev 트랙
+      const entries = Object.entries(p.devTracks) as [DevTrackKey, TrackState][];
+      if (entries.length > 0) {
+        for (const [tk, state] of entries) {
+          if (tk === "SP")  sp[state]++;
+          else if (tk === "PP")  pp[state]++;
+          else if (tk === "CFE") cfe[state]++;
+          else               etc[state]++;
+        }
+      } else {
+        // devTracks 없는 구형 레코드 → 통합 Dev 버킷으로
+        devLegacy[p.dev]++;
+      }
+    }
+
+    // 실제 데이터가 있는 트랙만 반환 (모두 0이면 숨김)
+    const hasData = (b: Bucket) => b.대기중 + b.검토중 + b.완료 + b.대상아님 > 0;
+    return [
+      { label: "디자인",    color: "#c084fc", bucket: design },
+      { label: "SP",       color: "#60a5fa", bucket: sp,  hide: !hasData(sp) },
+      { label: "PP",       color: "#34d399", bucket: pp,  hide: !hasData(pp) },
+      { label: "CFE",      color: "#fb923c", bucket: cfe, hide: !hasData(cfe) },
+      { label: "기타 Dev", color: "#94a3b8", bucket: etc, hide: !hasData(etc) },
+      { label: "Dev(전체)", color: "#818cf8", bucket: devLegacy, hide: !hasData(devLegacy) },
+    ].filter(r => !r.hide);
+  }, [preFiltered, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 최근 2주 기준 날짜
   const TWO_WEEKS_AGO = useMemo(() => {
@@ -2334,35 +2378,80 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 요약 카드 */}
-        {/* 요약 카드 — 항상 전체 티켓(dedupedTickets) 기준 Jira 상태 분포 */}
-        <div className={`grid grid-cols-4 gap-3 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
-          {([
-            { label: "전체",      filterKey: "전체",      count: totalAll,        numColor: "var(--text-primary)", desc: "등록된 전체 티켓" },
-            { label: "기획·준비", filterKey: "계획/대기", count: totalPlanned,    numColor: "#fbbf24", desc: "기획중·디자인·HOLD 등" },
-            { label: "개발·QA중", filterKey: "진행중",    count: totalInProgress, numColor: "#818cf8", desc: "개발중·QA중·In Progress" },
-            { label: "완료",      filterKey: "완료",      count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨" },
-          ]).map((s) => {
-            const active = statusTab === s.filterKey;
-            return (
-              <button
-                key={s.label}
-                onClick={() => setStatusTab(active ? "전체" : s.filterKey as typeof statusTab)}
-                title={s.desc}
-                className="rounded-xl border px-4 py-3 text-left transition-all cursor-pointer"
-                style={{
-                  background: active ? "var(--bg-item)" : "var(--bg-overlay)",
-                  borderColor: active ? "#7c3aed" : "var(--border)",
-                }}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <p className="text-xs" style={{ color: "var(--text-muted)" }}>{s.label}</p>
-                  <p className="text-[10px]" style={{ color: "var(--text-subtle)" }}>{planningTab} 기준</p>
+        {planningTab === "플래닝 대기·검토" ? (
+          /* 플래닝 대기·검토 탭 전용 — 팀별 플래닝 상태 분포 */
+          <div className={`mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
+            <div className="grid gap-2.5" style={{ gridTemplateColumns: `repeat(${planningTeamCounts.length}, minmax(0, 1fr))` }}>
+              {planningTeamCounts.map(({ label, color, bucket }) => (
+                <div
+                  key={label}
+                  className="rounded-xl border px-4 py-3"
+                  style={{ background: "var(--bg-overlay)", borderColor: "var(--border)" }}
+                >
+                  <div className="flex items-center gap-1.5 mb-2.5">
+                    <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+                    <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>{label}</p>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <div className="flex flex-col items-center">
+                      <span className="text-[10px] mb-0.5" style={{ color: "var(--text-subtle)" }}>대기중</span>
+                      <span className="text-xl font-bold" style={{ color: "#fbbf24" }}>{bucket.대기중}</span>
+                    </div>
+                    <div className="w-px self-stretch" style={{ background: "var(--border)" }} />
+                    <div className="flex flex-col items-center">
+                      <span className="text-[10px] mb-0.5" style={{ color: "var(--text-subtle)" }}>검토중</span>
+                      <span className="text-xl font-bold" style={{ color: "#818cf8" }}>{bucket.검토중}</span>
+                    </div>
+                    <div className="w-px self-stretch" style={{ background: "var(--border)" }} />
+                    <div className="flex flex-col items-center">
+                      <span className="text-[10px] mb-0.5" style={{ color: "var(--text-subtle)" }}>완료</span>
+                      <span className="text-xl font-bold" style={{ color: "#34d399" }}>{bucket.완료}</span>
+                    </div>
+                    {bucket.대상아님 > 0 && (
+                      <>
+                        <div className="w-px self-stretch" style={{ background: "var(--border)" }} />
+                        <div className="flex flex-col items-center">
+                          <span className="text-[10px] mb-0.5" style={{ color: "var(--text-subtle)" }}>대상아님</span>
+                          <span className="text-xl font-bold" style={{ color: "var(--text-muted)" }}>{bucket.대상아님}</span>
+                        </div>
+                      </>
+                    )}
+                  </div>
                 </div>
-                <p className="text-2xl font-bold" style={{ color: s.numColor }}>{s.count}</p>
-              </button>
-            );
-          })}
-        </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          /* 기타 탭 — JIRA 상태 기준 4개 카드 */
+          <div className={`grid grid-cols-4 gap-3 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
+            {([
+              { label: "전체",      filterKey: "전체",      count: totalAll,        numColor: "var(--text-primary)", desc: "등록된 전체 티켓" },
+              { label: "기획·준비", filterKey: "계획/대기", count: totalPlanned,    numColor: "#fbbf24", desc: "기획중·디자인·HOLD 등" },
+              { label: "개발·QA중", filterKey: "진행중",    count: totalInProgress, numColor: "#818cf8", desc: "개발중·QA중·In Progress" },
+              { label: "완료",      filterKey: "완료",      count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨" },
+            ]).map((s) => {
+              const active = statusTab === s.filterKey;
+              return (
+                <button
+                  key={s.label}
+                  onClick={() => setStatusTab(active ? "전체" : s.filterKey as typeof statusTab)}
+                  title={s.desc}
+                  className="rounded-xl border px-4 py-3 text-left transition-all cursor-pointer"
+                  style={{
+                    background: active ? "var(--bg-item)" : "var(--bg-overlay)",
+                    borderColor: active ? "#7c3aed" : "var(--border)",
+                  }}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>{s.label}</p>
+                    <p className="text-[10px]" style={{ color: "var(--text-subtle)" }}>{planningTab} 기준</p>
+                  </div>
+                  <p className="text-2xl font-bold" style={{ color: s.numColor }}>{s.count}</p>
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* 필터 */}
         <div className={`flex items-center gap-2 mb-4 flex-wrap ${isDetailExpanded ? "hidden" : ""}`}>
