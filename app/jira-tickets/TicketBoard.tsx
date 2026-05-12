@@ -806,7 +806,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [reviewFilter, setReviewFilter] = useState(false); // 검토필요 티켓만 필터
   const [newFilter, setNewFilter]       = useState(false); // 최근 2주 신규 티켓만 필터
   const [ticketAddedDates, setTicketAddedDates] = useState<Record<string, string>>({}); // key → "YYYY-MM-DD"
-  const [newSectionOpen, setNewSectionOpen] = useState(false); // 신규 섹션 접힘 여부
   const [planningTab, setPlanningTab] = useState("진행 중");
   const [kvLoaded, setKvLoaded]     = useState(false);
   const planningMigratedRef         = useRef(false);
@@ -2561,54 +2560,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         </div>
 
 
-        {/* 최근 2주 신규 고정 섹션 — newFilter ON이면 중복이므로 숨김 */}
-        {!newFilter && !isDetailExpanded && (() => {
-          const recentInTab = preFiltered.filter(t => isRecentTicket(t.key));
-          if (recentInTab.length === 0) return null;
-          return (
-            <div className="mb-3 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(56,189,248,0.3)", background: "var(--bg-canvas)" }}>
-              <button
-                onClick={() => setNewSectionOpen(v => !v)}
-                className="w-full flex items-center justify-between px-4 py-2.5 text-xs font-semibold transition-colors"
-                style={{ background: "rgba(56,189,248,0.08)", borderBottom: newSectionOpen ? "1px solid rgba(56,189,248,0.2)" : "none", color: "#38bdf8" }}
-              >
-                <span className="flex items-center gap-2">
-                  🆕 최근 2주 신규 추가
-                  <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold" style={{ background: "rgba(56,189,248,0.2)", color: "#38bdf8" }}>
-                    {recentInTab.length}
-                  </span>
-                </span>
-                <svg className={`w-3.5 h-3.5 transition-transform ${newSectionOpen ? "rotate-180" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <path d="M6 9l6 6 6-6" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
-              {newSectionOpen && (
-                <div>
-                  {recentInTab.map(t => (
-                    <div
-                      key={t.key}
-                      onClick={() => handleSelect(t)}
-                      className="flex items-center gap-3 px-4 py-2.5 cursor-pointer transition-colors"
-                      style={{ borderBottom: "1px solid var(--border)" }}
-                      onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-item)"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = ""; }}
-                    >
-                      <span className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded" style={{ background: "rgba(56,189,248,0.15)", color: "#38bdf8", border: "1px solid rgba(56,189,248,0.3)" }}>
-                        {ticketAddedDates[t.key]?.slice(5).replace("-", "/")} 추가
-                      </span>
-                      <a href={`${JIRA_BASE}${t.key}`} target="_blank" rel="noopener noreferrer"
-                        onClick={e => e.stopPropagation()}
-                        className="font-mono text-sm font-semibold text-blue-400 hover:underline shrink-0">{t.key}</a>
-                      <span className="text-base font-semibold truncate flex-1 min-w-0" style={{ color: "var(--text-primary)" }}>{t.summary}</span>
-                      <span className="text-xs shrink-0" style={{ color: "var(--text-muted)" }}>{t.assignee}</span>
-                      <span className={`shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold whitespace-nowrap ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>{t.status}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })()}
 
         {/* 티켓 목록 */}
         <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
