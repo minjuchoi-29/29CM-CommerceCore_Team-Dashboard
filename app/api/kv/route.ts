@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
 
-const VALID_KEYS = ["cc-planning", "cc-schedules", "cc-memos", "cc-memos-v2", "cc-custom-keys", "cc-custom-tickets", "cc-planning-notes", "cc-ticket-notes", "cc-etr"] as const;
+const VALID_KEYS = ["cc-planning", "cc-schedules", "cc-memos", "cc-memos-v2", "cc-custom-keys", "cc-custom-tickets", "cc-planning-notes", "cc-ticket-notes", "cc-etr", "cc-agenda", "cc-hidden-keys", "cc-hidden-meta", "cc-ticket-added-dates"] as const;
 type ValidKey = (typeof VALID_KEYS)[number];
 
 function isValidKey(k: string): k is ValidKey {
