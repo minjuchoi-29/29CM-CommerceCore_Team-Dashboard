@@ -1332,39 +1332,48 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     ];
     setHiddenMeta(newHiddenMeta);
 
+    // kvLoaded 이전에는 로컬 상태가 KV와 불일치 → KV 쓰기 차단 (데이터 유실 방지)
+    if (!kvLoaded) {
+      console.warn("[hideTicket] kvLoaded=false, KV 쓰기 차단 — 잠시 후 다시 시도하세요.");
+      return;
+    }
+
     setTickets(prev => prev.filter(t => t.key !== key));
-    const newCustomKeys = new Set([...customKeys].filter(k => k !== key));
-    setCustomKeys(newCustomKeys);
-    // hiddenKeys에 추가 → Jira 재조회 시에도 필터링
-    const newHiddenKeys = new Set([...hiddenKeys, key]);
-    setHiddenKeys(newHiddenKeys);
     if (selected?.key === key) { setSelected(null); setEditMode(false); }
 
-    const newCustomKeysArr = [...newCustomKeys];
-    const newHiddenArr     = [...newHiddenKeys];
-    const newCustomTickets = tickets.filter(t => customKeys.has(t.key) && t.key !== key);
+    // ── cc-hidden-keys: KV에서 직접 읽어 병합 (로컬 stale state 의존 제거) ──
+    // 로컬 state 업데이트는 즉각 반영용; KV 저장은 서버 현재값 기준으로 안전하게 처리
+    const newHiddenKeys = new Set([...hiddenKeys, key]);
+    setHiddenKeys(newHiddenKeys);
 
-    // KV에 저장 (팀 공유)
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-custom-keys", value: newCustomKeysArr }),
-    }).catch(() => {});
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-custom-tickets", value: newCustomTickets }),
-    }).catch(() => {});
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-hidden-keys", value: newHiddenArr }),
-    }).catch(() => {});
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-hidden-meta", value: newHiddenMeta }),
-    }).catch(() => {});
+    // cc-hidden-keys: KV 현재값 읽기 → key 추가 → 저장 (race-safe)
+    fetch("/api/kv?keys=cc-hidden-keys,cc-hidden-meta")
+      .then(r => r.json())
+      .then(data => {
+        const serverHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
+        const serverMeta: { key: string; summary: string }[] = Array.isArray(data["cc-hidden-meta"]) ? data["cc-hidden-meta"] : [];
+        const mergedHidden = Array.from(new Set([...serverHidden, key]));
+        const mergedMeta = [
+          ...serverMeta.filter((m: { key: string }) => m.key !== key),
+          ...(removedTicket ? [{ key: removedTicket.key, summary: removedTicket.summary }] : [{ key, summary: key }]),
+        ];
+        setHiddenMeta(mergedMeta);
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-hidden-keys", value: mergedHidden }) }).catch(() => {});
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-hidden-meta", value: mergedMeta }) }).catch(() => {});
+      })
+      .catch(() => {
+        // fallback: 로컬 state 기준으로 저장
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-hidden-keys", value: [...newHiddenKeys] }) }).catch(() => {});
+        fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-hidden-meta", value: newHiddenMeta }) }).catch(() => {});
+      });
+
+    // ⚠️ cc-custom-keys / cc-custom-tickets 는 여기서 절대 건드리지 않음
+    // 숨김 처리는 cc-hidden-keys 관리만의 책임 — customKeys 상태가 stale일 경우
+    // cc-custom-keys를 []로 덮어써 전체 데이터가 유실되는 버그 방지
   }
 
   // 숨긴 티켓 복원
