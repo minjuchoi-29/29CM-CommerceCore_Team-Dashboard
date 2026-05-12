@@ -36,6 +36,72 @@ async function fetchWithTimeout(url: string, options: RequestInit): Promise<Resp
   }
 }
 
+/** 배열을 n개씩 청크로 나눔 */
+function chunkArray<T>(arr: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) chunks.push(arr.slice(i, i + size));
+  return chunks;
+}
+
+/** 하나의 JQL chunk로 JIRA에서 티켓 목록 조회 */
+async function fetchChunk(
+  chunkKeys: string[],
+  headers: Record<string, string>,
+  FIELDS: string
+): Promise<Ticket[]> {
+  const jql = `key in (${chunkKeys.join(",")})`;
+  const results: Ticket[] = [];
+  let startAt = 0;
+
+  while (true) {
+    const url =
+      `${JIRA_HOST}/rest/api/3/search/jql?` +
+      new URLSearchParams({
+        jql,
+        startAt: String(startAt),
+        maxResults: "50",
+        fields: FIELDS,
+      });
+
+    const res = await fetchWithTimeout(url, { headers, cache: "no-store" });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Jira API ${res.status}: ${body.slice(0, 300)}`);
+    }
+
+    const data = await res.json();
+
+    for (const issue of data.issues as Array<Record<string, any>>) {
+      const override = TICKET_OVERRIDES[issue.key] ?? {};
+      const f = issue.fields;
+      results.push({
+        key: issue.key,
+        summary: f.summary,
+        status: f.status.name,
+        assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
+        eta: f.duedate ?? "-",
+        type: f.issuetype.name,
+        project: f.project.key,
+        startDate: f.customfield_10015 ?? undefined,
+        storyPoints: f.customfield_10036 ?? undefined,
+        twoPagerUrl: extractUrl(f.customfield_10070),
+        healthCheck: f.customfield_10071?.value ?? undefined,
+        requestDept: f.customfield_14402?.value ?? undefined,
+        bodyRequestDept: extractMultiSelect(f.customfield_10067),
+        requestPriority: f.priority?.name ?? undefined,
+        parent: f.parent?.key ?? undefined,
+        ...override,
+      });
+    }
+
+    const fetched = (data.issues as unknown[]).length;
+    if (data.isLast || fetched === 0 || startAt + fetched >= (data.total ?? 0)) break;
+    startAt += fetched;
+  }
+
+  return results;
+}
+
 export async function GET() {
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
@@ -48,7 +114,6 @@ export async function GET() {
 
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const headers = { Authorization: `Basic ${auth}`, Accept: "application/json" };
-  const jql = `key in (${TICKET_KEYS.join(",")})`;
 
   const FIELDS = [
     "summary", "status", "assignee", "issuetype", "project", "duedate",
@@ -61,60 +126,16 @@ export async function GET() {
     "customfield_14402", // Main Subject
   ].join(",");
 
-  const tickets: Ticket[] = [];
-  let startAt = 0;
+  // JIRA key in (...) 제한 회피를 위해 50개씩 청크로 나눠 병렬 조회
+  const CHUNK_SIZE = 50;
+  const chunks = chunkArray(TICKET_KEYS, CHUNK_SIZE);
 
+  let tickets: Ticket[] = [];
   try {
-    while (true) {
-      const url =
-        `${JIRA_HOST}/rest/api/3/search/jql?` +
-        new URLSearchParams({
-          jql,
-          startAt: String(startAt),
-          maxResults: "100",
-          fields: FIELDS,
-        });
-
-      const res = await fetchWithTimeout(url, { headers, cache: "no-store" });
-
-      if (!res.ok) {
-        const body = await res.text();
-        return NextResponse.json(
-          { error: `Jira API ${res.status}: ${body.slice(0, 300)}` },
-          { status: 502 }
-        );
-      }
-
-      const data = await res.json();
-
-      for (const issue of data.issues as Array<Record<string, any>>) {
-        const override = TICKET_OVERRIDES[issue.key] ?? {};
-        const f = issue.fields;
-        tickets.push({
-          key: issue.key,
-          summary: f.summary,
-          status: f.status.name,
-          assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
-          eta: f.duedate ?? "-",
-          type: f.issuetype.name,
-          project: f.project.key,
-          startDate: f.customfield_10015 ?? undefined,
-          storyPoints: f.customfield_10036 ?? undefined,
-          twoPagerUrl: extractUrl(f.customfield_10070),
-          healthCheck: f.customfield_10071?.value ?? undefined,
-          requestDept: f.customfield_14402?.value ?? undefined,
-          bodyRequestDept: extractMultiSelect(f.customfield_10067),
-          requestPriority: f.priority?.name ?? undefined,
-          parent: f.parent?.key ?? undefined,
-          ...override,
-        });
-      }
-
-      // isLast: /search/jql 엔드포인트는 total 대신 isLast를 반환하기도 함
-      const fetched = (data.issues as unknown[]).length;
-      if (data.isLast || fetched === 0 || startAt + fetched >= (data.total ?? 0)) break;
-      startAt += fetched;
-    }
+    const chunkResults = await Promise.all(
+      chunks.map(chunk => fetchChunk(chunk, headers, FIELDS))
+    );
+    tickets = chunkResults.flat();
   } catch (err) {
     const message = err instanceof Error ? err.message : "알 수 없는 오류";
     return NextResponse.json({ error: `요청 실패: ${message}` }, { status: 504 });
