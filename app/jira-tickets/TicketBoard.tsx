@@ -2811,12 +2811,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           const chipOpacity = isDone ? 0.5 : 1;
                           const dotColor    = isNeedCheck ? "#fb923c" : (MILESTONE_DOT_HEX[r.role] ?? "#6b7280");
                           const nameColor   = isNeedCheck ? "#fb923c" : (MILESTONE_DOT_HEX[r.role] ?? "#9ca3af");
-                          // 날짜 확정 → 밝은 흰색 / 미정 → 충분히 밝은 회색 / 확인필요 → 주황
-                          const dateColor   = hasDate ? "var(--text-primary)" : isNeedCheck ? "#fb923c" : "#9ca3af";
+                          // 날짜 확정 → 밝은 흰색 / 미정 → var(--text-muted) (라이트모드에서 더 진하게) / 확인필요 → 주황
+                          const dateColor   = hasDate ? "var(--text-primary)" : isNeedCheck ? "#fb923c" : "var(--text-muted)";
                           return (
                             <span
                               key={`${r.role}-${mi}`}
-                              className="inline-flex items-center gap-1 text-[11px]"
+                              className="inline-flex items-center gap-1 text-[13px]"
                               style={{ opacity: chipOpacity }}
                             >
                               {mi > 0 && <span className="mr-1" style={{ color: "var(--border-2)" }}>·</span>}
