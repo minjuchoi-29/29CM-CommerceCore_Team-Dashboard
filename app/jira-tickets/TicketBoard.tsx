@@ -2419,9 +2419,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           <div className={`grid grid-cols-7 gap-2 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
             {([
               { label: "전체",   filterKey: "전체",   count: totalAll,        numColor: "var(--text-primary)", desc: "등록된 전체 티켓",            accentColor: undefined },
+              { label: "준비중", filterKey: "준비중", count: totalReady,      numColor: "#fbbf24", desc: "준비중",                          accentColor: "#fbbf24" },
               { label: "기획",   filterKey: "기획",   count: totalPlan,       numColor: "#f97316", desc: "기획중 · 기획완료",               accentColor: "#f97316" },
               { label: "디자인", filterKey: "디자인", count: totalDesign,     numColor: "#c084fc", desc: "디자인중 · 디자인완료",            accentColor: "#c084fc" },
-              { label: "준비중", filterKey: "준비중", count: totalReady,      numColor: "#fbbf24", desc: "준비중",                          accentColor: "#fbbf24" },
               { label: "개발",   filterKey: "개발",   count: totalDev,        numColor: "#60a5fa", desc: "개발중 · In Progress",            accentColor: "#60a5fa" },
               { label: "QA",     filterKey: "QA",     count: totalQA,         numColor: "#f59e0b", desc: "QA중",                           accentColor: "#f59e0b" },
               { label: "완료",   filterKey: "완료",   count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨",           accentColor: "#34d399" },
