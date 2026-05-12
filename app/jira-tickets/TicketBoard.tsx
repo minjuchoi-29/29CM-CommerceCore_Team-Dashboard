@@ -819,8 +819,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [ticketNotes, setTicketNotes]     = useState<Record<string, PlanningNote[]>>({});
   const [ticketNoteInput, setTicketNoteInput] = useState("");
   const [planningOpen, setPlanningOpen] = useState(true);
-  const [agenda, setAgenda] = useState<Set<string>>(new Set());
-  const [agendaView, setAgendaView] = useState(false);
+
 
   // 요구사항 출처 (key → TicketRequestInfo)
   const [etrMap, setEtrMap]       = useState<Record<string, TicketRequestInfo>>({});
@@ -1426,7 +1425,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (두 요청으로 분리 — 메인 데이터 / 커스텀 티켓)
     // 1) 메인 메타데이터 (상대적으로 작은 데이터)
-    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-agenda,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates")
+    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -1434,7 +1433,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (data["cc-memos"])      setMemos(data["cc-memos"]);
         if (data["cc-memos-v2"])   setMemoHistory(data["cc-memos-v2"]);
         if (data["cc-etr"])        setEtrMap(data["cc-etr"]);
-        if (data["cc-agenda"])     setAgenda(new Set(data["cc-agenda"] as string[]));
         if (data["cc-planning-notes"]) setPlanningNotes(data["cc-planning-notes"]);
         if (data["cc-ticket-notes"])   setTicketNotes(data["cc-ticket-notes"]);
 
@@ -1984,20 +1982,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }).catch(() => {});
   }
 
-  function saveAgenda(updated: Set<string>) {
-    setAgenda(updated);
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-agenda", value: [...updated] }),
-    }).catch(() => {});
-  }
-  function toggleAgenda(key: string) {
-    const updated = new Set(agenda);
-    if (updated.has(key)) updated.delete(key);
-    else updated.add(key);
-    saveAgenda(updated);
-  }
 
   function saveEtr(updated: Record<string, TicketRequestInfo>) {
     setEtrMap(updated);
@@ -2371,33 +2355,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           );
         })()}
 
-        {/* 아젠다 미팅 서브 뷰 토글 */}
-        {agenda.size > 0 && (
-          <div className="flex items-center gap-2 mb-4 p-2.5 bg-orange-50 dark:bg-orange-900/10 border border-orange-200 dark:border-orange-700/30 rounded-xl">
-            <span className="text-xs text-orange-600 dark:text-orange-400 font-medium mr-1">미팅 모드:</span>
-            <button
-              onClick={() => setAgendaView(false)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${!agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white dark:bg-transparent border border-orange-200 dark:border-orange-700/40 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20"}`}
-            >
-              플래닝 현황
-            </button>
-            <button
-              onClick={() => setAgendaView(true)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${agendaView ? "bg-orange-500 text-white shadow-sm" : "bg-white dark:bg-transparent border border-orange-200 dark:border-orange-700/40 text-orange-600 dark:text-orange-400 hover:bg-orange-50 dark:hover:bg-orange-900/20"}`}
-            >
-              🗓 아젠다 미팅
-              <span className="ml-1 opacity-80">({agenda.size})</span>
-            </button>
-            {agendaView && (
-              <button
-                onClick={() => { saveAgenda(new Set()); setAgendaView(false); }}
-                className="ml-auto px-3 py-1.5 rounded-lg text-xs font-semibold bg-white dark:bg-transparent border border-red-200 dark:border-red-700/40 text-red-500 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-all"
-              >
-                미팅 종료 ✕
-              </button>
-            )}
-          </div>
-        )}
 
         {/* 요약 카드 */}
         {planningTab === "플래닝 대기·검토" ? (
@@ -2586,83 +2543,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
         </div>
 
-        {/* 아젠다 미팅 뷰 */}
-        {agendaView && (
-          <div className="rounded-xl border border-orange-200 dark:border-orange-700/30 overflow-hidden mb-4" style={{ background: "var(--bg-canvas)" }}>
-            <div className="px-4 py-3 bg-orange-50 dark:bg-orange-900/15 border-b border-orange-200 dark:border-orange-700/30 flex items-center gap-2">
-              <span className="text-sm font-bold text-orange-700 dark:text-orange-400">🗓 아젠다 미팅</span>
-              <span className="text-xs text-orange-500 dark:text-orange-400/70">— 논의할 티켓을 순서대로 확인하고 플래닝 상태를 업데이트하세요</span>
-            </div>
-            {tickets.filter(t => agenda.has(t.key)).length === 0 ? (
-              <div className="py-10 text-center text-sm" style={{ color: "var(--text-muted)" }}>아젠다에 등록된 티켓이 없습니다.</div>
-            ) : (
-              tickets.filter(t => agenda.has(t.key)).map((t, idx) => {
-                const p = getPlanningVal(planning[t.key]);
-                const isDiscussed = p.design === "완료" && p.dev === "완료";
-                return (
-                  <div key={t.key} className={`border-b border-orange-100 dark:border-orange-700/20 last:border-0 transition-colors ${isDiscussed ? "bg-green-50 dark:bg-green-900/10" : ""}`} style={isDiscussed ? {} : { background: "var(--bg-canvas)" }}>
-                    <div className="flex items-start gap-3 px-4 py-3">
-                      <span className="shrink-0 w-5 text-center text-xs text-orange-400 font-mono mt-1">{idx + 1}</span>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 flex-wrap mb-2">
-                          <a
-                            href={`${JIRA_BASE}${t.key}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="font-mono text-xs text-blue-500 hover:underline shrink-0"
-                          >
-                            {t.key}
-                          </a>
-                          <span className="text-sm font-medium truncate" style={{ color: "var(--text-primary)" }}>{t.summary}</span>
-                          {isDiscussed && (
-                            <span className="shrink-0 px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-700/40">논의 완료</span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-3 flex-wrap">
-                          <span className="text-xs text-gray-500 dark:text-gray-500">디자인</span>
-                          <div className="flex gap-1">
-                            {TRACK_STATES.map(s => (
-                              <button
-                                key={s}
-                                onClick={() => savePlanning(t.key, "design", s)}
-                                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${p.design === s
-                                  ? s === "완료" ? "bg-green-500 text-white border-green-500" : s === "검토중" ? "bg-violet-500 text-white border-violet-500" : "bg-gray-500 text-white border-gray-500"
-                                  : "bg-white dark:bg-transparent text-gray-500 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500"}`}
-                              >
-                                {s}
-                              </button>
-                            ))}
-                          </div>
-                          <span className="text-xs text-gray-500 dark:text-gray-500 ml-2">개발</span>
-                          <div className="flex gap-1">
-                            {TRACK_STATES.map(s => (
-                              <button
-                                key={s}
-                                onClick={() => savePlanning(t.key, "dev", s)}
-                                className={`px-2.5 py-1 rounded-lg text-xs font-medium transition-all border ${p.dev === s
-                                  ? s === "완료" ? "bg-green-500 text-white border-green-500" : s === "검토중" ? "bg-blue-500 text-white border-blue-500" : "bg-gray-500 text-white border-gray-500"
-                                  : "bg-white dark:bg-transparent text-gray-500 dark:text-gray-500 border-gray-200 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-500"}`}
-                              >
-                                {s}
-                              </button>
-                            ))}
-                          </div>
-                          <button
-                            onClick={() => toggleAgenda(t.key)}
-                            className="ml-auto shrink-0 text-xs text-gray-400 dark:text-gray-500 hover:text-orange-400 transition-colors"
-                            title="아젠다에서 제거"
-                          >
-                            ✕ 제거
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        )}
 
         {/* 최근 2주 신규 고정 섹션 — newFilter ON이면 중복이므로 숨김 */}
         {!newFilter && !isDetailExpanded && (() => {
@@ -2746,7 +2626,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const tp = getPlanningVal(planning[t.key]);
               const planningComplete = tp.design === "완료" && tp.dev === "완료";
               const ticketDone = ["론치완료", "완료", "배포완료"].includes(t.status);
-              const showAgenda = !planningComplete && !ticketDone;
 
               // ETA 경고: 완료/진행중 상태가 아닌데 ETA가 경과·임박한 경우
               const todayStr = new Date().toISOString().split("T")[0];
@@ -2815,17 +2694,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     ) : (
                       /* 기본 뷰: 전체 컬럼 */
                       <>
-                        {showAgenda ? (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); toggleAgenda(t.key); }}
-                            title={agenda.has(t.key) ? "아젠다에서 제거" : "아젠다에 추가"}
-                            className={`w-6 shrink-0 flex items-center justify-center text-base transition-all rounded ${agenda.has(t.key) ? "opacity-100" : "opacity-20 hover:opacity-60"}`}
-                          >
-                            🗓
-                          </button>
-                        ) : (
-                          <span className="w-6 shrink-0" />
-                        )}
+                        <span className="w-6 shrink-0" />
                         <span className="w-8 shrink-0 text-center text-xs font-mono" style={{ color: "var(--text-subtle)" }}>{idx + 1}</span>
                         <a
                           href={`${JIRA_BASE}${t.key}`}
