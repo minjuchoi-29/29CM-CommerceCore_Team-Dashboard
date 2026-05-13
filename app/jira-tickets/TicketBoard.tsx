@@ -838,7 +838,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
 
   // 정렬
-  const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta">("eta");
+  const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta" | "ticketNo">("eta");
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기" | "기획" | "디자인" | "준비중" | "개발" | "QA">("전체");
 
   // 사용자 직접 추가 티켓 관리
@@ -1120,7 +1120,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }).catch(() => {});
 
         setAddKeyInput("");
-        setPlanningTab("플래닝 대기·검토");
+        setPlanningTab(trimmed.startsWith("ETR-") ? "요청 검토 중" : "플래닝 대기·검토");
         setNewlyAddedKeys(new Set([trimmed]));
         setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
 
@@ -1890,6 +1890,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       result.sort((a: Ticket, b: Ticket) => dateVal(a.startDate) - dateVal(b.startDate));
     } else if (sortBy === "eta") {
       result.sort((a: Ticket, b: Ticket) => dateVal(a.eta) - dateVal(b.eta));
+    } else if (sortBy === "ticketNo") {
+      const ticketNum = (key: string) => {
+        const m = key.match(/(\d+)$/);
+        return m ? parseInt(m[1], 10) : 0;
+      };
+      result.sort((a: Ticket, b: Ticket) => ticketNum(a.key) - ticketNum(b.key));
     }
     return result;
   }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -2566,6 +2572,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <option value="default">등록순</option>
                 <option value="priority">우선순위 P1↑</option>
                 <option value="startDate">시작일순</option>
+                <option value="ticketNo">티켓 No순</option>
               </select>
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px]" style={{ color: "#a78bfa" }}>▾</span>
             </div>
