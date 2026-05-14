@@ -9,6 +9,16 @@ type Props = {
 
 const LINKS = [
   {
+    category: "전략",
+    items: [
+      {
+        label: "2026 H1 Commerce Core 전략과제 맵핑",
+        url: "https://wiki.team.musinsa.com/wiki/spaces/29PRODUCT/pages/448730075/2026+H1+Commerce+Core",
+        icon: "🗺️",
+      },
+    ],
+  },
+  {
     category: "OKR",
     items: [
       {
