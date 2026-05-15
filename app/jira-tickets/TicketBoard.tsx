@@ -1019,6 +1019,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Focus Mode 2-column 스크롤 대상 ref
   const focusLeftColRef  = useRef<HTMLDivElement>(null);
   const focusRightColRef = useRef<HTMLDivElement>(null);
+  // Workspace Navigation Context — 진입 경로/이전 상태 추적 (page reload 시 초기화 OK)
+  const workspaceNavRef = useRef<{
+    source: string | null;         // "owner_dashboard" | null
+    fromOwnerDashboard: boolean;   // source=owner_dashboard && mode=focus로 진입했는지
+    entryFocus: string | null;     // 진입 시 focus= 파라미터
+    prevPtab: string | null;       // 진입 전 planningTab (복귀 시 복원용)
+  }>({ source: null, fromOwnerDashboard: false, entryFocus: null, prevPtab: null });
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
   const [noteInput, setNoteInput]         = useState("");
@@ -1801,7 +1808,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setFocusContext(focusParam);
     }
 
-    // ── 3b. mode=focus 자동 진입 (owner_dashboard → Focus Mode 직행) ─────────
+    // ── 3b. workspaceNavRef — 진입 경로 기록 ────────────────────────────────
+    workspaceNavRef.current = {
+      source:              sourceParam,
+      fromOwnerDashboard:  sourceParam === "owner_dashboard" && modeParam === "focus",
+      entryFocus:          focusParam,
+      prevPtab:            planningTab, // 진입 전 탭 상태 보존
+    };
+
+    // ── 3c. mode=focus 자동 진입 (owner_dashboard → Focus Mode 직행) ─────────
     const autoFocus = sourceParam === "owner_dashboard" && modeParam === "focus";
 
     // ── 4. selected 설정 + scroll ────────────────────────────────────────────
@@ -1898,11 +1913,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       if (e.key === "Escape" && isDetailExpanded) {
         setIsDetailExpanded(false);
         window.history.replaceState({ ...(window.history.state ?? {}), expanded: false }, "");
+        // ESC로 Split View 복귀 시 선택 행 스크롤 복원
+        if (selected) {
+          setTimeout(() => {
+            document.querySelector<Element>(`[data-ticket-key="${selected.key}"]`)
+              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 80);
+        }
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [isDetailExpanded]);
+  }, [isDetailExpanded, selected]);
+
+  // TicketBoard 언마운트 시 SidebarNav 복원 (detail-panel open:false 발행)
+  // 이유: selected → null 전환 없이 페이지 이동 시(예: owner_dashboard로 back)
+  //       SidebarNav가 "닫힘" 상태로 남아 sidebar가 접힌 채 남는 문제를 방지.
+  useEffect(() => {
+    return () => {
+      window.dispatchEvent(new CustomEvent("detail-panel", { detail: { open: false } }));
+    };
+  }, []);
 
   // KV + 티켓 로드 완료 후 1회: 진행중/완료 티켓 중 플래닝 미설정 항목을 자동으로 완료 처리
   useEffect(() => {
@@ -2701,10 +2732,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const target = e.target as HTMLElement;
     // 인터랙티브 요소 또는 티켓 행 위 클릭은 무시
     if (target.closest('button, input, select, textarea, a, [data-ticket-key], [data-interactive], [role="dialog"]')) return;
-    // 빈 배경 클릭 → 패널 닫기
+    // Focus Mode 배경 클릭 → Split View로만 전환 (history.back() 금지)
+    // 이유: Focus Mode에서 background click 시 의도치 않게 owner_dashboard로 이동하는 것을 방지.
+    //      Split View에서 배경 클릭은 패널 닫기(history.back()) 유지.
     if (isDetailExpanded) {
       setIsDetailExpanded(false);
       window.history.replaceState({ ...(window.history.state ?? {}), expanded: false }, "");
+      // Split View 복귀 시 선택 행 스크롤 복원
+      if (selected) {
+        setTimeout(() => {
+          document.querySelector<Element>(`[data-ticket-key="${selected.key}"]`)
+            ?.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 80);
+      }
+      return; // Split View 전환만 — 패널은 열린 채 유지
     }
     window.history.back();
   }
@@ -3640,6 +3681,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       const next = !isDetailExpanded;
                       setIsDetailExpanded(next);
                       window.history.replaceState({ ...(window.history.state ?? {}), expanded: next }, "");
+                      // Split View 복귀 시: 선택 행을 화면 중앙으로 스크롤 복원
+                      if (!next && selected) {
+                        setTimeout(() => {
+                          document.querySelector<Element>(`[data-ticket-key="${selected.key}"]`)
+                            ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                        }, 80);
+                      }
                     }}
                     title={isDetailExpanded ? "기본 보기로 (ESC)" : "집중 보기 — 목록을 최소화하고 이 티켓에 집중"}
                     className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-semibold transition-all"
@@ -3680,6 +3728,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </>
                     )}
                   </button>
+                  {/* Focus Mode + owner_dashboard 진입 시 "대시보드로" 빠른 복귀 버튼 */}
+                  {isDetailExpanded && workspaceNavRef.current.fromOwnerDashboard && (
+                    <button
+                      onClick={() => window.history.back()}
+                      className="flex items-center gap-1 px-2 h-7 rounded-md text-[11px] font-medium transition-all opacity-50 hover:opacity-100"
+                      style={{ color: "var(--text-muted)", border: "1px solid var(--border-2)" }}
+                      title="담당자 대시보드로 돌아가기"
+                    >
+                      <svg width="9" height="9" viewBox="0 0 10 10" fill="none">
+                        <path d="M6.5 2L3 5l3.5 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                      대시보드
+                    </button>
+                  )}
                   {/* 구분선 */}
                   <span className="w-px h-4 shrink-0" style={{ background: "var(--border-2)" }} />
                   {/* Jira 이동 */}
@@ -3702,12 +3764,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   <div className="group">
                     <TicketCopyButton ticketKey={selected.key} summary={selected.summary} size="xs" />
                   </div>
-                  {/* 닫기 */}
+                  {/* 닫기 — source=owner_dashboard면 "대시보드로 돌아가기" 툴팁 */}
                   <button
                     onClick={() => window.history.back()}
                     className="flex items-center justify-center w-6 h-6 rounded text-base leading-none transition-colors hover:opacity-100 opacity-50"
                     style={{ color: "var(--text-muted)" }}
-                    title="닫기"
+                    title={workspaceNavRef.current.fromOwnerDashboard ? "대시보드로 돌아가기" : "닫기"}
                   >×</button>
                 </div>
               </div>

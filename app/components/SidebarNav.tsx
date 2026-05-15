@@ -115,6 +115,12 @@ export default function SidebarNav({ user, logoutAction }: Props) {
     return () => window.removeEventListener("detail-panel", handler);
   }, []);
 
+  // pathname 변경(페이지 이동) 시 사이드바 항상 복원
+  // 이유: TicketBoard의 언마운트 cleanup이 race condition으로 누락될 경우 대비 (이중 방어)
+  useEffect(() => {
+    setVisible(true);
+  }, [pathname]);
+
   // ── 접힌 상태 ──────────────────────────────────────────────────────────────
   if (!visible) {
     return (
