@@ -1016,6 +1016,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // deep-link 처리 완료 여부 — tickets가 바뀔 때마다 재실행되는 것을 방지
   // match가 찾아져서 setSelected까지 실행된 이후에만 true로 설정
   const deepLinkProcessedRef = useRef(false);
+  // Focus Mode 2-column 스크롤 대상 ref
+  const focusLeftColRef  = useRef<HTMLDivElement>(null);
+  const focusRightColRef = useRef<HTMLDivElement>(null);
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
   const [noteInput, setNoteInput]         = useState("");
@@ -3691,8 +3694,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
             );
           })()}
-          {/* ── 탭 네비게이션 ── */}
-          {(() => {
+          {/* ── 탭 네비게이션 (Focus Mode에서는 숨김) ── */}
+          {!isDetailExpanded && (() => {
             // 탭 구조: Overview(컨텍스트) + Planning & Schedule(운영) — 흐름 기준 2탭
             // TODO [ACTIVITY]: activity 고도화 완료 후 { id: "activity", label: "Activity", icon: <clockSvg> } 복원
             const TABS: { id: "overview" | "ops"; label: string; icon: React.ReactNode }[] = [
@@ -3740,8 +3743,394 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
             );
           })()}
-          {/* ── 스크롤 콘텐츠 ── */}
-          <div className="flex-1 overflow-y-auto min-h-0">
+
+          {/* ══════════════════════════════════════════════════════════════
+              Focus Mode 워크스페이스 — isDetailExpanded === true 일 때만 렌더
+              2-column 운영 워크스페이스: 액션 스트립 + 좌(Context) + 우(Execution)
+              ══════════════════════════════════════════════════════════════ */}
+          {isDetailExpanded && (() => {
+            const fmActions = getActionItems(
+              selected,
+              planning[selected.key],
+              schedules[selected.key] ?? selected.roles ?? [],
+              etrMap[selected.key]
+            );
+            const fmEtr   = etrMap[selected.key];
+            const fmWikis = fmEtr?.wikiLinks ?? [];
+            const fmMemo  = getCurrentMemo(selected.key);
+            const fmPlan  = getPlanningVal(planning[selected.key]);
+            const fmRoles = schedules[selected.key] ?? selected.roles ?? [];
+            const fmNotes = planningNotes[selected.key] ?? [];
+            const fmTicketNotes = ticketNotes[selected.key];
+
+            // 주요 메타 항목
+            const META_ROWS: { label: string; value: string | undefined | null }[] = [
+              { label: "상태",   value: selected.status },
+              { label: "ETA",    value: selected.eta && selected.eta !== "-" ? selected.eta : undefined },
+              { label: "유형",   value: selected.type },
+              { label: "담당자", value: selected.assignee ?? undefined },
+              { label: "프로젝트", value: selected.project ?? undefined },
+            ];
+
+            const LEVEL_STYLE = {
+              critical: { dot: "#ef4444", color: "#f87171", bg: "rgba(239,68,68,0.09)",   border: "rgba(248,113,113,0.5)" },
+              warning:  { dot: "#f59e0b", color: "#fbbf24", bg: "rgba(245,158,11,0.08)",  border: "rgba(251,191,36,0.38)" },
+              info:     { dot: "#64748b", color: "#94a3b8", bg: "rgba(100,116,139,0.04)", border: "rgba(100,116,139,0.18)" },
+            } as const;
+
+            // 플래닝 상태 레이블 → 색상
+            const planningStateColor = (v: string) =>
+              v === "완료"     ? "#34d399" :
+              v === "검토중"   ? "#a78bfa" :
+              v === "대상아님" ? "var(--text-muted)" :
+                                 "var(--text-subtle)";
+
+            return (
+              <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                {/* ── Action Required 스트립 ── */}
+                {fmActions.length > 0 && (
+                  <div
+                    className="shrink-0 flex items-center gap-1.5 px-4 py-2 flex-wrap"
+                    style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-canvas)" }}
+                  >
+                    <span className="text-[11px] font-semibold uppercase tracking-wide shrink-0 mr-0.5" style={{ color: "var(--text-muted)" }}>
+                      Action Required
+                    </span>
+                    {fmActions.map(action => {
+                      const s = LEVEL_STYLE[action.level];
+                      return (
+                        <button
+                          key={action.id}
+                          onClick={() => {
+                            // Focus Mode에서는 탭 대신 우측 컬럼의 해당 섹션으로 스크롤
+                            if (action.targetTab === "ops" && focusRightColRef.current) {
+                              const sectionKey = action.id.startsWith("schedule") ? "schedule" : "planning";
+                              const el = focusRightColRef.current.querySelector<HTMLElement>(
+                                `[data-fm-section='${sectionKey}']`
+                              );
+                              el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                            } else if (!action.targetTab && focusLeftColRef.current) {
+                              // etr/docs 관련 액션 → 좌측 컬럼 etr 섹션으로 스크롤
+                              const el = focusLeftColRef.current.querySelector<HTMLElement>("[data-fm-section='etr']");
+                              el?.scrollIntoView({ behavior: "smooth", block: "start" });
+                            }
+                          }}
+                          className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all hover:opacity-85"
+                          style={{ background: s.bg, border: `1px solid ${s.border}`, color: s.color }}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.dot }} />
+                          {action.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* ── 2-column body ── */}
+                <div className="flex flex-1 min-h-0 overflow-hidden">
+
+                  {/* ── LEFT: Context 컬럼 ── */}
+                  <div
+                    ref={focusLeftColRef}
+                    className="overflow-y-auto flex flex-col gap-4 p-4"
+                    style={{ width: "46%", borderRight: "1px solid var(--border-2)", background: "var(--bg-canvas)" }}
+                  >
+                    {/* 메타 */}
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
+                        메타
+                      </p>
+                      <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                        {META_ROWS.filter(r => r.value).map((row, i) => (
+                          <div
+                            key={row.label}
+                            className="flex items-center gap-2 px-3 py-2 text-xs"
+                            style={{ borderTop: i > 0 ? "1px solid var(--border)" : undefined, background: "var(--bg-overlay)" }}
+                          >
+                            <span className="w-16 shrink-0 font-medium" style={{ color: "var(--text-muted)" }}>{row.label}</span>
+                            <span className="flex-1" style={{ color: "var(--text-primary)" }}>{row.value}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 요구사항 출처 (ETR) */}
+                    <div data-fm-section="etr">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
+                        요구사항 출처
+                      </p>
+                      {fmEtr ? (
+                        <div className="space-y-1.5">
+                          {/* 출처 유형 배지 */}
+                          <div
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium"
+                            style={
+                              fmEtr.source === "자체발의" ? { background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.35)", color: "#818cf8" } :
+                              fmEtr.source === "ELT"     ? { background: "rgba(245,158,11,0.12)",  border: "1px solid rgba(245,158,11,0.35)",  color: "#fbbf24" } :
+                                                           { background: "rgba(59,130,246,0.12)",  border: "1px solid rgba(59,130,246,0.35)",  color: "#60a5fa" }
+                            }
+                          >
+                            {fmEtr.source === "자체발의" ? "자체발의" : fmEtr.source === "ELT" ? "ELT 요구사항" : "외부 부서 요청 (ETR)"}
+                          </div>
+                          {/* ETR 티켓 목록 */}
+                          {fmEtr.source === "ETR" && (fmEtr.etrTickets ?? []).map(t => (
+                            <div key={t.key} className="flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs"
+                              style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+                            >
+                              <span className="font-mono font-semibold shrink-0" style={{ color: "#818cf8" }}>{t.key}</span>
+                              {t.summary && <span className="flex-1 truncate" style={{ color: "var(--text-primary)" }}>{t.summary}</span>}
+                              {t.requestDept && <span className="shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>{t.requestDept}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>출처 미등록</p>
+                      )}
+                    </div>
+
+                    {/* 관련 문서 (Wiki) */}
+                    {fmWikis.length > 0 && (
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
+                          관련 문서
+                        </p>
+                        <div className="space-y-1">
+                          {fmWikis.map(w => (
+                            <a
+                              key={w.url}
+                              href={w.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs hover:opacity-80 transition-opacity"
+                              style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 shrink-0" style={{ color: "#818cf8" }}>
+                                <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
+                                <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
+                              </svg>
+                              <span className="flex-1 min-w-0">
+                                <span className="block font-medium truncate">{w.title}</span>
+                                <span className="block text-[11px] truncate opacity-60">{w.url}</span>
+                              </span>
+                            </a>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 주요 내용 요약 (Memo) */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+                          주요 내용 요약
+                        </p>
+                        {!memoEditMode && (
+                          <button
+                            onClick={() => { setMemoText(fmMemo?.text ?? ""); setMemoEditMode(true); }}
+                            className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                          >
+                            {fmMemo ? "편집" : "입력"}
+                          </button>
+                        )}
+                      </div>
+                      {memoEditMode ? (
+                        <div className="space-y-1.5">
+                          <textarea
+                            value={memoText}
+                            onChange={(e) => setMemoText(e.target.value)}
+                            placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
+                            rows={5}
+                            className="w-full text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-y"
+                            style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                          />
+                          <div className="flex gap-1.5 justify-end">
+                            <button
+                              onClick={() => setMemoEditMode(false)}
+                              className="text-[11px] px-2.5 py-1 rounded hover:opacity-70"
+                              style={{ color: "var(--text-muted)" }}
+                            >취소</button>
+                            <button
+                              onClick={() => { saveMemo(selected.key, memoText); setMemoEditMode(false); }}
+                              className="text-[11px] bg-indigo-600 text-white px-3 py-1 rounded-lg hover:bg-indigo-700 font-medium"
+                            >저장</button>
+                          </div>
+                        </div>
+                      ) : fmMemo ? (
+                        <div
+                          className="text-xs whitespace-pre-wrap leading-relaxed rounded-lg px-3 py-2.5"
+                          style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                        >
+                          {fmMemo.text}
+                        </div>
+                      ) : (
+                        <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>요약 없음 — 위 &quot;입력&quot;을 클릭해 추가하세요</p>
+                      )}
+                    </div>
+
+                    {/* 티켓 메모 */}
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
+                        메모
+                      </p>
+                      {fmTicketNotes && (() => {
+                        const grouped: { author: string; date: string; items: { text: string; idx: number }[] }[] = [];
+                        fmTicketNotes.forEach((n, i) => {
+                          const last = grouped[grouped.length - 1];
+                          if (last && last.author === n.author && last.date === n.date) {
+                            last.items.push({ text: n.text, idx: i });
+                          } else {
+                            grouped.push({ author: n.author, date: n.date, items: [{ text: n.text, idx: i }] });
+                          }
+                        });
+                        return grouped.length > 0 ? (
+                          <div className="space-y-1.5 mb-2">
+                            {grouped.map((g, gi) => (
+                              <div key={gi} className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                                <div className="flex items-center justify-between px-3 py-1" style={{ background: "var(--bg-overlay)", borderBottom: "1px solid var(--border)" }}>
+                                  <span className="text-[11px] font-medium" style={{ color: "var(--text-primary)" }}>{g.author}</span>
+                                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>{g.date}</span>
+                                </div>
+                                {g.items.map(({ text, idx }) => (
+                                  <div key={idx} className="px-3 py-2">
+                                    <p className="text-xs whitespace-pre-wrap leading-relaxed" style={{ color: "var(--text-primary)" }}>{text}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ))}
+                          </div>
+                        ) : null;
+                      })()}
+                      <div className="flex flex-col gap-1.5">
+                        <textarea
+                          value={ticketNoteInput}
+                          onChange={(e) => setTicketNoteInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                              addTicketNote(selected.key, ticketNoteInput);
+                              setTicketNoteInput("");
+                            }
+                          }}
+                          placeholder="메모 (⌘+Enter 등록)"
+                          rows={2}
+                          className="w-full text-xs rounded-lg px-3 py-2 focus:outline-none focus:ring-1 focus:ring-indigo-500 resize-none"
+                          style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                        />
+                        <button
+                          onClick={() => { addTicketNote(selected.key, ticketNoteInput); setTicketNoteInput(""); }}
+                          disabled={!ticketNoteInput.trim()}
+                          className="self-end text-[11px] bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 font-medium transition-colors"
+                        >등록</button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ── RIGHT: Execution 컬럼 ── */}
+                  <div
+                    ref={focusRightColRef}
+                    className="overflow-y-auto flex flex-col gap-4 p-4"
+                    style={{ flex: 1, background: "var(--bg-overlay)" }}
+                  >
+                    {/* 플래닝 상태 */}
+                    <div data-fm-section="planning">
+                      <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
+                        플래닝 상태
+                      </p>
+                      <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
+                        {(["design", "dev"] as const).map((track, ti) => {
+                          const current = track === "design" ? fmPlan.design : fmPlan.dev;
+                          const label   = track === "design" ? "Design" : "Dev";
+                          const color   = track === "design" ? "#a78bfa" : "#60a5fa";
+                          return (
+                            <div
+                              key={track}
+                              className="flex items-center gap-3 px-3 py-2.5"
+                              style={{ borderTop: ti > 0 ? "1px solid var(--border)" : undefined }}
+                            >
+                              <span className="text-xs font-semibold w-12 shrink-0" style={{ color }}>{label}</span>
+                              <div className="flex gap-1 flex-1">
+                                {TRACK_STATES.map(s => {
+                                  const active = current === s;
+                                  const activeStyle =
+                                    s === "완료"     ? { background: "rgba(16,185,129,0.2)",  borderColor: "#34d399", color: "#34d399" } :
+                                    s === "검토중"   ? { background: "rgba(124,58,237,0.2)",  borderColor: "#a78bfa", color: "#a78bfa" } :
+                                    s === "대상아님" ? { background: "var(--bg-item-alt)", borderColor: "var(--text-primary)", color: "var(--text-primary)" } :
+                                                       { background: "var(--bg-item-alt)", borderColor: "var(--text-secondary)", color: "var(--text-secondary)" };
+                                  const inactiveStyle = { background: "var(--bg-overlay)", borderColor: "var(--border-2)", color: "var(--text-subtle)" };
+                                  return (
+                                    <button
+                                      key={s}
+                                      onClick={() => savePlanning(selected.key, track, s)}
+                                      className="flex-1 py-1 px-1.5 rounded text-[11px] font-medium border transition-all hover:opacity-90"
+                                      style={active ? activeStyle : inactiveStyle}
+                                    >{s}</button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* 세부 일정 (Gantt) */}
+                    <div data-fm-section="schedule">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+                          세부 일정
+                        </p>
+                        {!editMode && fmRoles.length > 0 && (
+                          <button
+                            onClick={() => { setEditRows(fmRoles.map(r => ({ ...r }))); setEditMode(true); setEditError(null); }}
+                            className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                          >편집</button>
+                        )}
+                      </div>
+                      {fmRoles.length > 0 ? (
+                        <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
+                          <GanttChart
+                            roles={fmRoles}
+                            extendedView={false}
+                            forceShowPastDone={false}
+                            fitToContent={true}
+                            ticketDone={["론치완료","완료","배포완료"].includes(selected.status)}
+                            ticketActive={!["론치완료","완료","배포완료"].includes(selected.status)}
+                            onEditRow={undefined}
+                          />
+                        </div>
+                      ) : (
+                        <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>등록된 일정이 없습니다</p>
+                      )}
+                    </div>
+
+                    {/* 플래닝 노트 */}
+                    {fmNotes.length > 0 && (
+                      <div>
+                        <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
+                          플래닝 노트
+                        </p>
+                        <div className="space-y-1">
+                          {fmNotes.map((n, i) => (
+                            <div
+                              key={i}
+                              className="px-3 py-2 rounded-lg text-xs"
+                              style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                            >
+                              <p className="whitespace-pre-wrap leading-relaxed">{n.text}</p>
+                              <p className="mt-1 text-[11px]" style={{ color: "var(--text-muted)" }}>{n.author} · {n.date}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                </div>{/* ── end 2-column body ── */}
+              </div>
+            );
+          })()}
+
+          {/* ── 스크롤 콘텐츠 (Focus Mode에서는 숨김) ── */}
+          {!isDetailExpanded && <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-5">
 
             {/* ── owner_dashboard deep-link Reminder Strip ──────────────────────────
@@ -5061,7 +5450,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
 
           </div>
-          </div>{/* overflow-y-auto */}
+          </div>}{/* !isDetailExpanded: overflow-y-auto 끝 */}
         </div>
       )}
     </div>
