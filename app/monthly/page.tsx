@@ -1,5 +1,6 @@
 "use client";
 import { useState, useEffect, useMemo, useCallback } from "react";
+import TicketCopyButton from "@/app/components/TicketCopyButton";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 const TICKET_CACHE_KEY = "cc-tickets-v1";
@@ -243,62 +244,84 @@ export default function MonthlyProgressPage() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-64 text-sm text-gray-400">
-        로딩 중...
+      <div className="flex items-center justify-center h-64">
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+          <span className="text-sm text-gray-400 dark:text-neutral-500 font-medium">로딩 중...</span>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col min-h-screen bg-gray-50">
-      {/* Header */}
-      <div className="bg-white border-b border-gray-200 px-8 py-5 sticky top-0 z-10">
-        <div className="flex items-start justify-between gap-4">
+    <div className="flex flex-col min-h-screen" style={{ background: "var(--bg-canvas)" }}>
+      {/* ── Sticky Header ── */}
+      <div className="bg-white dark:bg-neutral-900 border-b border-gray-200 dark:border-neutral-700 px-8 py-4 sticky top-0 z-10 shadow-[0_1px_3px_rgba(0,0,0,0.06)]">
+        <div className="flex items-center justify-between gap-4 mb-3">
           <div>
-            <h1 className="text-base font-semibold text-gray-900">월별 진행 현황</h1>
-            <p className="text-xs text-gray-400 mt-0.5">도메인별로 묶어 월 단위 진행 이력과 계획을 확인합니다</p>
+            <h1 className="text-[15px] font-semibold text-gray-900 dark:text-neutral-100 leading-tight">월별 진행 현황</h1>
+            <p className="text-[11px] text-gray-400 dark:text-neutral-500 mt-0.5">도메인별 월 단위 진행 이력 및 계획</p>
           </div>
 
-          <div className="flex items-center gap-5 pt-0.5 shrink-0">
-            <div className="flex gap-4 text-xs">
-              <span className="text-gray-500">과제 <strong className="text-gray-800 text-sm">{stats.total}</strong></span>
-              <span className="text-green-600">완료 <strong>{stats.completed}</strong></span>
-              <span className="text-blue-600">진행중 <strong>{stats.inProgress}</strong></span>
-              <span className="text-gray-400">기타 <strong>{stats.other}</strong></span>
+          <div className="flex items-center gap-5 shrink-0">
+            {/* Stats row */}
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1">
+                <span className="text-[11px] text-gray-400 dark:text-neutral-500 font-medium">전체</span>
+                <span className="text-sm font-bold text-gray-800 dark:text-neutral-200">{stats.total}</span>
+              </div>
+              <div className="w-px h-3 bg-gray-200 dark:bg-neutral-700" />
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block" />
+                <span className="text-[11px] text-gray-500 dark:text-neutral-500 font-medium">완료 {stats.completed}</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-blue-500 inline-block" />
+                <span className="text-[11px] text-gray-500 dark:text-neutral-500 font-medium">진행 {stats.inProgress}</span>
+              </div>
+              {stats.other > 0 && (
+                <div className="flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-gray-300 inline-block" />
+                  <span className="text-[11px] text-gray-400 dark:text-neutral-500 font-medium">기타 {stats.other}</span>
+                </div>
+              )}
             </div>
             <button
               onClick={() => { setRefreshing(true); loadTickets(true); }}
               disabled={refreshing}
-              className="text-xs text-gray-400 hover:text-gray-600 disabled:opacity-40 transition-colors"
+              className="flex items-center gap-1 text-[11px] text-gray-400 dark:text-neutral-500 hover:text-gray-600 disabled:opacity-40 transition-colors font-medium px-2 py-1 rounded hover:bg-gray-100 dark:hover:bg-neutral-800"
             >
+              <svg className={`w-3 h-3 ${refreshing ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
               {refreshing ? "갱신 중..." : "새로고침"}
             </button>
           </div>
         </div>
 
         {/* Month pills */}
-        <div className="flex gap-1.5 mt-4 overflow-x-auto pb-0.5">
+        <div className="flex gap-1 overflow-x-auto pb-0.5 -mx-1 px-1">
           {months.map(m => {
-            const selected = m === selectedMonth;
+            const sel = m === selectedMonth;
             const past = m < CURRENT_MONTH;
             const current = m === CURRENT_MONTH;
             return (
               <button
                 key={m}
                 onClick={() => { setSelectedMonth(m); setCollapsedDomains(new Set()); }}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium whitespace-nowrap transition-all ${
-                  selected
-                    ? current
-                      ? "bg-blue-600 text-white shadow-sm"
-                      : past
-                        ? "bg-gray-700 text-white shadow-sm"
-                        : "bg-teal-600 text-white shadow-sm"
-                    : "bg-gray-100 text-gray-500 hover:bg-gray-200"
-                }`}
+                className="px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition-all relative"
+                style={sel ? {
+                  background: current ? "#2563eb" : past ? "var(--text-muted)" : "#0d9488",
+                  color: "#fff",
+                  boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                } : {
+                  background: current ? "#eff6ff" : "var(--bg-overlay)",
+                  color: current ? "#2563eb" : "#6b7280",
+                }}
               >
                 {shortMonthLabel(m)}
-                {current && !selected && (
-                  <span className="ml-1 inline-block w-1 h-1 rounded-full bg-blue-500 align-middle mb-0.5" />
+                {current && !sel && (
+                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-blue-500 border border-white" />
                 )}
               </button>
             );
@@ -306,125 +329,194 @@ export default function MonthlyProgressPage() {
         </div>
       </div>
 
-      {/* Month title */}
-      <div className="px-8 pt-6 pb-3 flex items-center gap-2">
-        <h2 className="text-sm font-semibold text-gray-800">{monthLabel(selectedMonth)}</h2>
-        <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${
+      {/* ── Month Section Header ── */}
+      <div className="px-8 pt-5 pb-3 flex items-center gap-2.5">
+        <h2 className="text-sm font-semibold text-gray-800 dark:text-neutral-200">{monthLabel(selectedMonth)}</h2>
+        <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
           isCurrent ? "bg-blue-100 text-blue-700" :
-          isPast ? "bg-gray-100 text-gray-500" :
-          "bg-teal-50 text-teal-700"
+          isPast    ? "bg-gray-100 dark:bg-neutral-800 text-gray-500 dark:text-neutral-500" :
+                      "bg-teal-50 text-teal-700"
         }`}>
           {isCurrent ? "이번 달" : isPast ? "지난 달" : "예정"}
         </span>
-        <span className="text-xs text-gray-400">
+        <span className="text-[11px] text-gray-400 dark:text-neutral-500">
           {domainGroups.length}개 도메인 · {stats.total}개 과제
         </span>
       </div>
 
-      {/* Domain cards */}
+      {/* ── Domain Cards ── */}
       {domainGroups.length === 0 ? (
-        <div className="px-8 py-16 text-center text-gray-400 text-sm">
-          이 달에 등록된 과제가 없습니다.
+        <div className="px-8 py-20 flex flex-col items-center gap-3 text-center">
+          <span className="text-3xl opacity-20">□</span>
+          <p className="text-sm font-medium text-gray-500 dark:text-neutral-500">이 달에 등록된 과제가 없습니다</p>
+          <p className="text-[11px] text-gray-400 dark:text-neutral-500">다른 월을 선택하거나 티켓의 일정을 확인해주세요</p>
         </div>
       ) : (
-        <div className="px-8 pb-10 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
+        <div className="px-8 pb-12 grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 items-start">
           {domainGroups.map(([domain, domainTickets]) => {
             const collapsed = collapsedDomains.has(domain);
             const done = domainTickets.filter(t => isCompleted(t.status));
             const inProg = domainTickets.filter(t => isActive(t.status));
             const rest = domainTickets.filter(t => !isCompleted(t.status) && !isActive(t.status));
             const sorted = [...inProg, ...rest, ...done];
+            const todayStr = new Date().toISOString().split("T")[0];
+            const overdueList = domainTickets.filter(t =>
+              t.eta && t.eta !== "-" && t.eta < todayStr && !["론치완료","완료","배포완료"].includes(t.status)
+            );
+            const doneRatio = domainTickets.length > 0 ? (done.length / domainTickets.length) : 0;
+            const inProgRatio = domainTickets.length > 0 ? (inProg.length / domainTickets.length) : 0;
 
             return (
-              <div key={domain} className="bg-white rounded-xl border border-gray-200 overflow-hidden shadow-sm">
+              <div
+                key={domain}
+                className="bg-white dark:bg-neutral-900 rounded-xl overflow-hidden transition-shadow hover:shadow-md"
+                style={{ border: "1px solid var(--border)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
+              >
+                {/* Card header */}
                 <button
                   onClick={() => toggleDomain(domain)}
-                  className="w-full px-4 py-3 flex items-center justify-between gap-2 hover:bg-gray-50 transition-colors text-left"
+                  className="w-full px-4 py-3 flex items-center justify-between gap-2 text-left transition-colors hover:bg-gray-50/70 dark:hover:bg-neutral-800/70 active:bg-gray-100/80 dark:active:bg-neutral-700/80"
                 >
                   <div className="flex items-center gap-2 min-w-0">
-                    <span className="font-semibold text-sm text-gray-900 truncate">{domain}</span>
-                    <span className="text-xs text-gray-400 shrink-0">{domainTickets.length}</span>
+                    <span className="font-semibold text-[13px] text-gray-900 dark:text-neutral-100 truncate">{domain}</span>
+                    <span className="text-[11px] font-medium text-gray-400 dark:text-neutral-500 shrink-0 tabular-nums">{domainTickets.length}</span>
                   </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
+                  <div className="flex items-center gap-1 shrink-0">
                     {done.length > 0 && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+                      <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-green-50 text-green-700 border border-green-100">
                         완료 {done.length}
                       </span>
                     )}
                     {inProg.length > 0 && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-blue-100 text-blue-700">
+                      <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-100">
                         진행 {inProg.length}
                       </span>
                     )}
-                    {rest.length > 0 && (
-                      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-gray-100 text-gray-500">
-                        기타 {rest.length}
+                    {overdueList.length > 0 && (
+                      <span className="px-1.5 py-0.5 rounded-md text-[10px] font-semibold bg-red-50 text-red-600 border border-red-100">
+                        ⚠ {overdueList.length}
                       </span>
                     )}
                     <svg
-                      className={`w-3.5 h-3.5 text-gray-400 transition-transform ${collapsed ? "" : "rotate-180"}`}
-                      fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}
+                      className={`w-3.5 h-3.5 text-gray-300 dark:text-neutral-600 transition-transform ml-0.5 ${collapsed ? "" : "rotate-180"}`}
+                      fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
                     >
                       <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
                     </svg>
                   </div>
                 </button>
 
-                {/* 진행률 바 */}
-                {!collapsed && domainTickets.length > 0 && (
-                  <div className="flex h-1">
-                    <div className="bg-green-400 transition-all" style={{ width: `${(done.length / domainTickets.length) * 100}%` }} />
-                    <div className="bg-blue-400 transition-all" style={{ width: `${(inProg.length / domainTickets.length) * 100}%` }} />
-                    <div className="flex-1 bg-gray-100" />
+                {/* Progress bar — always visible */}
+                {domainTickets.length > 0 && (
+                  <div className="flex h-[3px] bg-gray-100 dark:bg-neutral-800">
+                    <div
+                      className="bg-green-400 transition-all duration-500"
+                      style={{ width: `${doneRatio * 100}%` }}
+                    />
+                    <div
+                      className="bg-blue-400 transition-all duration-500"
+                      style={{ width: `${inProgRatio * 100}%` }}
+                    />
                   </div>
                 )}
 
                 {!collapsed && (
-                  <div className="divide-y divide-gray-50">
-                    {sorted.map(t => (
-                      <div key={t.key} className={`px-4 py-2.5 hover:bg-gray-50 transition-colors ${isCompleted(t.status) ? "opacity-60" : ""}`}>
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5 mb-1">
-                              <a
-                                href={`${JIRA_BASE}${t.key}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="text-[10px] font-mono text-gray-400 hover:text-blue-500 shrink-0"
-                              >
-                                {t.key}
-                              </a>
-                              <span className={`px-1.5 py-0 rounded text-[9px] font-semibold tracking-wide ${
-                                t.type === "Initiative" ? "bg-indigo-100 text-indigo-600" :
-                                t.type === "Epic" ? "bg-violet-100 text-violet-600" :
-                                "bg-gray-100 text-gray-500"
-                              }`}>
-                                {t.type}
-                              </span>
-                            </div>
-                            <p className="text-sm text-gray-800 leading-snug line-clamp-2" title={t.summary}>
-                              {stripDomain(t.summary)}
-                            </p>
-                            <div className="flex items-center gap-2 mt-1">
-                              {t.assignee && t.assignee !== "-" && (
-                                <span className="text-[11px] text-gray-400">{t.assignee}</span>
-                              )}
-                              {t.startDate && (
-                                <span className="text-[11px] text-gray-300">
-                                  {formatDate(t.startDate)}{t.eta && t.eta !== "-" ? ` → ${formatDate(t.eta)}` : ""}
+                  <div className="divide-y divide-gray-50 dark:divide-neutral-800">
+                    {sorted.map(t => {
+                      const isOverdue = !!(t.eta && t.eta !== "-" && t.eta < todayStr && !["론치완료","완료","배포완료"].includes(t.status));
+                      const isDone = isCompleted(t.status);
+
+                      return (
+                        <div
+                          key={t.key}
+                          className={`group px-4 py-2.5 transition-colors ${
+                            isOverdue
+                              ? "bg-red-50/60 hover:bg-red-50"
+                              : isDone
+                                ? "bg-gray-50/50 dark:bg-neutral-900/50 hover:bg-gray-50 dark:hover:bg-neutral-800/50"
+                                : "hover:bg-blue-50/30 dark:hover:bg-blue-900/10"
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex-1 min-w-0">
+                              {/* Row 1: key + type badge */}
+                              <div className="flex items-center gap-1.5 mb-1">
+                                <a
+                                  href={`${JIRA_BASE}${t.key}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={`text-[10px] font-mono shrink-0 transition-colors ${
+                                    isDone ? "text-gray-300 dark:text-neutral-600 line-through hover:text-gray-400" : "text-gray-400 dark:text-neutral-500 hover:text-blue-500"
+                                  }`}
+                                >
+                                  {t.key}
+                                </a>
+                                <span className={`px-1 py-0 rounded text-[9px] font-semibold tracking-wide ${
+                                  t.type === "Initiative" ? "bg-indigo-50 text-indigo-500" :
+                                  t.type === "Epic"       ? "bg-violet-50 text-violet-500" :
+                                                            "bg-gray-100 dark:bg-neutral-800 text-gray-400 dark:text-neutral-500"
+                                }`}>
+                                  {t.type}
                                 </span>
-                              )}
-                              {!t.startDate && t.eta && t.eta !== "-" && (
-                                <span className="text-[11px] text-gray-300">ETA {formatDate(t.eta)}</span>
-                              )}
+                                {isOverdue && (
+                                  <span className="text-[9px] font-semibold text-red-500 bg-red-50 px-1 py-0 rounded">ETA 초과</span>
+                                )}
+                              </div>
+
+                              {/* Row 2: summary */}
+                              <p
+                                className={`text-[13px] leading-snug line-clamp-2 ${
+                                  isDone ? "text-gray-400 dark:text-neutral-500" : "text-gray-800 dark:text-neutral-200"
+                                }`}
+                                title={t.summary}
+                              >
+                                {stripDomain(t.summary)}
+                              </p>
+
+                              {/* Row 3: assignee + date */}
+                              <div className="flex items-center gap-2 mt-1">
+                                {t.assignee && t.assignee !== "-" && (
+                                  <span className="text-[10px] text-gray-400 dark:text-neutral-500 font-medium">{t.assignee}</span>
+                                )}
+                                {(t.startDate || (t.eta && t.eta !== "-")) && (
+                                  <span className={`text-[10px] font-medium tabular-nums ${
+                                    isOverdue ? "text-red-400" : isDone ? "text-gray-300 dark:text-neutral-600" : "text-gray-400 dark:text-neutral-500"
+                                  }`}>
+                                    {t.startDate
+                                      ? `${formatDate(t.startDate)}${t.eta && t.eta !== "-" ? ` → ${formatDate(t.eta)}` : ""}`
+                                      : `ETA ${formatDate(t.eta)}`
+                                    }
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            {/* Right: status + copy */}
+                            <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                              <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-semibold ${STATUS_COLOR[t.status] ?? "bg-gray-100 dark:bg-neutral-800 text-gray-500 dark:text-neutral-500"}`}>
+                                {t.status}
+                              </span>
+                              <TicketCopyButton ticketKey={t.key} summary={t.summary} size="xs" />
                             </div>
                           </div>
-                          <span className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-medium mt-0.5 ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
-                            {t.status}
-                          </span>
                         </div>
-                      </div>
-                    ))}
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Collapsed summary footer */}
+                {collapsed && domainTickets.length > 0 && (
+                  <div className="px-4 py-2 flex items-center gap-2">
+                    <div className="flex-1 h-1 rounded-full bg-gray-100 dark:bg-neutral-800 overflow-hidden">
+                      <div
+                        className="h-full bg-green-400 rounded-full transition-all"
+                        style={{ width: `${doneRatio * 100}%` }}
+                      />
+                    </div>
+                    <span className="text-[10px] font-medium text-gray-400 dark:text-neutral-500 tabular-nums shrink-0">
+                      {done.length}/{domainTickets.length}
+                    </span>
                   </div>
                 )}
               </div>

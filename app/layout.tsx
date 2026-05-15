@@ -31,7 +31,18 @@ export default async function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      {/* data-theme 초기화 — hydration 전 flash 방지
+          suppressHydrationWarning: 인라인 스크립트가 data-theme을 미리 세팅하므로
+          서버 HTML과 클라이언트 DOM의 attribute 불일치는 의도된 것. */}
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `try{document.documentElement.setAttribute('data-theme',localStorage.getItem('cc-theme')||'dark')}catch(e){}`,
+          }}
+        />
+      </head>
       <body className="min-h-full flex">
         <ThemeProvider>
           <SidebarNav
