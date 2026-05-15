@@ -1738,6 +1738,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const tabParam    = params.get("tab");    // detail panel 탭
     const focusParam  = params.get("focus");
     const sourceParam = params.get("source");
+    const modeParam   = params.get("mode");   // "focus" → Focus Mode 자동 진입
 
     if (!ticketParam) return;
 
@@ -1800,6 +1801,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setFocusContext(focusParam);
     }
 
+    // ── 3b. mode=focus 자동 진입 (owner_dashboard → Focus Mode 직행) ─────────
+    const autoFocus = sourceParam === "owner_dashboard" && modeParam === "focus";
+
     // ── 4. selected 설정 + scroll ────────────────────────────────────────────
     // deepLinkProcessedRef = true: match를 찾아 처리에 진입했으므로 중복 실행 차단
     deepLinkProcessedRef.current = true;
@@ -1814,9 +1818,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // → preFiltered에 티켓이 포함된 상태로 상세 패널 오픈
     setTimeout(() => {
       if (process.env.NODE_ENV === "development") {
-        console.debug("[TicketBoard] deepLink: setSelected 실행", { matchKey: match.key });
+        console.debug("[TicketBoard] deepLink: setSelected 실행", { matchKey: match.key, autoFocus });
       }
       setSelected(match);
+
+      // mode=focus (owner_dashboard → Focus Mode 직행)
+      if (autoFocus) {
+        setIsDetailExpanded(true);
+        // Focus Mode에서는 row 스크롤 불필요 — 워크스페이스 패널이 primary
+        return;
+      }
 
       // 렌더 완료 후 row 가시성 확인
       setTimeout(() => {
@@ -1846,8 +1857,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // planning 관련 focus → planningOpen 강제 열기
     if (focusContext === "planning") setPlanningOpen(true);
     // 탭 렌더 완료 후 스크롤 (detailTab 세팅 → 렌더 → 350ms 후)
+    // Focus Mode(isDetailExpanded)에서는 data-fm-section, 일반에서는 data-focus-section 사용
     const timer = setTimeout(() => {
-      const el = document.querySelector<HTMLElement>(`[data-focus-section="${focusContext}"]`);
+      // Focus Mode: 우측 컬럼의 data-fm-section 우선 탐색
+      const fmKey =
+        focusContext === "planning" || focusContext === "review-needed" ? "planning" :
+        focusContext === "schedule" || focusContext === "no-schedule" || focusContext === "no-launch" ? "schedule" :
+        null;
+      const el =
+        (fmKey && document.querySelector<HTMLElement>(`[data-fm-section="${fmKey}"]`)) ??
+        document.querySelector<HTMLElement>(`[data-focus-section="${focusContext}"]`);
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "start" });
         setSectionHighlight(focusContext);
@@ -3785,8 +3804,45 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               v === "대상아님" ? "var(--text-muted)" :
                                  "var(--text-subtle)";
 
+            // owner_dashboard 진입 context 텍스트 맵
+            const FM_CONTEXT_TEXT: Record<string, { icon: string; text: string; color: string; bg: string; border: string }> = {
+              "schedule":         { icon: "⚠", text: "세부 작업 일정을 입력해주세요",            color: "#fbbf24", bg: "rgba(245,158,11,0.08)",   border: "rgba(251,191,36,0.35)"  },
+              "planning":         { icon: "⚡", text: "플래닝 검토 상태를 확인·해제해주세요",      color: "#f87171", bg: "rgba(239,68,68,0.08)",    border: "rgba(248,113,113,0.35)" },
+              "etr":              { icon: "ℹ", text: "요구사항 출처(ETR)를 연결해주세요",          color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+              "docs":             { icon: "ℹ", text: "관련 문서(PRD)를 연결해주세요",              color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+              "overdue":          { icon: "🚨", text: "ETA 경과 — 일정을 재조율하거나 상태를 업데이트해주세요", color: "#f87171", bg: "rgba(239,68,68,0.08)", border: "rgba(248,113,113,0.35)" },
+              "review-needed":    { icon: "⚡", text: "플래닝 검토 확인 — 담당 PM이 직접 확인·해제해야 합니다", color: "#f87171", bg: "rgba(239,68,68,0.08)", border: "rgba(248,113,113,0.35)" },
+              "no-schedule":      { icon: "⚠", text: "세부 작업 일정을 입력해주세요",              color: "#fbbf24", bg: "rgba(245,158,11,0.08)",  border: "rgba(251,191,36,0.35)"  },
+              "no-launch":        { icon: "⚠", text: "Launch / Release 일정을 지정해주세요",      color: "#fbbf24", bg: "rgba(245,158,11,0.08)",  border: "rgba(251,191,36,0.35)"  },
+              "planning-reviewing":{ icon: "ℹ", text: "팀 플래닝 검토 중 — 완료를 독려하거나 상태를 확인하세요", color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+              "no-etr":           { icon: "ℹ", text: "ETR 티켓을 연결해 요구사항 출처를 남겨주세요", color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+              "no-docs":          { icon: "ℹ", text: "PRD 또는 관련 문서를 연결해주세요",          color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+            };
+
+            const isFromOwnerDashboard = focusForKey === selected.key && !!focusContext;
+            const fmCtx = isFromOwnerDashboard ? FM_CONTEXT_TEXT[focusContext!] : null;
+
             return (
               <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
+                {/* ── Owner Dashboard 진입 Context 배너 ── */}
+                {fmCtx && (
+                  <div
+                    className="shrink-0 flex items-center justify-between gap-2 px-4 py-2"
+                    style={{ borderBottom: "1px solid var(--border)", background: fmCtx.bg, color: fmCtx.color }}
+                  >
+                    <span className="flex items-center gap-2 text-[12px] font-semibold">
+                      <span>{fmCtx.icon}</span>
+                      <span>담당자 대시보드에서 이동 —</span>
+                      <span style={{ opacity: 0.9 }}>{fmCtx.text}</span>
+                    </span>
+                    <button
+                      onClick={() => { setFocusContext(null); setFocusForKey(null); setSectionHighlight(null); }}
+                      className="shrink-0 text-[13px] leading-none opacity-50 hover:opacity-100 transition-opacity"
+                      title="닫기"
+                    >×</button>
+                  </div>
+                )}
+
                 {/* ── Action Required 스트립 ── */}
                 {fmActions.length > 0 && (
                   <div
@@ -4031,7 +4087,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     style={{ flex: 1, background: "var(--bg-overlay)" }}
                   >
                     {/* 플래닝 상태 */}
-                    <div data-fm-section="planning">
+                    <div
+                      data-fm-section="planning"
+                      className="rounded-lg transition-all"
+                      style={{
+                        boxShadow: (sectionHighlight === "planning" || sectionHighlight === "review-needed")
+                          ? "0 0 0 2px rgba(248,113,113,0.5), 0 0 14px rgba(248,113,113,0.12)"
+                          : undefined,
+                      }}
+                    >
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
                         플래닝 상태
                       </p>
@@ -4073,7 +4137,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </div>
 
                     {/* 세부 일정 (Gantt) */}
-                    <div data-fm-section="schedule">
+                    <div
+                      data-fm-section="schedule"
+                      className="rounded-lg transition-all"
+                      style={{
+                        boxShadow: (sectionHighlight === "schedule" || sectionHighlight === "no-schedule" || sectionHighlight === "no-launch")
+                          ? "0 0 0 2px rgba(251,191,36,0.5), 0 0 14px rgba(251,191,36,0.10)"
+                          : undefined,
+                      }}
+                    >
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
                           세부 일정

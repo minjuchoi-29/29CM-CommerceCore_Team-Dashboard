@@ -113,7 +113,8 @@ function getDeepLink(ticket: Ticket, actionId: string): string {
     `&ptab=${encodeURIComponent(ptab)}` +
     `&tab=${tab}` +
     (focus ? `&focus=${focus}` : "") +
-    `&source=owner_dashboard`
+    `&source=owner_dashboard` +
+    `&mode=focus`
   );
 
   if (process.env.NODE_ENV === "development") {
