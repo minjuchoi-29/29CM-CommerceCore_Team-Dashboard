@@ -1019,13 +1019,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Focus Mode 2-column 스크롤 대상 ref
   const focusLeftColRef  = useRef<HTMLDivElement>(null);
   const focusRightColRef = useRef<HTMLDivElement>(null);
+  // Action Resolve 피드백 — Focus Mode에서 action 수가 줄면 toast 표시
+  const [resolveToast, setResolveToast]   = useState<{ count: number } | null>(null);
+  const prevActionCountRef = useRef<Record<string, number>>({});
   // Workspace Navigation Context — 진입 경로/이전 상태 추적 (page reload 시 초기화 OK)
   const workspaceNavRef = useRef<{
     source: string | null;         // "owner_dashboard" | null
     fromOwnerDashboard: boolean;   // source=owner_dashboard && mode=focus로 진입했는지
     entryFocus: string | null;     // 진입 시 focus= 파라미터
-    prevPtab: string | null;       // 진입 전 planningTab (복귀 시 복원용)
-  }>({ source: null, fromOwnerDashboard: false, entryFocus: null, prevPtab: null });
+    prevPtab: string | null;       // Focus 진입 전 planningTab (복귀 시 복원용)
+    prevScrollY: number;           // Focus 진입 전 window.scrollY (복귀 시 복원용)
+  }>({ source: null, fromOwnerDashboard: false, entryFocus: null, prevPtab: null, prevScrollY: 0 });
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
   const [noteInput, setNoteInput]         = useState("");
@@ -1814,6 +1818,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       fromOwnerDashboard:  sourceParam === "owner_dashboard" && modeParam === "focus",
       entryFocus:          focusParam,
       prevPtab:            planningTab, // 진입 전 탭 상태 보존
+      prevScrollY:         window.scrollY,
     };
 
     // ── 3c. mode=focus 자동 진입 (owner_dashboard → Focus Mode 직행) ─────────
@@ -1839,6 +1844,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       // mode=focus (owner_dashboard → Focus Mode 직행)
       if (autoFocus) {
+        // Focus 진입 전 scroll/ptab 저장 (진입 시점 기준)
+        workspaceNavRef.current.prevScrollY = window.scrollY;
+        workspaceNavRef.current.prevPtab    = planningTab;
         setIsDetailExpanded(true);
         // Focus Mode에서는 row 스크롤 불필요 — 워크스페이스 패널이 primary
         return;
@@ -1913,7 +1921,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       if (e.key === "Escape" && isDetailExpanded) {
         setIsDetailExpanded(false);
         window.history.replaceState({ ...(window.history.state ?? {}), expanded: false }, "");
-        // ESC로 Split View 복귀 시 선택 행 스크롤 복원
+        // ESC: prevPtab 복원 + scroll 복원 + selected row scrollIntoView
+        const { prevPtab, prevScrollY } = workspaceNavRef.current;
+        if (prevPtab && prevPtab !== planningTab) setPlanningTab(prevPtab);
+        window.scrollTo({ top: prevScrollY, behavior: "instant" as ScrollBehavior });
         if (selected) {
           setTimeout(() => {
             document.querySelector<Element>(`[data-ticket-key="${selected.key}"]`)
@@ -1925,6 +1936,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [isDetailExpanded, selected]);
+
+  // Action Resolve 감지 — Focus Mode에서 selected ticket의 action 수 감소 시 toast
+  useEffect(() => {
+    if (!selected || !isDetailExpanded) return;
+    const actions = getActionItems(
+      selected,
+      planning[selected.key],
+      schedules[selected.key] ?? selected.roles ?? [],
+      etrMap[selected.key]
+    );
+    const prev = prevActionCountRef.current[selected.key];
+    const curr = actions.length;
+    if (prev !== undefined && curr < prev) {
+      const resolved = prev - curr;
+      setResolveToast({ count: resolved });
+      const timer = setTimeout(() => setResolveToast(null), 3500);
+      return () => clearTimeout(timer);
+    }
+    prevActionCountRef.current[selected.key] = curr;
+  }, [ // eslint-disable-line react-hooks/exhaustive-deps
+    selected?.key,
+    isDetailExpanded,
+    schedules[selected?.key ?? ""],
+    planning[selected?.key ?? ""],
+    etrMap[selected?.key ?? ""],
+  ]);
 
   // TicketBoard 언마운트 시 SidebarNav 복원 (detail-panel open:false 발행)
   // 이유: selected → null 전환 없이 페이지 이동 시(예: owner_dashboard로 back)
@@ -2435,6 +2472,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return result;
   }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Focus Mini Rail: owner_dashboard source 진입 시 Action 우선순위 기반 정렬
+  // focusForKey !== null = owner_dashboard source 진입 신호 (state이므로 reactive ✅)
+  const railItems = useMemo<{ ticket: Ticket; topAction: ReturnType<typeof getActionItems>[0] | null }[]>(() => {
+    const base = filtered.map(t => ({
+      ticket: t,
+      topAction: getActionItems(t, planning[t.key], schedules[t.key] ?? t.roles ?? [], etrMap[t.key])[0] ?? null,
+    }));
+    if (!focusForKey) return base; // 일반 split view → 기존 순서 유지
+    // owner_dashboard 진입: 현재 선택 티켓 최상단 → 나머지는 action priority 오름차순
+    return [...base].sort((a, b) => {
+      if (a.ticket.key === selected?.key) return -1;
+      if (b.ticket.key === selected?.key) return 1;
+      const pa = a.topAction?.priority ?? 999;
+      const pb = b.topAction?.priority ?? 999;
+      return pa - pb;
+    });
+  }, [filtered, focusForKey, selected?.key, planning, schedules, etrMap]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function nowDateStr(): string {
     const now = new Date();
     return `${now.toISOString().slice(0, 10)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
@@ -2812,7 +2867,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <rect x="0.5" y="1.5" width="3" height="8" rx="0.75" fill="#818cf8" opacity="0.5"/>
                 <rect x="5" y="1.5" width="5.5" height="8" rx="0.75" fill="#818cf8"/>
               </svg>
-              <span className="text-[11px] font-semibold" style={{ color: "#818cf8" }}>집중 보기</span>
+              <span className="text-[11px] font-semibold" style={{ color: "#818cf8" }}>
+                {focusForKey ? "우선순위 큐" : "집중 보기"}
+              </span>
               <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}>{filtered.length}</span>
             </div>
             <button
@@ -3352,7 +3409,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           {filtered.length === 0 ? (
             <div className="py-12 text-center text-sm" style={{ color: "var(--text-subtle)" }}>검색 결과가 없습니다.</div>
           ) : (
-            filtered.map((t, idx) => {
+            railItems.map(({ ticket: t, topAction: railTopAction }, idx) => {
               const isSelected = selected?.key === t.key;
               const isNew = newlyAddedKeys.has(t.key);
               const isDuplicate = duplicateKeys.has(t.key);
@@ -3404,9 +3461,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className={`flex items-center ${isDetailExpanded ? "px-3 py-2" : "px-4 py-3"}`}
                   >
                     {isDetailExpanded ? (
-                      /* Focus Mode 미니 레일: 키 + 제목 표시 */
+                      /* Focus Mode 미니 레일: 키 + action 배지 + 제목 */
                       <div className="flex flex-col gap-0.5 min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
+                          {/* Action 레벨 배지 — owner_dashboard 진입 시만 */}
+                          {focusForKey && railTopAction && (
+                            <span
+                              className="w-1.5 h-1.5 rounded-full shrink-0"
+                              title={railTopAction.label}
+                              style={{
+                                background:
+                                  railTopAction.level === "critical" ? "#ef4444" :
+                                  railTopAction.level === "warning"  ? "#f59e0b" :
+                                                                        "#64748b",
+                              }}
+                            />
+                          )}
                           <span
                             className="font-mono text-[10px] font-semibold shrink-0"
                             style={{ color: isSelected ? "#818cf8" : "var(--text-subtle)" }}
@@ -3427,6 +3497,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             </svg>
                           </a>
                         </div>
+                        {/* action 레이블 (owner_dashboard 진입 + 해당 티켓 action 있을 때) */}
+                        {focusForKey && railTopAction && !isSelected && (
+                          <span
+                            className="text-[10px] leading-tight truncate"
+                            style={{
+                              color:
+                                railTopAction.level === "critical" ? "#f87171" :
+                                railTopAction.level === "warning"  ? "#fbbf24" :
+                                                                      "#94a3b8",
+                            }}
+                          >
+                            {railTopAction.label}
+                          </span>
+                        )}
                         <span
                           className="text-[11px] leading-snug line-clamp-2"
                           style={{ color: isSelected ? "var(--text-primary)" : "var(--text-secondary)", wordBreak: "break-word" }}
@@ -3681,12 +3765,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       const next = !isDetailExpanded;
                       setIsDetailExpanded(next);
                       window.history.replaceState({ ...(window.history.state ?? {}), expanded: next }, "");
-                      // Split View 복귀 시: 선택 행을 화면 중앙으로 스크롤 복원
-                      if (!next && selected) {
-                        setTimeout(() => {
-                          document.querySelector<Element>(`[data-ticket-key="${selected.key}"]`)
-                            ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                        }, 80);
+                      if (next) {
+                        // Focus 진입 시: 현재 scroll/ptab 저장
+                        workspaceNavRef.current.prevScrollY = window.scrollY;
+                        workspaceNavRef.current.prevPtab    = planningTab;
+                      } else {
+                        // Split View 복귀 시: prevPtab 복원 + scroll 복원
+                        const { prevPtab, prevScrollY } = workspaceNavRef.current;
+                        if (prevPtab && prevPtab !== planningTab) setPlanningTab(prevPtab);
+                        window.scrollTo({ top: prevScrollY, behavior: "instant" as ScrollBehavior });
+                        if (selected) {
+                          setTimeout(() => {
+                            document.querySelector<Element>(`[data-ticket-key="${selected.key}"]`)
+                              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                          }, 80);
+                        }
                       }
                     }}
                     title={isDetailExpanded ? "기본 보기로 (ESC)" : "집중 보기 — 목록을 최소화하고 이 티켓에 집중"}
@@ -3892,16 +3985,54 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="shrink-0 flex items-center justify-between gap-2 px-4 py-2"
                     style={{ borderBottom: "1px solid var(--border)", background: fmCtx.bg, color: fmCtx.color }}
                   >
-                    <span className="flex items-center gap-2 text-[12px] font-semibold">
-                      <span>{fmCtx.icon}</span>
-                      <span>담당자 대시보드에서 이동 —</span>
-                      <span style={{ opacity: 0.9 }}>{fmCtx.text}</span>
+                    <span className="flex items-center gap-2 text-[12px] font-semibold flex-wrap">
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        <span style={{ fontSize: 13 }}>⚡</span>
+                        <span>담당자 대시보드에서 이동</span>
+                      </span>
+                      <span className="opacity-30 shrink-0">—</span>
+                      <span className="flex items-center gap-1">
+                        <span style={{ fontSize: 11 }}>{fmCtx.icon}</span>
+                        <span style={{ opacity: 0.9 }}>{fmCtx.text}</span>
+                      </span>
+                      {/* 최상위 action 레벨 배지 */}
+                      {fmActions[0] && (
+                        <span
+                          className="text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0"
+                          style={{
+                            background: fmActions[0].level === "critical" ? "rgba(239,68,68,0.2)" : "rgba(245,158,11,0.2)",
+                            color:      fmActions[0].level === "critical" ? "#f87171" : "#fbbf24",
+                            border:     `1px solid ${fmActions[0].level === "critical" ? "rgba(248,113,113,0.4)" : "rgba(251,191,36,0.4)"}`,
+                          }}
+                        >
+                          {fmActions[0].level === "critical" ? "🚨 Critical" : "⚠ Warning"}
+                        </span>
+                      )}
                     </span>
                     <button
                       onClick={() => { setFocusContext(null); setFocusForKey(null); setSectionHighlight(null); }}
                       className="shrink-0 text-[13px] leading-none opacity-50 hover:opacity-100 transition-opacity"
                       title="닫기"
                     >×</button>
+                  </div>
+                )}
+
+                {/* ── Action Resolve Toast ── */}
+                {resolveToast && (
+                  <div
+                    className="shrink-0 flex items-center gap-2 px-4 py-1.5 text-[12px] font-semibold"
+                    style={{
+                      borderBottom: "1px solid rgba(52,211,153,0.25)",
+                      background: "rgba(16,185,129,0.08)",
+                      color: "#34d399",
+                    }}
+                  >
+                    <span>✓</span>
+                    <span>
+                      {resolveToast.count === 1
+                        ? "액션 1개가 해결되었습니다"
+                        : `액션 ${resolveToast.count}개가 해결되었습니다`}
+                    </span>
                   </div>
                 )}
 
