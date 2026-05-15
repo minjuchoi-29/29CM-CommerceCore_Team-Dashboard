@@ -92,7 +92,46 @@ export interface TicketSnapshot {
   eta: string | null;
   planningDesignState: string | null;  // TrackState | null ("대기중" | "검토중" | "완료" | "대상아님")
   planningDevActive: boolean;          // dev 트랙 중 하나라도 검토중/완료 이면 true
+  /** 이 티켓이 처음 스냅샷에 나타난 시각 (ISO datetime) — bootstrap noise 필터링용 */
+  firstSeenAt?: string;
 }
+
+/**
+ * computeAllTransitions 반환 타입.
+ * transitions: 이전+현재 스냅샷 모두에 있던 티켓의 실제 상태 변화.
+ * newlyAdded:  이전 스냅샷에 없던 티켓 키 목록 (신규 등록).
+ */
+export interface TransitionResult {
+  transitions: Map<string, TransitionKind[]>;
+  newlyAdded: string[];
+}
+
+/** UI 표시용 Transition 그룹 정의 */
+export const TRANSITION_GROUPS: ReadonlyArray<{
+  id: "progress" | "attention";
+  label: string;
+  kinds: ReadonlyArray<TransitionKind>;
+  color: string;
+}> = [
+  {
+    id: "progress",
+    label: "실제 진행 변화",
+    kinds: [
+      "lifecycle:completed",
+      "lifecycle:started",
+      "planning:qa-start",
+      "planning:dev-start",
+      "planning:design-start",
+    ],
+    color: "#818cf8",
+  },
+  {
+    id: "attention",
+    label: "Attention",
+    kinds: ["attention:overdue", "attention:review-needed"],
+    color: "#f59e0b",
+  },
+];
 
 /** 특정 시점의 전체 티켓 스냅샷 집합 */
 export interface SnapshotSet {
@@ -191,29 +230,40 @@ export function computeTransitions(
 }
 
 /**
- * 스냅샷 집합과 현재 상태를 비교해 전체 Transition Map 반환.
- * hiddenKeys에 있는 티켓은 제외.
+ * 스냅샷 집합과 현재 상태를 비교해 TransitionResult 반환.
+ *
+ * - transitions: 이전 스냅샷에 있던 티켓의 실제 상태 변화만 포함.
+ * - newlyAdded:  이전 스냅샷에 없던 티켓 (신규 등록) — transition으로 계산하지 않음.
+ *
+ * hiddenKeys에 있는 티켓은 모든 계산에서 제외.
  */
 export function computeAllTransitions(
   snapshot: SnapshotSet,
   currentSnapshots: Record<string, TicketSnapshot>,
   hiddenKeys: Set<string>,
   now: Date = new Date(),
-): Map<string, TransitionKind[]> {
-  const result = new Map<string, TransitionKind[]>();
+): TransitionResult {
+  const transitions = new Map<string, TransitionKind[]>();
+  const newlyAdded: string[] = [];
 
   for (const [key, curr] of Object.entries(currentSnapshots)) {
     if (hiddenKeys.has(key)) continue;
     const prev = snapshot.tickets[key];
-    if (!prev) continue; // 스냅샷 이후 신규 등록된 티켓 → 스킵
 
+    if (!prev) {
+      // 이전 스냅샷에 없는 티켓 = 신규 등록 (상태 변화로 계산 금지)
+      newlyAdded.push(key);
+      continue;
+    }
+
+    // 이전·현재 모두 존재 → 실제 상태 변화만 계산
     const kinds = computeTransitions(prev, curr, now);
     if (kinds.length > 0) {
-      result.set(key, kinds);
+      transitions.set(key, kinds);
     }
   }
 
-  return result;
+  return { transitions, newlyAdded };
 }
 
 // ─── 스냅샷 빌더 ────────────────────────────────────────────────

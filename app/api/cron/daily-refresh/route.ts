@@ -154,9 +154,13 @@ export async function GET(request: Request) {
       if (!alreadyToday && mergedTickets.length > 0) {
         // planning 데이터는 cc-planning에서 조회
         const planningData = await redis.get<Record<string, unknown>>("cc-planning") ?? {};
+        const latestSnap = stored.snapshots.length > 0 ? stored.snapshots[stored.snapshots.length - 1] : null;
         const snapshotTickets: SnapshotSet["tickets"] = {};
         for (const t of mergedTickets) {
-          snapshotTickets[t.key] = buildTicketSnapshot(t.key, t.status, t.eta, planningData[t.key]);
+          const snap = buildTicketSnapshot(t.key, t.status, t.eta, planningData[t.key]);
+          // firstSeenAt: 이전 스냅샷 carry-over
+          snap.firstSeenAt = latestSnap?.tickets[t.key]?.firstSeenAt ?? now;
+          snapshotTickets[t.key] = snap;
         }
         const newSnap: SnapshotSet = {
           takenAt: now,

@@ -6,9 +6,11 @@ import { ActivityEntry } from "@/lib/activity";
 import { getActionItems } from "@/lib/action-items";
 import {
   type TransitionKind,
+  type TransitionResult,
   type TicketSnapshot,
   type SnapshotSet,
   TRANSITION_META,
+  TRANSITION_GROUPS,
   buildTicketSnapshot,
   computeAllTransitions,
   selectCompareSnapshot,
@@ -1033,11 +1035,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [resolveToast, setResolveToast]   = useState<{ count: number } | null>(null);
   const prevActionCountRef = useRef<Record<string, number>>({});
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
-  const [changesMode,       setChangesMode]       = useState(false);
-  const [transitionFilter,  setTransitionFilter]  = useState<TransitionKind | "all">("all");
-  const [compareSnapshot,   setCompareSnapshot]   = useState<SnapshotSet | null>(null);
-  const [transitionMap,     setTransitionMap]     = useState<Map<string, TransitionKind[]>>(new Map());
-  const [snapshotsLoaded,   setSnapshotsLoaded]   = useState(false);
+  const [changesMode,           setChangesMode]           = useState(false);
+  const [transitionFilter,      setTransitionFilter]      = useState<TransitionKind | "all" | "newly_added">("all");
+  const [compareSnapshot,       setCompareSnapshot]       = useState<SnapshotSet | null>(null);
+  const [transitionMap,         setTransitionMap]         = useState<Map<string, TransitionKind[]>>(new Map());
+  const [transitionNewlyAdded,  setTransitionNewlyAdded]  = useState<Set<string>>(new Set());
+  const [snapshotsLoaded,       setSnapshotsLoaded]       = useState(false);
   // Workspace Navigation Context — 진입 경로/이전 상태 추적 (page reload 시 초기화 OK)
   const workspaceNavRef = useRef<{
     source: string | null;         // "owner_dashboard" | null
@@ -2539,15 +2542,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setCompareSnapshot(snap);
         if (snap) {
           // 현재 라이브 상태를 스냅샷으로 변환
+          // planning은 현재 React state 사용 — 스냅샷 API는 서버 planning 기준으로 저장되어 있음
           const currSnaps: Record<string, TicketSnapshot> = {};
           for (const t of tickets) {
             if (hiddenKeys.has(t.key)) continue;
             currSnaps[t.key] = buildTicketSnapshot(t.key, t.status, t.eta, planning[t.key]);
           }
-          const map = computeAllTransitions(snap, currSnaps, hiddenKeys);
-          setTransitionMap(map);
+          // computeAllTransitions now returns TransitionResult { transitions, newlyAdded }
+          const result: TransitionResult = computeAllTransitions(snap, currSnaps, hiddenKeys);
+          setTransitionMap(result.transitions);
+          setTransitionNewlyAdded(new Set(result.newlyAdded));
         } else {
           setTransitionMap(new Map());
+          setTransitionNewlyAdded(new Set());
         }
         setSnapshotsLoaded(true);
       })
@@ -2558,23 +2565,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     if (!changesMode) {
       setTransitionMap(new Map());
+      setTransitionNewlyAdded(new Set());
       setTransitionFilter("all");
       setCompareSnapshot(null);
       setSnapshotsLoaded(false);
     }
   }, [changesMode]);
 
-  // displayItems: changesMode 시 transition 있는 티켓만 표시 (Focus Mode 제외)
+  // displayItems: changesMode 시 transition/신규 있는 티켓만 표시 (Focus Mode 제외)
   const displayItems = useMemo(() => {
     if (isDetailExpanded) return railItems; // Focus Mode: 전체 유지
-    if (!changesMode || transitionMap.size === 0) return railItems;
+    if (!changesMode || (transitionMap.size === 0 && transitionNewlyAdded.size === 0)) return railItems;
     return railItems.filter(({ ticket: t }) => {
+      if (transitionFilter === "newly_added") return transitionNewlyAdded.has(t.key);
       const kinds = transitionMap.get(t.key);
-      if (!kinds || kinds.length === 0) return false;
-      if (transitionFilter === "all") return true;
-      return kinds.includes(transitionFilter);
+      const hasTransition = !!kinds && kinds.length > 0;
+      if (transitionFilter === "all") return hasTransition || transitionNewlyAdded.has(t.key);
+      return hasTransition && kinds!.includes(transitionFilter as TransitionKind);
     });
-  }, [railItems, isDetailExpanded, changesMode, transitionMap, transitionFilter]);
+  }, [railItems, isDetailExpanded, changesMode, transitionMap, transitionNewlyAdded, transitionFilter]);
 
   function nowDateStr(): string {
     const now = new Date();
@@ -3236,7 +3245,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         {/* ── Changes Mode: 내러티브 바 + Transition 필터 ─────── */}
         {changesMode && !isDetailExpanded && (
           <div className="mb-4 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(129,140,248,0.35)", background: "rgba(129,140,248,0.05)" }}>
-            {/* 헤더 — 비교 기준 + 요약 */}
+
+            {/* ── 헤더 ─────────────────────────────────────────── */}
             <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid rgba(129,140,248,0.2)" }}>
               <div className="flex items-center gap-2">
                 <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2.5">
@@ -3246,18 +3256,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 {compareSnapshot ? (
                   <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                     비교 기준: <span style={{ color: "var(--text-secondary)" }}>{compareSnapshot.label}</span>
-                    <span className="ml-1" style={{ color: "var(--text-subtle)" }}>스냅샷</span>
                   </span>
                 ) : (
                   <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
-                    {snapshotsLoaded ? "저장된 스냅샷 없음 — Jira Sync 후 다시 시도" : "스냅샷 로딩 중…"}
+                    {snapshotsLoaded ? "저장된 스냅샷 없음 — Jira Sync 후 재시도" : "로딩 중…"}
                   </span>
                 )}
               </div>
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-2">
                 {transitionMap.size > 0 && (
                   <span className="text-[11px] font-semibold" style={{ color: "#818cf8" }}>
-                    {transitionMap.size}개 과제 전진
+                    {transitionMap.size}건 전진
+                  </span>
+                )}
+                {transitionNewlyAdded.size > 0 && (
+                  <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                    · 신규 {transitionNewlyAdded.size}건
                   </span>
                 )}
                 <button
@@ -3271,58 +3285,158 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
             </div>
 
-            {/* 요약 내러티브 칩 */}
-            {transitionMap.size > 0 && (() => {
+            {/* ── 3-Group 내러티브 요약 ─────────────────────────── */}
+            {(transitionMap.size > 0 || transitionNewlyAdded.size > 0) && (() => {
               const summary = summarizeTransitions(transitionMap);
+              const progressItems = summary.filter(s => TRANSITION_GROUPS[0].kinds.includes(s.kind));
+              const attentionItems = summary.filter(s => TRANSITION_GROUPS[1].kinds.includes(s.kind));
               return (
-                <div className="px-4 py-2.5 flex items-center gap-2 flex-wrap" style={{ borderBottom: "1px solid rgba(129,140,248,0.15)" }}>
-                  {summary.map(({ kind, count }) => {
-                    const meta = TRANSITION_META[kind];
-                    return (
-                      <div key={kind} className="flex items-center gap-1 text-[11px]">
-                        <span style={{ color: meta.color }}>{meta.emoji}</span>
-                        <span style={{ color: "var(--text-secondary)" }}><strong style={{ color: meta.color }}>{count}건</strong> {meta.label}</span>
-                      </div>
-                    );
-                  })}
+                <div className="px-4 py-2.5 space-y-1.5" style={{ borderBottom: "1px solid rgba(129,140,248,0.12)" }}>
+                  {/* A. 실제 진행 변화 */}
+                  {progressItems.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "#818cf8" }}>진행 변화</span>
+                      {progressItems.map(({ kind, count }) => {
+                        const meta = TRANSITION_META[kind];
+                        return (
+                          <span key={kind} className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                            {meta.emoji} <strong style={{ color: meta.color }}>{count}건</strong> {meta.label}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* B. Attention 변화 */}
+                  {attentionItems.length > 0 && (
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "#f59e0b" }}>Attention</span>
+                      {attentionItems.map(({ kind, count }) => {
+                        const meta = TRANSITION_META[kind];
+                        return (
+                          <span key={kind} className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                            {meta.emoji} <strong style={{ color: meta.color }}>{count}건</strong> {meta.label}
+                          </span>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {/* C. 신규 등록 — 보조 정보 */}
+                  {transitionNewlyAdded.size > 0 && (
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "var(--text-subtle)" }}>신규 등록</span>
+                      <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                        + {transitionNewlyAdded.size}건 <span className="text-[10px]">(상태 변화와 분리 집계)</span>
+                      </span>
+                    </div>
+                  )}
                 </div>
               );
             })()}
 
-            {/* Transition 종류별 필터 칩 */}
+            {/* ── 필터 칩 ─────────────────────────────────────── */}
             <div className="px-4 py-2.5 flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] font-semibold uppercase tracking-wider mr-1" style={{ color: "var(--text-subtle)" }}>필터</span>
-              {(["all", ...Object.keys(TRANSITION_META)] as (TransitionKind | "all")[]).map(kind => {
-                const isAll = kind === "all";
-                const meta = isAll ? null : TRANSITION_META[kind as TransitionKind];
-                const count = isAll ? transitionMap.size : Array.from(transitionMap.values()).filter(ks => ks.includes(kind as TransitionKind)).length;
-                if (!isAll && count === 0) return null;
-                const active = transitionFilter === kind;
+              <span className="text-[10px] font-semibold uppercase tracking-wider mr-0.5" style={{ color: "var(--text-subtle)" }}>필터</span>
+
+              {/* [전체] */}
+              {(() => {
+                const total = transitionMap.size + transitionNewlyAdded.size;
+                const active = transitionFilter === "all";
                 return (
                   <button
-                    key={kind}
-                    onClick={() => setTransitionFilter(kind as TransitionKind | "all")}
+                    onClick={() => setTransitionFilter("all")}
                     className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
                     style={{
-                      background: active ? (isAll ? "rgba(129,140,248,0.2)" : `${meta!.bgColor}`) : "var(--bg-overlay)",
-                      border: `1px solid ${active ? (isAll ? "#818cf8" : meta!.borderColor) : "var(--border-2)"}`,
-                      color: active ? (isAll ? "#818cf8" : meta!.color) : "var(--text-muted)",
+                      background: active ? "rgba(129,140,248,0.2)" : "var(--bg-overlay)",
+                      border: `1px solid ${active ? "#818cf8" : "var(--border-2)"}`,
+                      color: active ? "#818cf8" : "var(--text-muted)",
                     }}
                   >
-                    {!isAll && <span>{meta!.emoji}</span>}
-                    <span>{isAll ? "전체" : meta!.label}</span>
-                    <span
-                      className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
-                      style={{
-                        background: active ? (isAll ? "rgba(129,140,248,0.25)" : `${meta!.bgColor}`) : "var(--border)",
-                        color: active ? (isAll ? "#818cf8" : meta!.color) : "var(--text-subtle)",
-                      }}
-                    >
+                    전체
+                    <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                      style={{ background: active ? "rgba(129,140,248,0.25)" : "var(--border)", color: active ? "#818cf8" : "var(--text-subtle)" }}>
+                      {total}
+                    </span>
+                  </button>
+                );
+              })()}
+
+              {/* 실제 진행 변화 칩들 */}
+              {TRANSITION_GROUPS[0].kinds.map(kind => {
+                const count = Array.from(transitionMap.values()).filter(ks => ks.includes(kind)).length;
+                if (count === 0) return null;
+                const meta = TRANSITION_META[kind];
+                const active = transitionFilter === kind;
+                return (
+                  <button key={kind}
+                    onClick={() => setTransitionFilter(kind)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                    style={{
+                      background: active ? meta.bgColor : "var(--bg-overlay)",
+                      border: `1px solid ${active ? meta.borderColor : "var(--border-2)"}`,
+                      color: active ? meta.color : "var(--text-muted)",
+                    }}
+                  >
+                    <span>{meta.emoji}</span>
+                    <span>{meta.label}</span>
+                    <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                      style={{ background: active ? meta.bgColor : "var(--border)", color: active ? meta.color : "var(--text-subtle)" }}>
                       {count}
                     </span>
                   </button>
                 );
               })}
+
+              {/* Attention 칩들 */}
+              {TRANSITION_GROUPS[1].kinds.map(kind => {
+                const count = Array.from(transitionMap.values()).filter(ks => ks.includes(kind)).length;
+                if (count === 0) return null;
+                const meta = TRANSITION_META[kind];
+                const active = transitionFilter === kind;
+                return (
+                  <button key={kind}
+                    onClick={() => setTransitionFilter(kind)}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                    style={{
+                      background: active ? meta.bgColor : "var(--bg-overlay)",
+                      border: `1px solid ${active ? meta.borderColor : "var(--border-2)"}`,
+                      color: active ? meta.color : "var(--text-muted)",
+                    }}
+                  >
+                    <span>{meta.emoji}</span>
+                    <span>{meta.label}</span>
+                    <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                      style={{ background: active ? meta.bgColor : "var(--border)", color: active ? meta.color : "var(--text-subtle)" }}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+
+              {/* 신규 등록 칩 — 보조 스타일로 분리 */}
+              {transitionNewlyAdded.size > 0 && (() => {
+                const active = transitionFilter === "newly_added";
+                return (
+                  <>
+                    <span className="text-[10px]" style={{ color: "var(--border-2)" }}>│</span>
+                    <button
+                      onClick={() => setTransitionFilter("newly_added")}
+                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                      style={{
+                        background: active ? "rgba(100,116,139,0.15)" : "var(--bg-overlay)",
+                        border: `1px solid ${active ? "#64748b" : "var(--border-2)"}`,
+                        color: active ? "#94a3b8" : "var(--text-subtle)",
+                      }}
+                    >
+                      <span>+</span>
+                      <span>신규 등록</span>
+                      <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                        style={{ background: active ? "rgba(100,116,139,0.25)" : "var(--border)", color: active ? "#94a3b8" : "var(--text-subtle)" }}>
+                        {transitionNewlyAdded.size}
+                      </span>
+                    </button>
+                  </>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -3742,7 +3856,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           </span>
                         )}
                         {/* Transition 배지 (변화 보기 모드) */}
-                        {changesMode && transitionMap.get(t.key)?.map(kind => {
+                        {changesMode && transitionNewlyAdded.has(t.key) && (
+                          <span
+                            className="shrink-0 mr-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
+                            style={{ background: "rgba(100,116,139,0.10)", border: "1px solid rgba(100,116,139,0.25)", color: "#94a3b8" }}
+                          >
+                            + 신규
+                          </span>
+                        )}
+                        {changesMode && !transitionNewlyAdded.has(t.key) && transitionMap.get(t.key)?.map(kind => {
                           const m = TRANSITION_META[kind];
                           return (
                             <span
