@@ -4,6 +4,16 @@ import TicketCopyButton from "@/app/components/TicketCopyButton";
 import { Tooltip } from "@/app/components/Tooltip";
 import { ActivityEntry } from "@/lib/activity";
 import { getActionItems } from "@/lib/action-items";
+import {
+  type TransitionKind,
+  type TicketSnapshot,
+  type SnapshotSet,
+  TRANSITION_META,
+  buildTicketSnapshot,
+  computeAllTransitions,
+  selectCompareSnapshot,
+  summarizeTransitions,
+} from "@/lib/transitions";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -1022,6 +1032,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Action Resolve 피드백 — Focus Mode에서 action 수가 줄면 toast 표시
   const [resolveToast, setResolveToast]   = useState<{ count: number } | null>(null);
   const prevActionCountRef = useRef<Record<string, number>>({});
+  // ── Transition Visibility (이번 주 변화 모드) ──────────────────
+  const [changesMode,       setChangesMode]       = useState(false);
+  const [transitionFilter,  setTransitionFilter]  = useState<TransitionKind | "all">("all");
+  const [compareSnapshot,   setCompareSnapshot]   = useState<SnapshotSet | null>(null);
+  const [transitionMap,     setTransitionMap]     = useState<Map<string, TransitionKind[]>>(new Map());
+  const [snapshotsLoaded,   setSnapshotsLoaded]   = useState(false);
   // Workspace Navigation Context — 진입 경로/이전 상태 추적 (page reload 시 초기화 OK)
   const workspaceNavRef = useRef<{
     source: string | null;         // "owner_dashboard" | null
@@ -1184,6 +1200,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const hiddenSync = hiddenKeys;
       setTickets((data.tickets as Ticket[]).filter(t => !hiddenSync.has(t.key)));
       setSyncedAt(at);
+      // Transition snapshot 저장 (오늘 1회, 비동기)
+      saveTransitionSnapshot(data.tickets as Ticket[], planning, hiddenSync);
       try {
         localStorage.setItem(
           TICKET_CACHE_KEY,
@@ -1267,6 +1285,26 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     } finally {
       setFetching(false);
     }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Jira Sync 이후 스냅샷 저장 (오늘 하루 1회, 비동기 — 실패해도 무시)
+  const saveTransitionSnapshot = useCallback((
+    liveTickets: Ticket[],
+    latestPlanning: Record<string, unknown>,
+    hiddenSet: Set<string>,
+  ) => {
+    const snaptickets: Record<string, TicketSnapshot> = {};
+    for (const t of liveTickets) {
+      if (hiddenSet.has(t.key)) continue;
+      snaptickets[t.key] = buildTicketSnapshot(t.key, t.status, t.eta, latestPlanning[t.key]);
+    }
+    fetch("/api/transitions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tickets: snaptickets }),
+    }).catch(() => {});
+    // 저장 후 changesMode가 켜져 있으면 스냅샷 목록 갱신
+    setSnapshotsLoaded(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 티켓 키 직접 추가: 입력 → JIRA 단건 조회 → 상태 + localStorage 갱신
@@ -2490,6 +2528,54 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     });
   }, [filtered, focusForKey, selected?.key, planning, schedules, etrMap]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── changesMode: 스냅샷 로드 → Transition 계산 ────────────────
+  useEffect(() => {
+    if (!changesMode || snapshotsLoaded) return;
+    fetch("/api/transitions")
+      .then(r => r.json())
+      .then((data: { snapshots?: SnapshotSet[] }) => {
+        const snapshots = data.snapshots ?? [];
+        const snap = selectCompareSnapshot(snapshots, 7);
+        setCompareSnapshot(snap);
+        if (snap) {
+          // 현재 라이브 상태를 스냅샷으로 변환
+          const currSnaps: Record<string, TicketSnapshot> = {};
+          for (const t of tickets) {
+            if (hiddenKeys.has(t.key)) continue;
+            currSnaps[t.key] = buildTicketSnapshot(t.key, t.status, t.eta, planning[t.key]);
+          }
+          const map = computeAllTransitions(snap, currSnaps, hiddenKeys);
+          setTransitionMap(map);
+        } else {
+          setTransitionMap(new Map());
+        }
+        setSnapshotsLoaded(true);
+      })
+      .catch(() => { setSnapshotsLoaded(true); });
+  }, [changesMode, snapshotsLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // changesMode 해제 시 상태 초기화
+  useEffect(() => {
+    if (!changesMode) {
+      setTransitionMap(new Map());
+      setTransitionFilter("all");
+      setCompareSnapshot(null);
+      setSnapshotsLoaded(false);
+    }
+  }, [changesMode]);
+
+  // displayItems: changesMode 시 transition 있는 티켓만 표시 (Focus Mode 제외)
+  const displayItems = useMemo(() => {
+    if (isDetailExpanded) return railItems; // Focus Mode: 전체 유지
+    if (!changesMode || transitionMap.size === 0) return railItems;
+    return railItems.filter(({ ticket: t }) => {
+      const kinds = transitionMap.get(t.key);
+      if (!kinds || kinds.length === 0) return false;
+      if (transitionFilter === "all") return true;
+      return kinds.includes(transitionFilter);
+    });
+  }, [railItems, isDetailExpanded, changesMode, transitionMap, transitionFilter]);
+
   function nowDateStr(): string {
     const now = new Date();
     return `${now.toISOString().slice(0, 10)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
@@ -2943,6 +3029,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </svg>
               {fetching ? "Syncing…" : "Jira Sync"}
             </button>
+            {/* 변화 보기 토글 */}
+            <button
+              onClick={() => setChangesMode(v => !v)}
+              title={changesMode ? "현재 상태로 돌아가기" : "이번 주 변화 보기 — Snapshot diff 기반"}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+              style={{
+                background:   changesMode ? "rgba(129,140,248,0.15)" : "var(--bg-item)",
+                border:       `1px solid ${changesMode ? "#818cf8" : "var(--border-2)"}`,
+                color:        changesMode ? "#818cf8" : "var(--text-primary)",
+                boxShadow:    changesMode ? "0 0 0 1px rgba(129,140,248,0.3)" : "none",
+              }}
+            >
+              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <path d="M13 7l5 5-5 5M6 7l5 5-5 5" strokeLinecap="round" strokeLinejoin="round"/>
+              </svg>
+              {changesMode ? "변화 보기 ON" : "변화 보기"}
+            </button>
           </div>
         </div>
         {fetchError && (
@@ -3129,6 +3232,100 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           );
         })()}
 
+
+        {/* ── Changes Mode: 내러티브 바 + Transition 필터 ─────── */}
+        {changesMode && !isDetailExpanded && (
+          <div className="mb-4 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(129,140,248,0.35)", background: "rgba(129,140,248,0.05)" }}>
+            {/* 헤더 — 비교 기준 + 요약 */}
+            <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid rgba(129,140,248,0.2)" }}>
+              <div className="flex items-center gap-2">
+                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2.5">
+                  <path d="M13 7l5 5-5 5M6 7l5 5-5 5" strokeLinecap="round" strokeLinejoin="round"/>
+                </svg>
+                <span className="text-xs font-semibold" style={{ color: "#818cf8" }}>이번 주 변화</span>
+                {compareSnapshot ? (
+                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                    비교 기준: <span style={{ color: "var(--text-secondary)" }}>{compareSnapshot.label}</span>
+                    <span className="ml-1" style={{ color: "var(--text-subtle)" }}>스냅샷</span>
+                  </span>
+                ) : (
+                  <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                    {snapshotsLoaded ? "저장된 스냅샷 없음 — Jira Sync 후 다시 시도" : "스냅샷 로딩 중…"}
+                  </span>
+                )}
+              </div>
+              <div className="flex items-center gap-1.5">
+                {transitionMap.size > 0 && (
+                  <span className="text-[11px] font-semibold" style={{ color: "#818cf8" }}>
+                    {transitionMap.size}개 과제 전진
+                  </span>
+                )}
+                <button
+                  onClick={() => setChangesMode(false)}
+                  className="w-5 h-5 flex items-center justify-center rounded transition-colors text-[11px]"
+                  style={{ color: "var(--text-subtle)" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(129,140,248,0.15)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                  title="변화 보기 닫기"
+                >✕</button>
+              </div>
+            </div>
+
+            {/* 요약 내러티브 칩 */}
+            {transitionMap.size > 0 && (() => {
+              const summary = summarizeTransitions(transitionMap);
+              return (
+                <div className="px-4 py-2.5 flex items-center gap-2 flex-wrap" style={{ borderBottom: "1px solid rgba(129,140,248,0.15)" }}>
+                  {summary.map(({ kind, count }) => {
+                    const meta = TRANSITION_META[kind];
+                    return (
+                      <div key={kind} className="flex items-center gap-1 text-[11px]">
+                        <span style={{ color: meta.color }}>{meta.emoji}</span>
+                        <span style={{ color: "var(--text-secondary)" }}><strong style={{ color: meta.color }}>{count}건</strong> {meta.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
+            {/* Transition 종류별 필터 칩 */}
+            <div className="px-4 py-2.5 flex items-center gap-1.5 flex-wrap">
+              <span className="text-[10px] font-semibold uppercase tracking-wider mr-1" style={{ color: "var(--text-subtle)" }}>필터</span>
+              {(["all", ...Object.keys(TRANSITION_META)] as (TransitionKind | "all")[]).map(kind => {
+                const isAll = kind === "all";
+                const meta = isAll ? null : TRANSITION_META[kind as TransitionKind];
+                const count = isAll ? transitionMap.size : Array.from(transitionMap.values()).filter(ks => ks.includes(kind as TransitionKind)).length;
+                if (!isAll && count === 0) return null;
+                const active = transitionFilter === kind;
+                return (
+                  <button
+                    key={kind}
+                    onClick={() => setTransitionFilter(kind as TransitionKind | "all")}
+                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                    style={{
+                      background: active ? (isAll ? "rgba(129,140,248,0.2)" : `${meta!.bgColor}`) : "var(--bg-overlay)",
+                      border: `1px solid ${active ? (isAll ? "#818cf8" : meta!.borderColor) : "var(--border-2)"}`,
+                      color: active ? (isAll ? "#818cf8" : meta!.color) : "var(--text-muted)",
+                    }}
+                  >
+                    {!isAll && <span>{meta!.emoji}</span>}
+                    <span>{isAll ? "전체" : meta!.label}</span>
+                    <span
+                      className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                      style={{
+                        background: active ? (isAll ? "rgba(129,140,248,0.25)" : `${meta!.bgColor}`) : "var(--border)",
+                        color: active ? (isAll ? "#818cf8" : meta!.color) : "var(--text-subtle)",
+                      }}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* 요약 카드 */}
         {planningTab === "플래닝 대기·검토" ? (
@@ -3409,7 +3606,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           {filtered.length === 0 ? (
             <div className="py-12 text-center text-sm" style={{ color: "var(--text-subtle)" }}>검색 결과가 없습니다.</div>
           ) : (
-            railItems.map(({ ticket: t, topAction: railTopAction }, idx) => {
+            displayItems.map(({ ticket: t, topAction: railTopAction }, idx) => {
               const isSelected = selected?.key === t.key;
               const isNew = newlyAddedKeys.has(t.key);
               const isDuplicate = duplicateKeys.has(t.key);
@@ -3544,6 +3741,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             P{activePriorities[t.key]}
                           </span>
                         )}
+                        {/* Transition 배지 (변화 보기 모드) */}
+                        {changesMode && transitionMap.get(t.key)?.map(kind => {
+                          const m = TRANSITION_META[kind];
+                          return (
+                            <span
+                              key={kind}
+                              className="shrink-0 mr-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                              style={{ background: m.bgColor, border: `1px solid ${m.borderColor}`, color: m.color }}
+                            >
+                              {m.emoji} {m.label}
+                            </span>
+                          );
+                        })}
                         <span className="flex-1 min-w-0 text-base font-semibold truncate pr-3" style={{ color: "var(--text-primary)" }}>{t.summary}</span>
                         <span className="w-20 shrink-0 flex justify-center">
                           <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>

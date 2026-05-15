@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
+import type { StoredSnapshots, SnapshotSet } from "@/lib/transitions";
+import { buildTicketSnapshot, snapshotLabel, MAX_SNAPSHOTS } from "@/lib/transitions";
 
 export const dynamic = "force-dynamic";
 
@@ -140,6 +142,34 @@ export async function GET(request: Request) {
       console.log(`[daily-refresh] cc-custom-tickets 갱신 완료: ${mergedTickets.length}개`);
     } else {
       console.warn("[daily-refresh] mergedTickets가 비어있어 KV 쓰기 생략");
+    }
+
+    // 4. Transition Snapshot 저장 (하루 1회 — 오늘 이미 있으면 스킵)
+    try {
+      const now      = new Date().toISOString();
+      const todayStr = now.slice(0, 10);
+      const stored   = (await redis.get<StoredSnapshots>("cc-transition-snapshots")) ?? { snapshots: [] };
+      const alreadyToday = stored.snapshots.find(s => s.takenAt.startsWith(todayStr));
+
+      if (!alreadyToday && mergedTickets.length > 0) {
+        // planning 데이터는 cc-planning에서 조회
+        const planningData = await redis.get<Record<string, unknown>>("cc-planning") ?? {};
+        const snapshotTickets: SnapshotSet["tickets"] = {};
+        for (const t of mergedTickets) {
+          snapshotTickets[t.key] = buildTicketSnapshot(t.key, t.status, t.eta, planningData[t.key]);
+        }
+        const newSnap: SnapshotSet = {
+          takenAt: now,
+          label:   snapshotLabel(now),
+          tickets: snapshotTickets,
+        };
+        const snapshots = [...stored.snapshots, newSnap].slice(-MAX_SNAPSHOTS);
+        await redis.set("cc-transition-snapshots", { snapshots });
+        console.log(`[daily-refresh] Transition snapshot 저장: ${Object.keys(snapshotTickets).length}개 티켓`);
+      }
+    } catch (snapErr) {
+      // 스냅샷 저장 실패는 cron 전체를 실패시키지 않음
+      console.warn("[daily-refresh] Transition snapshot 저장 실패:", snapErr);
     }
 
     return NextResponse.json({
