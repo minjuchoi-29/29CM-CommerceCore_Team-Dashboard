@@ -69,6 +69,23 @@ function AdminBadge() {
   );
 }
 
+// ── Beta 뱃지 ─────────────────────────────────────────────────────────────────
+function BetaBadge() {
+  return (
+    <span
+      className="text-[9px] font-semibold px-1.5 py-0.5 rounded shrink-0 leading-none"
+      style={{
+        background: "rgba(139,92,246,0.10)",
+        color: "#a78bfa",
+        border: "1px solid rgba(139,92,246,0.22)",
+        letterSpacing: "0.02em",
+      }}
+    >
+      Beta
+    </span>
+  );
+}
+
 // ── 잠금 아이콘 ──────────────────────────────────────────────────────────────
 function LockIcon() {
   return (
@@ -138,11 +155,13 @@ export default function SidebarNav({ user, logoutAction }: Props) {
     icon,
     label,
     admin,
+    beta,
   }: {
     href: string;
     icon: React.ReactNode;
     label: string;
     admin?: boolean;
+    beta?: boolean;
   }) {
     const active = isActive(href);
     return (
@@ -155,6 +174,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
       >
         {icon}
         <span className="flex-1 leading-tight">{label}</span>
+        {beta  && <BetaBadge />}
         {admin && <AdminBadge />}
         {admin && !active && <LockIcon />}
       </Link>
@@ -231,6 +251,39 @@ export default function SidebarNav({ user, logoutAction }: Props) {
         </nav>
       </div>
 
+      {/* ── Beta 섹션 — 전체 사용자 공개 ── */}
+      <div className="mx-3 mt-2" style={{ borderTop: "1px solid var(--border)" }} />
+      <div className="px-3 pt-2.5 pb-1">
+        <div className="flex items-center gap-1.5 px-2 mb-1.5">
+          {/* 플라스크 아이콘 — 실험적 느낌 */}
+          <svg className="w-2.5 h-2.5 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="M9 3h6M9 3v8l-4.5 9.5A1 1 0 005.4 22h13.2a1 1 0 00.9-1.5L15 11V3"/>
+          </svg>
+          <p
+            className="text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: "var(--text-subtle)" }}
+          >
+            Beta
+          </p>
+        </div>
+        <nav className="flex flex-col gap-0.5">
+          {/* 담당자 대시보드 — Beta 공개 기능 */}
+          <NavLink
+            href="/owner-dashboard"
+            label="담당자 대시보드"
+            beta
+            icon={
+              <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="8" r="4"/>
+                <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
+                <circle cx="19" cy="6" r="2.5"/>
+                <path d="M19 3v1.5M19 8.5V10M16.8 4.2l1 1M21.2 7.8l1 1M15.5 6h1.5M21 6h1.5M16.8 7.8l1-1M21.2 4.2l1-1"/>
+              </svg>
+            }
+          />
+        </nav>
+      </div>
+
       {/* ── 관리자 전용 섹션 (canSeeAdmin일 때만 표시) ── */}
       {canSeeAdmin && (
         <>
@@ -286,41 +339,24 @@ export default function SidebarNav({ user, logoutAction }: Props) {
                   </svg>
                 }
               />
-              {/* 담당자 대시보드 — 관리자 전용 실험 기능 */}
-              <NavLink
-                href="/owner-dashboard"
-                label="담당자 대시보드"
-                admin
-                icon={
-                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="8" r="4"/>
-                    <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/>
-                    <circle cx="19" cy="6" r="2.5"/>
-                    <path d="M19 3v1.5M19 8.5V10M16.8 4.2l1 1M21.2 7.8l1 1M15.5 6h1.5M21 6h1.5M16.8 7.8l1-1M21.2 4.2l1-1"/>
-                  </svg>
-                }
-              />
             </nav>
           </div>
         </>
       )}
 
-      {/* ── 준비 중 항목 (비관리자에게만 흐리게 표시) ── */}
-      {!canSeeAdmin && (
-        <div className="px-3 pt-1 pb-1">
-          <nav className="flex flex-col gap-0.5">
-            {/* 캘린더 준비중 */}
-            <DisabledNavItem
-              label="캘린더"
-              icon={
-                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/>
-                </svg>
-              }
-            />
-          </nav>
-        </div>
-      )}
+      {/* ── 준비 중 항목 ── */}
+      <div className="px-3 pt-1 pb-1">
+        <nav className="flex flex-col gap-0.5">
+          <DisabledNavItem
+            label="캘린더"
+            icon={
+              <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/>
+              </svg>
+            }
+          />
+        </nav>
+      </div>
 
       {/* ── 구분선 ── */}
       <div className="mx-3" style={{ borderTop: "1px solid var(--border)" }} />

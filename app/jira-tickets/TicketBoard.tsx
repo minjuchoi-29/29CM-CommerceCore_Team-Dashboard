@@ -1001,11 +1001,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 우측 상세 패널 탭
   const [detailTab, setDetailTab] = useState<"overview" | "ops" | "activity">("overview");
+  // owner_dashboard deep-link context — 어떤 action에서 진입했는지 추적
+  // focusForKey: 어떤 ticket key에 대한 context인지 (다른 row 클릭 시 context 유지 안 함)
+  const [focusForKey,      setFocusForKey]      = useState<string | null>(null);
+  const [focusContext,     setFocusContext]      = useState<string | null>(null);
+  const [sectionHighlight, setSectionHighlight] = useState<string | null>(null);
   const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const planningMigratedRef         = useRef(false);
   // hiddenKeys의 최신값을 항상 참조할 수 있는 ref (stale closure 방지)
   const hiddenKeysRef = useRef<Set<string>>(new Set());
+  // selected 이전값 추적 — URL sync 시 "초기 null→null"과 "명시적 deselect" 구분에 사용
+  const prevSelectedRef = useRef<Ticket | null>(null);
+  // deep-link 처리 완료 여부 — tickets가 바뀔 때마다 재실행되는 것을 방지
+  // match가 찾아져서 setSelected까지 실행된 이후에만 true로 설정
+  const deepLinkProcessedRef = useRef(false);
   // 플래닝 코멘트 (key → PlanningNote[])
   const [planningNotes, setPlanningNotes] = useState<Record<string, PlanningNote[]>>({});
   const [noteInput, setNoteInput]         = useState("");
@@ -1676,33 +1686,174 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 상세 패널 열림/닫힘 시 좌측 사이드바 토글
   useEffect(() => {
     window.dispatchEvent(new CustomEvent("detail-panel", { detail: { open: !!selected } }));
-    // ?ticket= URL sync
-    const params = new URLSearchParams(window.location.search);
+
+    // ?ticket= URL sync — prevSelectedRef로 null→null(초기) vs non-null→null(명시적 해제) 구분
+    //
+    // 왜 isFirstSelectedRender가 아니라 prevSelectedRef를 쓰는가:
+    // React 18 StrictMode는 development에서 effects를 mount→cleanup→remount 이중 실행.
+    // "isFirstRender" ref는 첫 번째 mount에서 false로 바뀌지만 ref 값이 remount에 보존되므로
+    // 두 번째 mount에서 guard가 작동하지 않고 ticket= 이 삭제된다.
+    //
+    // prevSelectedRef 방식:
+    // - null → null  (초기 mount, StrictMode remount): URL 변경 안 함 ✅
+    // - null → Ticket (deep-link 또는 클릭):           ticket= 추가 ✅
+    // - Ticket → null (명시적 deselect):               ticket= 제거 ✅
+    const prevSelected = prevSelectedRef.current;
+    prevSelectedRef.current = selected;
+
     if (selected) {
+      // 티켓 선택 — ticket= 파라미터를 현재 URL에 추가/갱신
+      const params = new URLSearchParams(window.location.search);
       params.set("ticket", selected.key);
-    } else {
+      const newUrl = params.toString() ? `${window.location.pathname}?${params}` : window.location.pathname;
+      window.history.replaceState(window.history.state, "", newUrl);
+    } else if (prevSelected !== null) {
+      // 명시적 deselect (non-null → null) — ticket= 제거
+      const params = new URLSearchParams(window.location.search);
       params.delete("ticket");
+      const newUrl = params.toString() ? `${window.location.pathname}?${params}` : window.location.pathname;
+      window.history.replaceState(window.history.state, "", newUrl);
     }
-    const newUrl = params.toString() ? `${window.location.pathname}?${params}` : window.location.pathname;
-    window.history.replaceState(window.history.state, "", newUrl);
+    // else: null → null (초기 마운트 / StrictMode remount) — URL 변경 없음
   }, [selected]);
 
-  // 진입 시 ?ticket= URL 파라미터로 티켓 자동 선택 + 스크롤
+  // 진입 시 ?ticket= / ?ptab= / ?tab= / ?focus= / ?source= URL 파라미터 처리
+  // ⚠️ deepLinkParamsRef(렌더 시점 캡처) 대신 useEffect 내부에서 window.location.search를 읽음.
+  //    이유: Next.js App Router 클라이언트 내비게이션은 React 트랜지션(startTransition) 사용.
+  //    컴포넌트 렌더가 history.pushState보다 먼저 발생할 수 있어 렌더 시점 캡처가 빈 값일 수 있음.
+  //    useEffect는 커밋(commit) 이후 실행되므로 이 시점에는 window.location이 반드시 최신.
+  //    selected useEffect의 null→null 방어(prevSelectedRef)가 적용되어 있어 ticket= 삭제 없음.
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
+    if (tickets.length === 0) return;
+    // 이미 처리 완료된 경우 skip (tickets 변경마다 중복 실행 방지)
+    if (deepLinkProcessedRef.current) return;
+
+    // useEffect 내부에서 읽기 → Next.js 내비게이션 커밋 이후 항상 최신 URL 보장
+    const params      = new URLSearchParams(window.location.search);
     const ticketParam = params.get("ticket");
-    if (ticketParam && tickets.length > 0) {
-      const match = tickets.find(t => t.key === ticketParam);
-      if (match) {
-        setSelected(match);
-        // 렌더 후 해당 행으로 부드럽게 스크롤
-        setTimeout(() => {
-          document.querySelector(`[data-ticket-key="${ticketParam}"]`)
-            ?.scrollIntoView({ behavior: "smooth", block: "center" });
-        }, 200);
-      }
+    const ptabParam   = params.get("ptab");   // lifecycle 탭 (planningTab)
+    const tabParam    = params.get("tab");    // detail panel 탭
+    const focusParam  = params.get("focus");
+    const sourceParam = params.get("source");
+
+    if (!ticketParam) return;
+
+    if (process.env.NODE_ENV === "development") {
+      console.debug("[TicketBoard] deepLink 처리 시작", {
+        ticket:     ticketParam,
+        ptab:       ptabParam,
+        tab:        tabParam,
+        focus:      focusParam,
+        source:     sourceParam,
+        ticketsLen: tickets.length,
+        currentUrl: window.location.href,
+      });
     }
+
+    const match = tickets.find(t => t.key === ticketParam);
+
+    if (!match) {
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[TicketBoard] deepLink: match 없음 (다음 tickets 변경 시 재시도)", { ticketParam });
+      }
+      return; // match 없으면 processed 표시 안 함 — 다음 로드 때 재시도
+    }
+
+    // ── 1. lifecycle 탭 결정 ─────────────────────────────────────────────────
+    // priority: ?ptab= query > ticket.status 기반 자동 계산
+    const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "요청 검토 중", "완료"];
+
+    function calcPlanningTab(status: string): string {
+      const DONE_T     = ["론치완료", "완료", "배포완료", "개발완료"];
+      const ACTIVE_T   = [
+        "개발중", "QA", "QA중", "진행중", "In Progress", "In Review",
+        "디자인중", "개발 진행중", "검수중", "기획중", "기획완료", "디자인완료",
+      ];
+      const ETR_T      = ["요청 검토 중", "ETR 검토"];
+      const PLANNING_T = ["준비중", "대기중", "SUGGESTED", "Backlog", "플래닝 대기"];
+      if (DONE_T.includes(status))     return "완료";
+      if (ETR_T.includes(status))      return "요청 검토 중";
+      if (ACTIVE_T.includes(status))   return "진행 중";
+      if (PLANNING_T.includes(status)) return "플래닝 대기·검토";
+      return "전체";
+    }
+
+    const targetTab =
+      (ptabParam && VALID_PTABS.includes(ptabParam))
+        ? ptabParam
+        : calcPlanningTab(match.status);
+
+    // lifecycle 탭 먼저 적용 (preFiltered 재계산이 setSelected보다 앞서야 함)
+    setPlanningTab(targetTab);
+
+    // ── 2. detail panel 탭 ──────────────────────────────────────────────────
+    if (tabParam === "ops" || tabParam === "overview") {
+      setDetailTab(tabParam);
+    }
+
+    // ── 3. owner_dashboard deep-link context 저장 ───────────────────────────
+    if (sourceParam === "owner_dashboard" && focusParam) {
+      setFocusForKey(ticketParam);
+      setFocusContext(focusParam);
+    }
+
+    // ── 4. selected 설정 + scroll ────────────────────────────────────────────
+    // deepLinkProcessedRef = true: match를 찾아 처리에 진입했으므로 중복 실행 차단
+    deepLinkProcessedRef.current = true;
+
+    if (process.env.NODE_ENV === "development") {
+      console.debug("[TicketBoard] deepLink: match 발견, setSelected 예약", {
+        ticketParam, matchKey: match.key, targetTab: (ptabParam ?? "auto"), tabParam,
+      });
+    }
+
+    // setTimeout(0): planningTab state 업데이트 flush 후 다음 프레임에서 selected 설정
+    // → preFiltered에 티켓이 포함된 상태로 상세 패널 오픈
+    setTimeout(() => {
+      if (process.env.NODE_ENV === "development") {
+        console.debug("[TicketBoard] deepLink: setSelected 실행", { matchKey: match.key });
+      }
+      setSelected(match);
+
+      // 렌더 완료 후 row 가시성 확인
+      setTimeout(() => {
+        const el = document.querySelector<Element>(`[data-ticket-key="${ticketParam}"]`);
+        if (el) {
+          // 정상 — 해당 row로 스크롤
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        } else {
+          // Fallback: 필터/탭 조건 때문에 안 보이면 "전체" 탭으로 재시도
+          if (process.env.NODE_ENV === "development") {
+            console.debug("[TicketBoard] deepLink: row DOM 없음 — 전체 탭으로 fallback", { ticketParam });
+          }
+          setPlanningTab("전체");
+          setTimeout(() => {
+            document.querySelector(`[data-ticket-key="${ticketParam}"]`)
+              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 200);
+        }
+      }, 200);
+    }, 0);
   }, [tickets]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // focus context 기반 섹션 자동 스크롤 + 하이라이트
+  // selected ticket이 focusForKey와 일치할 때만 동작 (다른 row 클릭 시 무시)
+  useEffect(() => {
+    if (!selected || !focusContext || selected.key !== focusForKey) return;
+    // planning 관련 focus → planningOpen 강제 열기
+    if (focusContext === "planning") setPlanningOpen(true);
+    // 탭 렌더 완료 후 스크롤 (detailTab 세팅 → 렌더 → 350ms 후)
+    const timer = setTimeout(() => {
+      const el = document.querySelector<HTMLElement>(`[data-focus-section="${focusContext}"]`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+        setSectionHighlight(focusContext);
+        // 3.5초 후 highlight 자동 해제
+        setTimeout(() => setSectionHighlight(null), 3500);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [selected?.key, focusContext]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // TODO [ACTIVITY]: Activity 탭 비노출 중 — detailTab이 "activity"로 복원되면 overview로 fallback.
   // 고도화 완료 시: setDetailTab("overview") 제거 → 아래 주석 fetch 로직 복원.
@@ -1804,8 +1955,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // expanded 를 state에 포함: ticket=null 복원 시 항상 false, 티켓 열림 복원 시 저장값 사용
 
   // 최초 진입 시 현재 상태를 replaceState로 기록
+  // ?ticket= 파라미터가 URL에 있으면 ticket: null 대신 실제 키 값을 보존.
+  // → 뒤로가기/앞으로가기(popstate) 시 history state에서 티켓을 복원할 수 있음.
   useEffect(() => {
-    window.history.replaceState({ tab: planningTab, ticket: null, expanded: false }, "");
+    const initialTicket = typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("ticket")
+      : null;
+    window.history.replaceState({ tab: planningTab, ticket: initialTicket, expanded: false }, "");
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 탭 전환 — 유저 액션 전용 래퍼 (pushState 포함)
@@ -1992,11 +2148,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           setMemoText(getCurrentMemo(t.key)?.text ?? "");
         }
       } else {
-        setSelected(null);
-        setDetailTab("overview");
-        setIsDetailExpanded(false); // 패널 닫힐 때 항상 expanded 리셋 — 공백 방지
-        setEditMode(false);
-        setMemoEditMode(false);
+        // history state에 ticket이 없더라도 현재 URL에 ?ticket=이 있으면 패널을 닫지 않음.
+        // 이유: deep-link 진입 직후 initial replaceState가 {ticket: null}로 기록되면
+        //        popstate 발생 시 잘못 패널을 닫는 상황 방지.
+        //        (initial replaceState는 이제 URL ticket을 보존하지만 이중 방어)
+        const currentTicket = new URLSearchParams(window.location.search).get("ticket");
+        if (!currentTicket) {
+          setSelected(null);
+          setDetailTab("overview");
+          setIsDetailExpanded(false); // 패널 닫힐 때 항상 expanded 리셋 — 공백 방지
+          setEditMode(false);
+          setMemoEditMode(false);
+        }
+        // currentTicket이 있으면 패널 상태를 그대로 유지 (deep-link 보호)
       }
     };
     window.addEventListener("popstate", handler);
@@ -2550,6 +2714,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setShowFullDoneSchedule(false);
     setNoteInput("");
     setEtrInput("");
+    // 직접 row 클릭 시 owner_dashboard focus context 해제
+    setFocusForKey(null);
+    setFocusContext(null);
+    setSectionHighlight(null);
     setEtrError(null);
     setMemoText(getCurrentMemo(t.key)?.text ?? "");
     const p = getPlanningVal(planning[t.key]);
@@ -2772,7 +2940,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <div className={`flex items-center gap-2 mb-4 ${isDetailExpanded ? "hidden" : ""}`}>
               {(reviewCount > 0 || reviewFilter) && (
                 <button
-                  onClick={() => setReviewFilter(v => !v)}
+                  onClick={() => {
+                    const next = !reviewFilter;
+                    setReviewFilter(next);
+                    // reviewNeeded는 cross-status attention filter —
+                    // ON 시 전체 탭으로 이동해 lifecycle 무관하게 전체 표시
+                    if (next) changeTab("전체");
+                  }}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
                   style={{
                     background: reviewFilter ? "rgba(239,68,68,0.15)" : "var(--bg-overlay)",
@@ -2806,9 +2980,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </span>
                 </button>
               )}
-              {(reviewFilter || newFilter) && (
-                <span className="text-xs" style={{ color: "var(--text-subtle)" }}>
-                  {reviewFilter && newFilter ? "검토필요 + 신규 티켓만 표시 중" : reviewFilter ? "검토필요 티켓만 표시 중" : "최근 2주 신규 티켓만 표시 중"}
+              {/* 활성 필터 chip — lifecycle 탭과 독립된 attention filter 임을 명시 */}
+              {reviewFilter && (
+                <span className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold"
+                  style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(248,113,113,0.45)", color: "#f87171" }}>
+                  ⚡ 검토필요 활성화
+                  <button
+                    title="검토필요 필터 해제"
+                    onClick={() => setReviewFilter(false)}
+                    className="ml-0.5 w-4 h-4 flex items-center justify-center rounded hover:bg-red-500/20 transition-colors text-[13px] leading-none"
+                    style={{ color: "#f87171" }}
+                  >×</button>
+                </span>
+              )}
+              {newFilter && (
+                <span className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold"
+                  style={{ background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.40)", color: "#38bdf8" }}>
+                  🆕 신규 활성화
+                  <button
+                    title="신규 티켓 필터 해제"
+                    onClick={() => setNewFilter(false)}
+                    className="ml-0.5 w-4 h-4 flex items-center justify-center rounded hover:bg-sky-500/20 transition-colors text-[13px] leading-none"
+                    style={{ color: "#38bdf8" }}
+                  >×</button>
                 </span>
               )}
             </div>
@@ -3550,6 +3744,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           <div className="flex-1 overflow-y-auto min-h-0">
           <div className="p-5">
 
+            {/* ── owner_dashboard deep-link Reminder Strip ──────────────────────────
+                source=owner_dashboard 진입 시 "왜 이동했는가"를 상단에 1줄로 표시.
+                focusForKey가 현재 ticket과 일치할 때만 표시.                       */}
+            {(() => {
+              if (!focusContext || !focusForKey || selected.key !== focusForKey) return null;
+              const REMINDER: Record<string, { icon: string; text: string; color: string; bg: string; border: string }> = {
+                "schedule": { icon: "⚠", text: "세부 작업 일정을 입력해주세요",          color: "#fbbf24", bg: "rgba(245,158,11,0.08)",   border: "rgba(251,191,36,0.38)"  },
+                "planning": { icon: "⚡", text: "플래닝 검토 상태를 확인·해제해주세요",    color: "#f87171", bg: "rgba(239,68,68,0.08)",    border: "rgba(248,113,113,0.38)" },
+                "etr":      { icon: "ℹ", text: "요구사항 출처(ETR)를 연결해주세요",        color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+                "docs":     { icon: "ℹ", text: "관련 문서(PRD)를 연결해주세요",            color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+              };
+              const r = REMINDER[focusContext];
+              if (!r) return null;
+              return (
+                <div className="flex items-center justify-between gap-2 mb-4 px-3 py-2 rounded-lg text-xs font-semibold"
+                  style={{ background: r.bg, border: `1px solid ${r.border}`, color: r.color }}>
+                  <span className="flex items-center gap-1.5">
+                    <span>{r.icon}</span>
+                    <span>담당자 대시보드에서 이동 — {r.text}</span>
+                  </span>
+                  <button
+                    onClick={() => { setFocusContext(null); setFocusForKey(null); setSectionHighlight(null); }}
+                    className="opacity-60 hover:opacity-100 transition-opacity text-[13px] leading-none shrink-0"
+                    title="알림 닫기"
+                  >×</button>
+                </div>
+              );
+            })()}
+
             {/* ══════════════════════════════════════════
                 Overview 탭: 핵심 메타 + 보조 정보 + 요약 + 메모
                 ══════════════════════════════════════════ */}
@@ -3714,8 +3937,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 ══════════════════════════════════════════ */}
             {detailTab === "overview" && (<>
 
-            {/* 요구사항 출처 */}
-            <div className="rounded-lg px-3 py-2.5 mb-4" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+            {/* 요구사항 출처 — data-focus-section="etr" */}
+            <div
+              data-focus-section="etr"
+              className="rounded-lg px-3 py-2.5 mb-4"
+              style={{
+                background: "var(--bg-overlay)",
+                border: `1px solid ${sectionHighlight === "etr" ? "rgba(100,116,139,0.6)" : "var(--border)"}`,
+                boxShadow: sectionHighlight === "etr" ? "0 0 0 2px rgba(100,116,139,0.35), 0 0 12px rgba(100,116,139,0.08)" : undefined,
+                transition: "box-shadow 0.4s ease, border-color 0.4s ease",
+              }}
+            >
               {/* 섹션 헤더 */}
               <div className="flex items-center gap-1.5 mb-2.5">
                 <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>요구사항 출처</p>
@@ -3835,8 +4067,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </>
               )}
 
-              {/* 관련 주요 문서 연결 섹션 */}
-              <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+              {/* 관련 주요 문서 연결 섹션 — data-focus-section="docs" */}
+              <div
+                data-focus-section="docs"
+                className="mt-3 pt-3"
+                style={{
+                  borderTop: "1px solid var(--border)",
+                  borderRadius: sectionHighlight === "docs" ? "6px" : undefined,
+                  boxShadow: sectionHighlight === "docs" ? "0 0 0 2px rgba(100,116,139,0.35), 0 0 12px rgba(100,116,139,0.08)" : undefined,
+                  transition: "box-shadow 0.4s ease",
+                }}
+              >
                 {/* 헤더: 타이틀 + 추가 버튼 */}
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-semibold flex items-center gap-1.5" style={{ color: "var(--text-muted)" }}>
@@ -4188,8 +4429,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 Planning & Schedule 탭: 플래닝 상태
                 ══════════════════════════════════════════ */}
             {detailTab === "ops" && (<>
-              {/* 플래닝 상태 */}
-              <div className="pt-4 mb-4" style={{ borderTop: "1px solid var(--border)" }}>
+              {/* 플래닝 상태 — data-focus-section="planning" */}
+              <div
+                data-focus-section="planning"
+                className="pt-4 mb-4"
+                style={{
+                  borderTop: "1px solid var(--border)",
+                  transition: "box-shadow 0.4s ease",
+                  borderRadius: sectionHighlight === "planning" ? "8px" : undefined,
+                  boxShadow: sectionHighlight === "planning"
+                    ? "0 0 0 2px rgba(248,113,113,0.5), 0 0 14px rgba(248,113,113,0.12)"
+                    : undefined,
+                }}
+              >
                 <button
                   onClick={() => setPlanningOpen(o => !o)}
                   className="flex items-center justify-between w-full mb-2 group"
@@ -4430,8 +4682,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 Planning & Schedule 탭 계속: 작업별 일정 (Schedule)
                 ══════════════════════════════════════════ */}
             {detailTab === "ops" && (<>
-              {/* ── Schedule 섹션 구분선 ── */}
-              <div className="flex items-center gap-2 mt-2 mb-1" style={{ borderTop: "1px solid var(--border)" }}>
+              {/* ── Schedule 섹션 — data-focus-section="schedule" ── */}
+              <div
+                data-focus-section="schedule"
+                className="flex items-center gap-2 mt-2 mb-1"
+                style={{
+                  borderTop: "1px solid var(--border)",
+                  borderRadius: sectionHighlight === "schedule" ? "8px" : undefined,
+                  boxShadow: sectionHighlight === "schedule"
+                    ? "0 0 0 2px rgba(251,191,36,0.5), 0 0 14px rgba(251,191,36,0.10)"
+                    : undefined,
+                  transition: "box-shadow 0.4s ease",
+                }}>
                 <span className="pt-3 text-[10px] font-semibold uppercase tracking-widest" style={{ color: "var(--text-subtle)" }}>Schedule</span>
               </div>
               <div className="pt-2" style={{ borderTop: "none" }}>
