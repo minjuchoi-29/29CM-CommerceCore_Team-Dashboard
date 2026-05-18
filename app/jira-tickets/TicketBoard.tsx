@@ -2065,8 +2065,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (data["cc-etr"])        setEtrMap(data["cc-etr"]);
         if (data["cc-planning-notes"]) setPlanningNotes(data["cc-planning-notes"]);
         if (data["cc-ticket-notes"])   setTicketNotes(data["cc-ticket-notes"]);
-        if (data["cc-weekly-notes"])      setWeeklyNotes(data["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
-        if (data["cc-update-candidates"]) setUpdateCandidates(data["cc-update-candidates"] as UpdateCandidate[]);
+        if (data["cc-weekly-notes"] && typeof data["cc-weekly-notes"] === "object" && !Array.isArray(data["cc-weekly-notes"]))
+          setWeeklyNotes(data["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
+        if (Array.isArray(data["cc-update-candidates"]))
+          setUpdateCandidates(data["cc-update-candidates"] as UpdateCandidate[]);
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];

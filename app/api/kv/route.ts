@@ -22,8 +22,10 @@ export async function GET(req: NextRequest) {
     const results = await Promise.all(
       keys.map((k) => redis.get<Record<string, unknown>>(k))
     );
+    // cc-update-candidates는 배열이므로 null일 때 [] 반환 ({}로 반환 시 클라이언트 .filter() 오류 발생)
+    const ARRAY_KEYS = new Set(["cc-update-candidates"]);
     const data: Record<string, unknown> = {};
-    keys.forEach((k, i) => { data[k] = results[i] ?? {}; });
+    keys.forEach((k, i) => { data[k] = results[i] ?? (ARRAY_KEYS.has(k) ? [] : {}); });
     return NextResponse.json(data);
   } catch (e) {
     console.error("[KV GET]", e);
