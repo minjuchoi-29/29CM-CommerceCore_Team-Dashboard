@@ -811,6 +811,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [ticketAddedDates, setTicketAddedDates] = useState<Record<string, string>>({}); // key → "YYYY-MM-DD"
   const [planningTab, setPlanningTab] = useState("진행 중");
   const [kvLoaded, setKvLoaded]     = useState(false);
+  const [kvSaveStatus, setKvSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const kvSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const planningMigratedRef         = useRef(false);
   // hiddenKeys의 최신값을 항상 참조할 수 있는 ref (stale closure 방지)
   const hiddenKeysRef = useRef<Set<string>>(new Set());
@@ -1088,15 +1090,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             end: newTicket.startDate,
             status: "예정",
           };
-          const updatedSchedules = {
-            ...schedules,
-            [trimmed]: [kickoffRow, ...(schedules[trimmed] ?? []).filter(r => r.role !== "Kick-Off")],
-          };
-          setSchedules(updatedSchedules);
+          const newTicketSchedule = [kickoffRow, ...(schedules[trimmed] ?? []).filter(r => r.role !== "Kick-Off")];
+          setSchedules(prev => ({ ...prev, [trimmed]: newTicketSchedule }));
+          // subKey 방식: 해당 티켓만 업데이트
           fetch("/api/kv", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: "cc-schedules", value: updatedSchedules }),
+            body: JSON.stringify({ key: "cc-schedules", subKey: trimmed, value: newTicketSchedule }),
           }).catch(() => {});
         }
 
@@ -1214,7 +1214,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // JIRA startDate → 킥오프 자동 등록 (기존 일정 없을 때만)
       const ticketsWithStart = fetched.filter(t => t.startDate && !schedules[t.key]?.find(r => r.role === "Kick-Off"));
       if (ticketsWithStart.length > 0) {
-        const updatedSchedules = { ...schedules };
+        // subKey 방식: 각 티켓 별로 개별 업데이트 (전체 덮어쓰기 방지)
         for (const t of ticketsWithStart) {
           const kickoffRow: RoleSchedule = {
             role: "Kick-Off",
@@ -1223,14 +1223,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             end: t.startDate!,
             status: "예정",
           };
-          updatedSchedules[t.key] = [kickoffRow, ...(schedules[t.key] ?? []).filter(r => r.role !== "Kick-Off")];
+          const newTicketSchedule = [kickoffRow, ...(schedules[t.key] ?? []).filter(r => r.role !== "Kick-Off")];
+          setSchedules(prev => ({ ...prev, [t.key]: newTicketSchedule }));
+          fetch("/api/kv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: "cc-schedules", subKey: t.key, value: newTicketSchedule }),
+          }).catch(() => {});
         }
-        setSchedules(updatedSchedules);
-        fetch("/api/kv", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: "cc-schedules", value: updatedSchedules }),
-        }).catch(() => {});
       }
 
       // 완료 상태 티켓은 플래닝 자동 완료 처리
@@ -1555,14 +1555,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return schedules[t.key] ?? t.roles ?? [];
   }
 
-  function saveSchedule(key: string, rows: RoleSchedule[]) {
-    const updated = { ...schedules, [key]: rows };
+  function saveSchedule(ticketKey: string, rows: RoleSchedule[]) {
+    const updated = { ...schedules, [ticketKey]: rows };
     setSchedules(updated);
+
+    // 저장 상태 → saving
+    if (kvSaveTimerRef.current) clearTimeout(kvSaveTimerRef.current);
+    setKvSaveStatus("saving");
+
+    // subKey 방식: 서버가 현재 값을 읽어 해당 티켓만 교체 → race condition 최소화
     fetch("/api/kv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-schedules", value: updated }),
-    }).catch(() => {});
+      body: JSON.stringify({ key: "cc-schedules", subKey: ticketKey, value: rows }),
+    })
+      .then(async (r) => {
+        if (!r.ok) {
+          const err = await r.json().catch(() => ({ error: "알 수 없는 오류" }));
+          console.error("[saveSchedule] KV 저장 실패:", err);
+          setKvSaveStatus("error");
+        } else {
+          setKvSaveStatus("saved");
+        }
+        kvSaveTimerRef.current = setTimeout(() => setKvSaveStatus("idle"), 3000);
+      })
+      .catch((e) => {
+        console.error("[saveSchedule] 네트워크 오류:", e);
+        setKvSaveStatus("error");
+        kvSaveTimerRef.current = setTimeout(() => setKvSaveStatus("idle"), 3000);
+      });
   }
 
   function startEdit(focusKey?: string) {
@@ -4108,6 +4129,43 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
           </div>
           </div>{/* overflow-y-auto */}
+        </div>
+      )}
+
+      {/* ── KV 저장 상태 토스트 ── */}
+      {kvSaveStatus !== "idle" && (
+        <div
+          className="fixed bottom-5 right-5 z-[100] flex items-center gap-2 px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium transition-all"
+          style={{
+            background: kvSaveStatus === "saved" ? "var(--bg-overlay)" : kvSaveStatus === "error" ? "#fee2e2" : "var(--bg-overlay)",
+            border: `1px solid ${kvSaveStatus === "saved" ? "#34d399" : kvSaveStatus === "error" ? "#fca5a5" : "var(--border)"}`,
+            color: kvSaveStatus === "saved" ? "#34d399" : kvSaveStatus === "error" ? "#dc2626" : "var(--text-muted)",
+          }}
+        >
+          {kvSaveStatus === "saving" && (
+            <>
+              <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+              </svg>
+              저장 중…
+            </>
+          )}
+          {kvSaveStatus === "saved" && (
+            <>
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+              저장됨
+            </>
+          )}
+          {kvSaveStatus === "error" && (
+            <>
+              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              저장 실패 — 다시 시도해주세요
+            </>
+          )}
         </div>
       )}
     </div>

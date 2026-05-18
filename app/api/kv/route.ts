@@ -32,13 +32,15 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/kv  body: { key: "cc-planning", value: { ... } }
+// subKey 지원: { key: "cc-schedules", subKey: "TICKET-123", value: [...] }
+//   → 전체 덮어쓰기 대신 해당 subKey만 업데이트 (race condition 방지)
 export async function POST(req: NextRequest) {
-  let body: { key?: string; value?: unknown };
+  let body: { key?: string; value?: unknown; subKey?: string };
   try { body = await req.json(); } catch {
     return NextResponse.json({ error: "잘못된 요청 형식" }, { status: 400 });
   }
 
-  const { key, value } = body;
+  const { key, value, subKey } = body;
   if (!key || !isValidKey(key)) {
     return NextResponse.json({ error: "유효하지 않은 key" }, { status: 400 });
   }
@@ -47,7 +49,14 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    await redis.set(key, value);
+    if (subKey && typeof subKey === "string") {
+      // 부분 업데이트: 현재 값을 읽어 subKey만 교체 후 저장 (race condition 최소화)
+      const existing = await redis.get<Record<string, unknown>>(key) ?? {};
+      const merged = { ...existing, [subKey]: value };
+      await redis.set(key, merged);
+    } else {
+      await redis.set(key, value);
+    }
     return NextResponse.json({ ok: true });
   } catch (e) {
     console.error("[KV POST]", e);
