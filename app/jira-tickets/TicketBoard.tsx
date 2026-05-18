@@ -11,6 +11,7 @@ import {
   type SnapshotSet,
   TRANSITION_META,
   TRANSITION_GROUPS,
+  STRONG_SIGNAL_KINDS,
   buildTicketSnapshot,
   computeAllTransitions,
   selectCompareSnapshot,
@@ -1036,11 +1037,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const prevActionCountRef = useRef<Record<string, number>>({});
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
   const [changesMode,           setChangesMode]           = useState(false);
+  const [changesExpanded,       setChangesExpanded]       = useState(false);  // 기본값: 접힘
   const [transitionFilter,      setTransitionFilter]      = useState<TransitionKind | "all" | "newly_added">("all");
   const [compareSnapshot,       setCompareSnapshot]       = useState<SnapshotSet | null>(null);
   const [transitionMap,         setTransitionMap]         = useState<Map<string, TransitionKind[]>>(new Map());
   const [transitionNewlyAdded,  setTransitionNewlyAdded]  = useState<Set<string>>(new Set());
   const [snapshotsLoaded,       setSnapshotsLoaded]       = useState(false);
+  const [snapshotCount,         setSnapshotCount]         = useState(0);
+  const [baselineAt,            setBaselineAt]            = useState<string | null>(null);
+  const [baselineSaving,        setBaselineSaving]        = useState(false);
   // Workspace Navigation Context — 진입 경로/이전 상태 추적 (page reload 시 초기화 OK)
   const workspaceNavRef = useRef<{
     source: string | null;         // "owner_dashboard" | null
@@ -2536,8 +2541,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (!changesMode || snapshotsLoaded) return;
     fetch("/api/transitions")
       .then(r => r.json())
-      .then((data: { snapshots?: SnapshotSet[] }) => {
+      .then((data: { snapshots?: SnapshotSet[]; baselineAt?: string }) => {
         const snapshots = data.snapshots ?? [];
+        setSnapshotCount(snapshots.length);
+        setBaselineAt(data.baselineAt ?? null);
         const snap = selectCompareSnapshot(snapshots, 7);
         setCompareSnapshot(snap);
         if (snap) {
@@ -2569,6 +2576,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setTransitionFilter("all");
       setCompareSnapshot(null);
       setSnapshotsLoaded(false);
+      setChangesExpanded(false);
+      setSnapshotCount(0);
+      setBaselineAt(null);
     }
   }, [changesMode]);
 
@@ -3242,204 +3252,301 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         })()}
 
 
-        {/* ── Changes Mode: 내러티브 바 + Transition 필터 ─────── */}
-        {changesMode && !isDetailExpanded && (
-          <div className="mb-4 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(129,140,248,0.35)", background: "rgba(129,140,248,0.05)" }}>
+        {/* ── Changes Mode 패널 ────────────────────────────────── */}
+        {changesMode && !isDetailExpanded && (() => {
+          // 강한 신호 요약 (compact bar용)
+          const summary = summarizeTransitions(transitionMap);
+          const strongSummary = summary.filter(s => STRONG_SIGNAL_KINDS.has(s.kind));
+          const isStable = snapshotCount >= 3;  // 스냅샷 3개 이상이면 안정권
+          const hasData   = transitionMap.size > 0 || transitionNewlyAdded.size > 0;
 
-            {/* ── 헤더 ─────────────────────────────────────────── */}
-            <div className="flex items-center justify-between px-4 py-2.5" style={{ borderBottom: "1px solid rgba(129,140,248,0.2)" }}>
-              <div className="flex items-center gap-2">
-                <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2.5">
-                  <path d="M13 7l5 5-5 5M6 7l5 5-5 5" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-                <span className="text-xs font-semibold" style={{ color: "#818cf8" }}>이번 주 변화</span>
-                {compareSnapshot ? (
-                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                    비교 기준: <span style={{ color: "var(--text-secondary)" }}>{compareSnapshot.label}</span>
-                  </span>
-                ) : (
-                  <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
-                    {snapshotsLoaded ? "저장된 스냅샷 없음 — Jira Sync 후 재시도" : "로딩 중…"}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                {transitionMap.size > 0 && (
-                  <span className="text-[11px] font-semibold" style={{ color: "#818cf8" }}>
-                    {transitionMap.size}건 전진
-                  </span>
-                )}
-                {transitionNewlyAdded.size > 0 && (
-                  <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
-                    · 신규 {transitionNewlyAdded.size}건
-                  </span>
-                )}
-                <button
-                  onClick={() => setChangesMode(false)}
-                  className="w-5 h-5 flex items-center justify-center rounded transition-colors text-[11px]"
-                  style={{ color: "var(--text-subtle)" }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "rgba(129,140,248,0.15)"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
-                  title="변화 보기 닫기"
-                >✕</button>
-              </div>
-            </div>
+          return (
+            <div className="mb-4 rounded-xl overflow-hidden" style={{ border: "1px solid rgba(129,140,248,0.35)", background: "rgba(129,140,248,0.05)" }}>
 
-            {/* ── 3-Group 내러티브 요약 ─────────────────────────── */}
-            {(transitionMap.size > 0 || transitionNewlyAdded.size > 0) && (() => {
-              const summary = summarizeTransitions(transitionMap);
-              const progressItems = summary.filter(s => TRANSITION_GROUPS[0].kinds.includes(s.kind));
-              const attentionItems = summary.filter(s => TRANSITION_GROUPS[1].kinds.includes(s.kind));
-              return (
-                <div className="px-4 py-2.5 space-y-1.5" style={{ borderBottom: "1px solid rgba(129,140,248,0.12)" }}>
-                  {/* A. 실제 진행 변화 */}
-                  {progressItems.length > 0 && (
+              {/* ── 컴팩트 바 (항상 표시) ─────────────────────── */}
+              <div
+                className="flex items-center justify-between px-4 py-2.5 cursor-pointer select-none"
+                style={{ borderBottom: changesExpanded ? "1px solid rgba(129,140,248,0.2)" : "none" }}
+                onClick={() => setChangesExpanded(v => !v)}
+              >
+                {/* 왼쪽: 아이콘 + 제목 + Beta 배지 + 핵심 신호 요약 */}
+                <div className="flex items-center gap-2 flex-wrap min-w-0">
+                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2.5">
+                    <path d="M13 7l5 5-5 5M6 7l5 5-5 5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                  <span className="text-xs font-semibold shrink-0" style={{ color: "#818cf8" }}>이번 주 변화</span>
+
+                  {/* Beta 배지 */}
+                  <span
+                    className="px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider shrink-0"
+                    style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.3)" }}
+                  >
+                    {isStable ? "Beta" : "기준점 안정화 중"}
+                  </span>
+
+                  {/* 로딩 중 / 스냅샷 없음 */}
+                  {!snapshotsLoaded && (
+                    <span className="text-[11px] shrink-0" style={{ color: "var(--text-subtle)" }}>로딩 중…</span>
+                  )}
+                  {snapshotsLoaded && !compareSnapshot && (
+                    <span className="text-[11px] shrink-0" style={{ color: "var(--text-subtle)" }}>
+                      저장된 스냅샷 없음 — Jira Sync 후 재시도
+                    </span>
+                  )}
+
+                  {/* 강한 신호 인라인 요약 */}
+                  {snapshotsLoaded && compareSnapshot && (
                     <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "#818cf8" }}>진행 변화</span>
-                      {progressItems.map(({ kind, count }) => {
+                      {strongSummary.length === 0 && !changesExpanded && (
+                        <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>특이 변화 없음</span>
+                      )}
+                      {strongSummary.map(({ kind, count }) => {
                         const meta = TRANSITION_META[kind];
                         return (
                           <span key={kind} className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
-                            {meta.emoji} <strong style={{ color: meta.color }}>{count}건</strong> {meta.label}
+                            {meta.emoji} <strong style={{ color: meta.color }}>{count}</strong>
                           </span>
                         );
                       })}
-                    </div>
-                  )}
-                  {/* B. Attention 변화 */}
-                  {attentionItems.length > 0 && (
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "#f59e0b" }}>Attention</span>
-                      {attentionItems.map(({ kind, count }) => {
-                        const meta = TRANSITION_META[kind];
-                        return (
-                          <span key={kind} className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
-                            {meta.emoji} <strong style={{ color: meta.color }}>{count}건</strong> {meta.label}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  )}
-                  {/* C. 신규 등록 — 보조 정보 */}
-                  {transitionNewlyAdded.size > 0 && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "var(--text-subtle)" }}>신규 등록</span>
-                      <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
-                        + {transitionNewlyAdded.size}건 <span className="text-[10px]">(상태 변화와 분리 집계)</span>
-                      </span>
+                      {transitionNewlyAdded.size > 0 && (
+                        <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                          · +신규 {transitionNewlyAdded.size}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
-              );
-            })()}
 
-            {/* ── 필터 칩 ─────────────────────────────────────── */}
-            <div className="px-4 py-2.5 flex items-center gap-1.5 flex-wrap">
-              <span className="text-[10px] font-semibold uppercase tracking-wider mr-0.5" style={{ color: "var(--text-subtle)" }}>필터</span>
-
-              {/* [전체] */}
-              {(() => {
-                const total = transitionMap.size + transitionNewlyAdded.size;
-                const active = transitionFilter === "all";
-                return (
+                {/* 오른쪽: 펼치기/닫기 */}
+                <div className="flex items-center gap-2 shrink-0 ml-2">
                   <button
-                    onClick={() => setTransitionFilter("all")}
+                    onClick={e => { e.stopPropagation(); setChangesExpanded(v => !v); }}
                     className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
                     style={{
-                      background: active ? "rgba(129,140,248,0.2)" : "var(--bg-overlay)",
-                      border: `1px solid ${active ? "#818cf8" : "var(--border-2)"}`,
-                      color: active ? "#818cf8" : "var(--text-muted)",
+                      background: changesExpanded ? "rgba(129,140,248,0.15)" : "var(--bg-overlay)",
+                      border: "1px solid var(--border-2)",
+                      color: "var(--text-muted)",
                     }}
                   >
-                    전체
-                    <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
-                      style={{ background: active ? "rgba(129,140,248,0.25)" : "var(--border)", color: active ? "#818cf8" : "var(--text-subtle)" }}>
-                      {total}
-                    </span>
+                    {changesExpanded ? "접기 ▲" : "자세히 ▼"}
                   </button>
-                );
-              })()}
+                  <button
+                    onClick={e => { e.stopPropagation(); setChangesMode(false); }}
+                    className="w-5 h-5 flex items-center justify-center rounded transition-colors text-[11px]"
+                    style={{ color: "var(--text-subtle)" }}
+                    onMouseEnter={ev => { (ev.currentTarget as HTMLElement).style.background = "rgba(129,140,248,0.15)"; }}
+                    onMouseLeave={ev => { (ev.currentTarget as HTMLElement).style.background = "transparent"; }}
+                    title="변화 보기 닫기"
+                  >✕</button>
+                </div>
+              </div>
 
-              {/* 실제 진행 변화 칩들 */}
-              {TRANSITION_GROUPS[0].kinds.map(kind => {
-                const count = Array.from(transitionMap.values()).filter(ks => ks.includes(kind)).length;
-                if (count === 0) return null;
-                const meta = TRANSITION_META[kind];
-                const active = transitionFilter === kind;
-                return (
-                  <button key={kind}
-                    onClick={() => setTransitionFilter(kind)}
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
-                    style={{
-                      background: active ? meta.bgColor : "var(--bg-overlay)",
-                      border: `1px solid ${active ? meta.borderColor : "var(--border-2)"}`,
-                      color: active ? meta.color : "var(--text-muted)",
-                    }}
-                  >
-                    <span>{meta.emoji}</span>
-                    <span>{meta.label}</span>
-                    <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
-                      style={{ background: active ? meta.bgColor : "var(--border)", color: active ? meta.color : "var(--text-subtle)" }}>
-                      {count}
+              {/* ── 확장 패널 ─────────────────────────────────── */}
+              {changesExpanded && (
+                <>
+                  {/* 안정화 안내 배너 */}
+                  {!isStable && (
+                    <div className="px-4 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid rgba(129,140,248,0.12)", background: "rgba(129,140,248,0.06)" }}>
+                      <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                        ⚠ 스냅샷이 {snapshotCount}개 쌓인 상태입니다 (3개 이상이면 신뢰도 향상). Jira Sync를 반복하면 기준점이 안정화됩니다.
+                      </span>
+                    </div>
+                  )}
+
+                  {/* 기준 스냅샷 정보 */}
+                  {compareSnapshot && (
+                    <div className="px-4 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid rgba(129,140,248,0.12)" }}>
+                      <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                        비교 기준: <span style={{ color: "var(--text-secondary)" }}>{compareSnapshot.label}</span>
+                      </span>
+                      {baselineAt && (
+                        <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                          · 기준점: {(() => {
+                            const d = new Date(baselineAt);
+                            const dow = ["일","월","화","수","목","금","토"][d.getDay()];
+                            return `${d.getMonth()+1}/${d.getDate()}(${dow}) ${d.getHours().toString().padStart(2,"0")}:${d.getMinutes().toString().padStart(2,"0")}`;
+                          })()}
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 3-Group 내러티브 요약 */}
+                  {hasData && (() => {
+                    const progressItems = summary.filter(s => TRANSITION_GROUPS[0].kinds.includes(s.kind));
+                    const attentionItems = summary.filter(s => TRANSITION_GROUPS[1].kinds.includes(s.kind));
+                    return (
+                      <div className="px-4 py-2.5 space-y-1.5" style={{ borderBottom: "1px solid rgba(129,140,248,0.12)" }}>
+                        {progressItems.length > 0 && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "#818cf8" }}>진행 변화</span>
+                            {progressItems.map(({ kind, count }) => {
+                              const meta = TRANSITION_META[kind];
+                              return (
+                                <span key={kind} className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                                  {meta.emoji} <strong style={{ color: meta.color }}>{count}건</strong> {meta.label}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {attentionItems.length > 0 && (
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "#f59e0b" }}>Attention</span>
+                            {attentionItems.map(({ kind, count }) => {
+                              const meta = TRANSITION_META[kind];
+                              return (
+                                <span key={kind} className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                                  {meta.emoji} <strong style={{ color: meta.color }}>{count}건</strong> {meta.label}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {transitionNewlyAdded.size > 0 && (
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] font-bold uppercase tracking-wider shrink-0 w-20" style={{ color: "var(--text-subtle)" }}>신규 등록</span>
+                            <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                              + {transitionNewlyAdded.size}건 <span className="text-[10px]">(상태 변화와 분리 집계)</span>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* 필터 칩 */}
+                  <div className="px-4 py-2.5 flex items-center gap-1.5 flex-wrap" style={{ borderBottom: "1px solid rgba(129,140,248,0.12)" }}>
+                    <span className="text-[10px] font-semibold uppercase tracking-wider mr-0.5" style={{ color: "var(--text-subtle)" }}>필터</span>
+                    {/* [전체] */}
+                    {(() => {
+                      const total = transitionMap.size + transitionNewlyAdded.size;
+                      const active = transitionFilter === "all";
+                      return (
+                        <button
+                          onClick={() => setTransitionFilter("all")}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                          style={{
+                            background: active ? "rgba(129,140,248,0.2)" : "var(--bg-overlay)",
+                            border: `1px solid ${active ? "#818cf8" : "var(--border-2)"}`,
+                            color: active ? "#818cf8" : "var(--text-muted)",
+                          }}
+                        >
+                          전체
+                          <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                            style={{ background: active ? "rgba(129,140,248,0.25)" : "var(--border)", color: active ? "#818cf8" : "var(--text-subtle)" }}>
+                            {total}
+                          </span>
+                        </button>
+                      );
+                    })()}
+                    {/* 진행 변화 칩 */}
+                    {TRANSITION_GROUPS[0].kinds.map(kind => {
+                      const count = Array.from(transitionMap.values()).filter(ks => ks.includes(kind)).length;
+                      if (count === 0) return null;
+                      const meta = TRANSITION_META[kind];
+                      const active = transitionFilter === kind;
+                      return (
+                        <button key={kind}
+                          onClick={() => setTransitionFilter(kind)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                          style={{
+                            background: active ? meta.bgColor : "var(--bg-overlay)",
+                            border: `1px solid ${active ? meta.borderColor : "var(--border-2)"}`,
+                            color: active ? meta.color : "var(--text-muted)",
+                          }}
+                        >
+                          <span>{meta.emoji}</span><span>{meta.label}</span>
+                          <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                            style={{ background: active ? meta.bgColor : "var(--border)", color: active ? meta.color : "var(--text-subtle)" }}>
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {/* Attention 칩 */}
+                    {TRANSITION_GROUPS[1].kinds.map(kind => {
+                      const count = Array.from(transitionMap.values()).filter(ks => ks.includes(kind)).length;
+                      if (count === 0) return null;
+                      const meta = TRANSITION_META[kind];
+                      const active = transitionFilter === kind;
+                      return (
+                        <button key={kind}
+                          onClick={() => setTransitionFilter(kind)}
+                          className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                          style={{
+                            background: active ? meta.bgColor : "var(--bg-overlay)",
+                            border: `1px solid ${active ? meta.borderColor : "var(--border-2)"}`,
+                            color: active ? meta.color : "var(--text-muted)",
+                          }}
+                        >
+                          <span>{meta.emoji}</span><span>{meta.label}</span>
+                          <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                            style={{ background: active ? meta.bgColor : "var(--border)", color: active ? meta.color : "var(--text-subtle)" }}>
+                            {count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                    {/* 신규 등록 칩 — 보조 구분선 뒤 */}
+                    {transitionNewlyAdded.size > 0 && (() => {
+                      const active = transitionFilter === "newly_added";
+                      return (
+                        <>
+                          <span className="text-[10px]" style={{ color: "var(--border-2)" }}>│</span>
+                          <button
+                            onClick={() => setTransitionFilter("newly_added")}
+                            className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                            style={{
+                              background: active ? "rgba(100,116,139,0.15)" : "var(--bg-overlay)",
+                              border: `1px solid ${active ? "#64748b" : "var(--border-2)"}`,
+                              color: active ? "#94a3b8" : "var(--text-subtle)",
+                            }}
+                          >
+                            <span>+</span><span>신규 등록</span>
+                            <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
+                              style={{ background: active ? "rgba(100,116,139,0.25)" : "var(--border)", color: active ? "#94a3b8" : "var(--text-subtle)" }}>
+                              {transitionNewlyAdded.size}
+                            </span>
+                          </button>
+                        </>
+                      );
+                    })()}
+                  </div>
+
+                  {/* 기준점 저장 CTA */}
+                  <div className="px-4 py-2.5 flex items-center justify-between gap-3">
+                    <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                      현재 상태를 기준점으로 저장하면 다음 번 "변화 보기" 시 이 시점부터 비교합니다.
                     </span>
-                  </button>
-                );
-              })}
-
-              {/* Attention 칩들 */}
-              {TRANSITION_GROUPS[1].kinds.map(kind => {
-                const count = Array.from(transitionMap.values()).filter(ks => ks.includes(kind)).length;
-                if (count === 0) return null;
-                const meta = TRANSITION_META[kind];
-                const active = transitionFilter === kind;
-                return (
-                  <button key={kind}
-                    onClick={() => setTransitionFilter(kind)}
-                    className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
-                    style={{
-                      background: active ? meta.bgColor : "var(--bg-overlay)",
-                      border: `1px solid ${active ? meta.borderColor : "var(--border-2)"}`,
-                      color: active ? meta.color : "var(--text-muted)",
-                    }}
-                  >
-                    <span>{meta.emoji}</span>
-                    <span>{meta.label}</span>
-                    <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
-                      style={{ background: active ? meta.bgColor : "var(--border)", color: active ? meta.color : "var(--text-subtle)" }}>
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-
-              {/* 신규 등록 칩 — 보조 스타일로 분리 */}
-              {transitionNewlyAdded.size > 0 && (() => {
-                const active = transitionFilter === "newly_added";
-                return (
-                  <>
-                    <span className="text-[10px]" style={{ color: "var(--border-2)" }}>│</span>
                     <button
-                      onClick={() => setTransitionFilter("newly_added")}
-                      className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium transition-all"
+                      disabled={baselineSaving}
+                      onClick={async () => {
+                        setBaselineSaving(true);
+                        try {
+                          await fetch("/api/transitions", { method: "PUT" });
+                          // 저장 후 상태 재로드
+                          setSnapshotsLoaded(false);
+                          setChangesExpanded(false);
+                        } finally {
+                          setBaselineSaving(false);
+                        }
+                      }}
+                      className="shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium transition-all disabled:opacity-50"
                       style={{
-                        background: active ? "rgba(100,116,139,0.15)" : "var(--bg-overlay)",
-                        border: `1px solid ${active ? "#64748b" : "var(--border-2)"}`,
-                        color: active ? "#94a3b8" : "var(--text-subtle)",
+                        background: "rgba(129,140,248,0.12)",
+                        border: "1px solid rgba(129,140,248,0.35)",
+                        color: "#818cf8",
                       }}
                     >
-                      <span>+</span>
-                      <span>신규 등록</span>
-                      <span className="ml-0.5 px-1 py-px rounded-full text-[9px] font-bold"
-                        style={{ background: active ? "rgba(100,116,139,0.25)" : "var(--border)", color: active ? "#94a3b8" : "var(--text-subtle)" }}>
-                        {transitionNewlyAdded.size}
-                      </span>
+                      {baselineSaving ? "저장 중…" : "현재 상태를 기준점으로 저장"}
                     </button>
-                  </>
-                );
-              })()}
+                  </div>
+                </>
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* 요약 카드 */}
         {planningTab === "플래닝 대기·검토" ? (

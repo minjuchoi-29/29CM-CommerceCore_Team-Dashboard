@@ -18,6 +18,23 @@ export async function GET() {
   }
 }
 
+// ─── PUT: 기준점(baseline) 타임스탬프 저장 ─────────────────────
+// Body: { setAsBaseline: true }
+// 현재 최신 스냅샷의 takenAt을 baselineAt으로 기록.
+export async function PUT() {
+  try {
+    const stored = (await redis.get<StoredSnapshots>(KV_KEY)) ?? { snapshots: [] };
+    const latestSnap = stored.snapshots[stored.snapshots.length - 1];
+    const baselineAt = latestSnap?.takenAt ?? new Date().toISOString();
+    const updated: StoredSnapshots = { ...stored, baselineAt };
+    await redis.set(KV_KEY, updated);
+    return NextResponse.json({ status: "baseline_set", baselineAt });
+  } catch (e) {
+    console.error("[transitions PUT]", e);
+    return NextResponse.json({ error: String(e) }, { status: 500 });
+  }
+}
+
 // ─── POST: 새 스냅샷 저장 ───────────────────────────────────────
 // Body: { tickets: Record<string, { ticketKey, status, eta }>, force?: boolean }
 //

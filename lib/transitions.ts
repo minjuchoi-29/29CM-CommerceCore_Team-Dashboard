@@ -143,9 +143,24 @@ export interface SnapshotSet {
 /** KV 저장 구조 (key: cc-transition-snapshots) */
 export interface StoredSnapshots {
   snapshots: SnapshotSet[];  // takenAt 오름차순, 최대 MAX_SNAPSHOTS
+  /** 사용자가 "현재 상태를 기준점으로 저장" CTA로 직접 지정한 시각 (ISO datetime) */
+  baselineAt?: string;
 }
 
 export const MAX_SNAPSHOTS = 14;  // 2주치 보관
+
+/**
+ * 컴팩트 바(접힘 상태)에서 보여줄 핵심 신호 종류.
+ * 노이즈가 많은 planning 트랜지션(design/dev-start)은 제외하고
+ * 실제 의미 있는 변화(완료·착수·QA·ETA초과·검토필요)만 표시.
+ */
+export const STRONG_SIGNAL_KINDS: ReadonlySet<TransitionKind> = new Set<TransitionKind>([
+  "lifecycle:completed",
+  "lifecycle:started",
+  "planning:qa-start",
+  "attention:overdue",
+  "attention:review-needed",
+]);
 
 // ─── Status 분류 ────────────────────────────────────────────────
 const DONE_STATUSES = new Set([
