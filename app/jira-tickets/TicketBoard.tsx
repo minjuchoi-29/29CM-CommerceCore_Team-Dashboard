@@ -72,6 +72,13 @@ type RoleSchedule = {
   detail?: string;
   detailPerson?: string;
   vacationDays?: number;
+  // Weekly sync source metadata (optional, backward compatible)
+  source?: import("@/lib/weekly-types").ScheduleSource;
+  sourceWeek?: string;
+  manualLocked?: boolean;
+  mergeKey?: string;
+  lastSeenAt?: string;
+  confidence?: "high" | "medium" | "low";
 };
 
 type MemoEntry = {
@@ -1037,6 +1044,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Action Resolve 피드백 — Focus Mode에서 action 수가 줄면 toast 표시
   const [resolveToast, setResolveToast]   = useState<{ count: number } | null>(null);
   const prevActionCountRef = useRef<Record<string, number>>({});
+  // ── Weekly Notes (Jira Weekly 공유사항 Delta Sync) ────────────
+  const [weeklyNotes,      setWeeklyNotes]      = useState<Record<string, import("@/lib/weekly-types").WeeklyNote[]>>({});
+  const [updateCandidates, setUpdateCandidates] = useState<import("@/lib/weekly-types").UpdateCandidate[]>([]);
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
   const [changesMode,           setChangesMode]           = useState(false);
   const [changesExpanded,       setChangesExpanded]       = useState(false);  // 기본값: 접힘
@@ -2044,7 +2054,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (두 요청으로 분리 — 메인 데이터 / 커스텀 티켓)
     // 1) 메인 메타데이터 (상대적으로 작은 데이터)
-    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates")
+    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates,cc-weekly-notes,cc-update-candidates")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -2054,6 +2064,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (data["cc-etr"])        setEtrMap(data["cc-etr"]);
         if (data["cc-planning-notes"]) setPlanningNotes(data["cc-planning-notes"]);
         if (data["cc-ticket-notes"])   setTicketNotes(data["cc-ticket-notes"]);
+        if (data["cc-weekly-notes"])   setWeeklyNotes(data["cc-weekly-notes"] as Record<string, import("@/lib/weekly-types").WeeklyNote[]>);
+        if (data["cc-update-candidates"]) setUpdateCandidates(data["cc-update-candidates"] as import("@/lib/weekly-types").UpdateCandidate[]);
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
@@ -3069,6 +3081,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </svg>
               {fetching ? "Syncing…" : "Jira Sync"}
             </button>
+            {/* ⚡ 일정 변경 감지 배지 */}
+            {updateCandidates.filter(c => !c.resolved).length > 0 && (
+              <span
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium"
+                style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }}
+                title={`${updateCandidates.filter(c => !c.resolved).length}건의 일정 변경이 감지됨 — 티켓 상세 → 일정 탭에서 확인`}
+              >
+                ⚡ 일정 변경 {updateCandidates.filter(c => !c.resolved).length}건
+              </span>
+            )}
             {/* 변화 보기 토글 */}
             <button
               onClick={() => setChangesMode(v => !v)}
@@ -5344,6 +5366,47 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 ══════════════════════════════════════════ */}
             {detailTab === "overview" && (<>
             <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
+
+              {/* ── 최근 Weekly 요약 ─────────────────────────────────── */}
+              {(() => {
+                const notes = weeklyNotes[selected.key] ?? [];
+                if (notes.length === 0) return null;
+                const weeks = [...new Set(notes.map(n => n.sourceWeek))];
+                const latestWeek = weeks.sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0)).at(-1)!;
+                const latestNotes = notes.filter(n => n.sourceWeek === latestWeek);
+                const progress = latestNotes.filter(n => n.type === "progress");
+                const risks    = latestNotes.filter(n => n.type === "risk");
+                const actions  = latestNotes.filter(n => n.type === "next_action" && n.status === "open");
+                return (
+                  <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+                    <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+                      <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>{latestWeek}</span>
+                    </div>
+                    <div className="px-3 py-2 space-y-1.5">
+                      {progress.length > 0 && (
+                        <div className="flex gap-2 text-[11px]">
+                          <span className="shrink-0 font-medium w-14" style={{ color: "var(--text-muted)" }}>진행</span>
+                          <span style={{ color: "var(--text-secondary)" }}>{progress.map(n => n.content).join(", ")}</span>
+                        </div>
+                      )}
+                      {risks.length > 0 && (
+                        <div className="flex gap-2 text-[11px]">
+                          <span className="shrink-0 font-medium w-14" style={{ color: "#ef4444" }}>리스크</span>
+                          <span style={{ color: "var(--text-secondary)" }}>{risks.map(n => n.content).join("; ")}</span>
+                        </div>
+                      )}
+                      {actions.length > 0 && (
+                        <div className="flex gap-2 text-[11px]">
+                          <span className="shrink-0 font-medium w-14" style={{ color: "#fbbf24" }}>다음 액션</span>
+                          <span style={{ color: "var(--text-secondary)" }}>{actions.map(n => n.content).join("; ")}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* 주요 내용 요약 */}
               <div className="mb-4">
                 {/* 헤더 */}
