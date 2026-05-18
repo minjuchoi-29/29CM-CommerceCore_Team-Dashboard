@@ -17,6 +17,7 @@ import {
   selectCompareSnapshot,
   summarizeTransitions,
 } from "@/lib/transitions";
+import type { WeeklyNote, UpdateCandidate, ScheduleSource } from "@/lib/weekly-types";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -73,7 +74,7 @@ type RoleSchedule = {
   detailPerson?: string;
   vacationDays?: number;
   // Weekly sync source metadata (optional, backward compatible)
-  source?: import("@/lib/weekly-types").ScheduleSource;
+  source?: ScheduleSource;
   sourceWeek?: string;
   manualLocked?: boolean;
   mergeKey?: string;
@@ -1045,8 +1046,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [resolveToast, setResolveToast]   = useState<{ count: number } | null>(null);
   const prevActionCountRef = useRef<Record<string, number>>({});
   // ── Weekly Notes (Jira Weekly 공유사항 Delta Sync) ────────────
-  const [weeklyNotes,      setWeeklyNotes]      = useState<Record<string, import("@/lib/weekly-types").WeeklyNote[]>>({});
-  const [updateCandidates, setUpdateCandidates] = useState<import("@/lib/weekly-types").UpdateCandidate[]>([]);
+  const [weeklyNotes,      setWeeklyNotes]      = useState<Record<string, WeeklyNote[]>>({});
+  const [updateCandidates, setUpdateCandidates] = useState<UpdateCandidate[]>([]);
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
   const [changesMode,           setChangesMode]           = useState(false);
   const [changesExpanded,       setChangesExpanded]       = useState(false);  // 기본값: 접힘
@@ -2064,8 +2065,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (data["cc-etr"])        setEtrMap(data["cc-etr"]);
         if (data["cc-planning-notes"]) setPlanningNotes(data["cc-planning-notes"]);
         if (data["cc-ticket-notes"])   setTicketNotes(data["cc-ticket-notes"]);
-        if (data["cc-weekly-notes"])   setWeeklyNotes(data["cc-weekly-notes"] as Record<string, import("@/lib/weekly-types").WeeklyNote[]>);
-        if (data["cc-update-candidates"]) setUpdateCandidates(data["cc-update-candidates"] as import("@/lib/weekly-types").UpdateCandidate[]);
+        if (data["cc-weekly-notes"])      setWeeklyNotes(data["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
+        if (data["cc-update-candidates"]) setUpdateCandidates(data["cc-update-candidates"] as UpdateCandidate[]);
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
