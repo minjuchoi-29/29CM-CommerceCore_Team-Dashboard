@@ -2,12 +2,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
 import { parseWeekly } from "@/lib/weekly-parser";
 import { mergeWeeklySync } from "@/lib/weekly-merge";
+import { fetchWeeklyTextFromJira } from "@/lib/jira-weekly-fetch";
 import type {
   WeeklyNote, UpdateCandidate, WeeklySyncMeta,
 } from "@/lib/weekly-types";
 import type { ExtendedSchedule } from "@/lib/weekly-merge";
 
 export const dynamic = "force-dynamic";
+
+// 한 ticket 처리 결과 (단일 + 배치 공용)
+interface SyncResult {
+  ticketKey: string;
+  ok: boolean;
+  skipped?: boolean;
+  reason?: string;
+  source?: "description" | "comment" | "client";
+  sourceWeek?: string;
+  schedulesTotal?: number;
+  newNotes?: number;
+  newCandidates?: number;
+  staleCandidates?: number;
+  isIdempotent?: boolean;
+  error?: string;
+}
 
 // ─── GET: 특정 티켓의 weekly notes + update candidates ─────────
 export async function GET(req: NextRequest) {
@@ -26,72 +43,153 @@ export async function GET(req: NextRequest) {
   }
 }
 
+// ─── 한 ticket 을 sync 하는 내부 함수 ────────────────────────
+// (KV는 호출부에서 한 번에 읽고/쓰도록 caches 를 받음)
+interface SyncCaches {
+  allSchedules: Record<string, unknown>;
+  allNotes: Record<string, WeeklyNote[]>;
+  allCandidates: UpdateCandidate[];
+  allMeta: Record<string, WeeklySyncMeta>;
+}
+
+async function syncOneTicket(
+  ticketKey: string,
+  weeklyTextOverride: string | undefined,
+  caches: SyncCaches,
+): Promise<SyncResult> {
+  // 1) weekly text 확보
+  let weeklyText: string | null = weeklyTextOverride ?? null;
+  let source: SyncResult["source"] = weeklyTextOverride ? "client" : undefined;
+  if (!weeklyText) {
+    try {
+      const fetched = await fetchWeeklyTextFromJira(ticketKey);
+      weeklyText = fetched.weeklyText;
+      if (fetched.source !== "none") source = fetched.source;
+    } catch (e) {
+      return { ticketKey, ok: false, error: `jira fetch: ${String(e)}` };
+    }
+  }
+  if (!weeklyText) {
+    return { ticketKey, ok: true, skipped: true, reason: "no_weekly_marker" };
+  }
+
+  // 2) 파싱
+  const parsed = parseWeekly(weeklyText, ticketKey);
+
+  // 3) 기존 데이터 (caches 사용)
+  const existingSchedules = ((caches.allSchedules[ticketKey] ?? []) as ExtendedSchedule[]);
+  const existingNotes = caches.allNotes[ticketKey] ?? [];
+
+  // 4) Merge
+  const result = mergeWeeklySync(ticketKey, parsed, existingSchedules, existingNotes);
+
+  // 5) caches 에 반영 (호출부가 한 번에 KV write)
+  caches.allSchedules[ticketKey] = result.updatedSchedules;
+  caches.allNotes[ticketKey] = result.newNotes;
+
+  // candidates — id 중복 제거 (기존 보존)
+  const existingCandidateIds = new Set(caches.allCandidates.map(c => c.id));
+  const freshCandidates = result.updateCandidates.filter(c => !existingCandidateIds.has(c.id));
+  caches.allCandidates.push(...freshCandidates);
+
+  caches.allMeta[ticketKey] = {
+    ticketKey,
+    lastSyncAt: new Date().toISOString(),
+    lastSourceWeek: parsed.sourceWeek,
+  };
+
+  return {
+    ticketKey,
+    ok: true,
+    source,
+    sourceWeek: parsed.sourceWeek,
+    schedulesTotal: result.updatedSchedules.length,
+    newNotes: result.newNotes.length - existingNotes.length,
+    newCandidates: freshCandidates.length,
+    staleCandidates: result.staleCandidates.length,
+    isIdempotent: result.isIdempotent,
+  };
+}
+
 // ─── POST: weekly sync ─────────────────────────────────────────
-// Body: { ticketKey: string, weeklyText: string, force?: boolean }
+// Body 형태:
+//   1) 단일: { ticketKey, weeklyText? }   — weeklyText 없으면 서버가 Jira에서 fetch
+//   2) 배치: { ticketKeys: string[] }     — 각 티켓을 순차 처리, Jira에서 fetch
 export async function POST(request: Request) {
   try {
     const body = await request.json() as {
-      ticketKey: string;
-      weeklyText: string;
-      force?: boolean;
+      ticketKey?: string;
+      ticketKeys?: string[];
+      weeklyText?: string;
     };
-    const { ticketKey, weeklyText } = body;
-    if (!ticketKey || !weeklyText) {
-      return NextResponse.json({ error: "ticketKey and weeklyText required" }, { status: 400 });
+
+    // 처리할 ticket 목록 결정
+    let targets: Array<{ key: string; text?: string }> = [];
+    if (Array.isArray(body.ticketKeys) && body.ticketKeys.length > 0) {
+      targets = body.ticketKeys.map(k => ({ key: k }));
+    } else if (body.ticketKey) {
+      targets = [{ key: body.ticketKey, text: body.weeklyText }];
+    } else {
+      return NextResponse.json(
+        { error: "ticketKey or ticketKeys required" },
+        { status: 400 }
+      );
     }
 
-    // 1. 파싱
-    const parsed = parseWeekly(weeklyText, ticketKey);
-
-    // 2. 기존 데이터 읽기 (?? 는 await 후 적용해야 타입이 좁혀짐)
-    const [rawSchedules, rawNotes, rawCandidates] = await Promise.all([
-      redis.get<Record<string, unknown[]>>("cc-schedules"),
+    // KV 일괄 로드 (모든 ticket이 동일 KV key 공유)
+    const [rawSchedules, rawNotes, rawCandidates, rawMeta] = await Promise.all([
+      redis.get<Record<string, unknown>>("cc-schedules"),
       redis.get<Record<string, WeeklyNote[]>>("cc-weekly-notes"),
       redis.get<UpdateCandidate[]>("cc-update-candidates"),
+      redis.get<Record<string, WeeklySyncMeta>>("cc-weekly-sync-meta"),
     ]);
-    const allSchedules = rawSchedules ?? {};
-    const allNotes     = rawNotes     ?? {};
-    const allCandidates = rawCandidates ?? [];
-
-    const existingSchedules = ((allSchedules as Record<string, unknown>)[ticketKey] ?? []) as ExtendedSchedule[];
-    const existingNotes = (allNotes as Record<string, WeeklyNote[]>)[ticketKey] ?? [];
-
-    // 3. Merge
-    const result = mergeWeeklySync(ticketKey, parsed, existingSchedules, existingNotes);
-
-    // 4. cc-schedules 갱신
-    const updatedSchedules = { ...(allSchedules as Record<string, unknown>), [ticketKey]: result.updatedSchedules };
-    await redis.set("cc-schedules", updatedSchedules);
-
-    // 5. cc-weekly-notes 갱신
-    const updatedNotes = { ...(allNotes as Record<string, WeeklyNote[]>), [ticketKey]: result.newNotes };
-    await redis.set("cc-weekly-notes", updatedNotes);
-
-    // 6. cc-update-candidates — 기존 보존 + 신규 추가 (id 중복 제거)
-    const existingCandidateIds = new Set(allCandidates.map((c: UpdateCandidate) => c.id));
-    const freshCandidates = result.updateCandidates.filter(c => !existingCandidateIds.has(c.id));
-    const mergedCandidates = [...allCandidates, ...freshCandidates];
-    await redis.set("cc-update-candidates", mergedCandidates);
-
-    // 7. cc-weekly-sync-meta 갱신
-    const allMeta = await redis.get<Record<string, WeeklySyncMeta>>("cc-weekly-sync-meta") ?? {};
-    allMeta[ticketKey] = {
-      ticketKey,
-      lastSyncAt: new Date().toISOString(),
-      lastSourceWeek: parsed.sourceWeek,
+    const caches: SyncCaches = {
+      allSchedules: rawSchedules ?? {},
+      allNotes: rawNotes ?? {},
+      allCandidates: rawCandidates ?? [],
+      allMeta: rawMeta ?? {},
     };
-    await redis.set("cc-weekly-sync-meta", allMeta);
 
-    return NextResponse.json({
-      ok: true,
-      sourceWeek: parsed.sourceWeek,
-      schedulesUpdated: result.updatedSchedules.length,
-      notesTotal: result.newNotes.length,
-      newNotesAdded: result.updateCandidates.length > 0 ? result.updateCandidates.length : 0,
-      updateCandidates: result.updateCandidates.length,
-      staleCandidates: result.staleCandidates,
-      isIdempotent: result.isIdempotent,
-    });
+    // 순차 처리 (Jira rate-limit 회피 + caches mutation 안전)
+    const results: SyncResult[] = [];
+    for (const t of targets) {
+      const r = await syncOneTicket(t.key, t.text, caches);
+      results.push(r);
+      // 서버 로그 (Vercel logs에 남음)
+      if (!r.ok) {
+        console.error(`[weekly-sync] ${t.key} FAIL`, r.error);
+      } else if (r.skipped) {
+        console.log(`[weekly-sync] ${t.key} skipped reason=${r.reason}`);
+      } else {
+        console.log(
+          `[weekly-sync] ${t.key} src=${r.source} week=${r.sourceWeek} ` +
+          `schedules=${r.schedulesTotal} newNotes=${r.newNotes} ` +
+          `newCandidates=${r.newCandidates} stale=${r.staleCandidates} ` +
+          `idempotent=${r.isIdempotent}`
+        );
+      }
+    }
+
+    // KV 일괄 저장 (실패한 ticket이 있어도 다른 ticket 결과는 보존)
+    await Promise.all([
+      redis.set("cc-schedules", caches.allSchedules),
+      redis.set("cc-weekly-notes", caches.allNotes),
+      redis.set("cc-update-candidates", caches.allCandidates),
+      redis.set("cc-weekly-sync-meta", caches.allMeta),
+    ]);
+
+    // 집계
+    const totals = {
+      total: results.length,
+      synced: results.filter(r => r.ok && !r.skipped).length,
+      skipped: results.filter(r => r.skipped).length,
+      failed: results.filter(r => !r.ok).length,
+      newNotes: results.reduce((s, r) => s + (r.newNotes ?? 0), 0),
+      newCandidates: results.reduce((s, r) => s + (r.newCandidates ?? 0), 0),
+      staleCandidates: results.reduce((s, r) => s + (r.staleCandidates ?? 0), 0),
+    };
+
+    return NextResponse.json({ ok: true, totals, results });
   } catch (e) {
     console.error("[weekly-sync POST]", e);
     return NextResponse.json({ error: String(e) }, { status: 500 });

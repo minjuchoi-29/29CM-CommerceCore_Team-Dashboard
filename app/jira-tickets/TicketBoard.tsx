@@ -416,6 +416,15 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                   <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
                   <span className={`text-sm font-medium shrink-0 whitespace-nowrap w-20 ${MILESTONE_ROLES.includes(r.role) ? "font-semibold" : ""}`} style={{ color: MILESTONE_ROLES.includes(r.role) ? "#818cf8" : "var(--text-muted)" }}>{r.role}</span>
                   <span className="text-sm whitespace-nowrap" style={{ color: "#9ca3af" }} title={r.person}>{r.person}</span>
+                  {r.source === "jira_weekly" && (
+                    <span
+                      className="text-[9px] px-1 py-px rounded font-medium shrink-0"
+                      style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}
+                      title={`Jira Weekly 공유사항 기반${r.sourceWeek ? ` (${r.sourceWeek})` : ""}`}
+                    >
+                      W{r.sourceWeek ? `·${r.sourceWeek.replace("주차","")}` : ""}
+                    </span>
+                  )}
                 </div>
                 {r.detail && (
                   <p className="text-xs text-gray-400 mt-0.5 pl-3.5 leading-snug" title={`${r.detail}${r.detailPerson ? ` · ${r.detailPerson}` : ""}`}>
@@ -1089,6 +1098,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [wikiEditInput, setWikiEditInput] = useState("");
   const [wikiEditTitleInput, setWikiEditTitleInput] = useState("");
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
+  const [weeklySyncMsg, setWeeklySyncMsg] = useState<string | null>(null);
 
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta" | "ticketNo">("eta");
@@ -1297,6 +1307,80 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           if (d["cc-memos"])     setMemos(d["cc-memos"]);
         })
         .catch(() => {});
+
+      // ── Weekly Sync (Jira description + comments → parse → merge) ──
+      // 활성 ticket 만 대상으로 한다 (완료 제외, 숨김 제외)
+      const activeKeys = (data.tickets as Ticket[])
+        .filter(t => !DONE_PRIORITY_STATUSES.has(t.status) && !hiddenSync.has(t.key))
+        .map(t => t.key);
+      if (activeKeys.length > 0) {
+        try {
+          setWeeklySyncMsg(`Weekly Parsing 중… (${activeKeys.length}건)`);
+          const wsRes = await fetch("/api/weekly-sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ ticketKeys: activeKeys }),
+          });
+          const wsData = await wsRes.json();
+          if (!wsRes.ok || wsData.error) {
+            console.error("[WeeklySync] failed:", wsData.error ?? wsRes.status);
+            setWeeklySyncMsg(`Weekly Parsing 실패: ${wsData.error ?? wsRes.status}`);
+            setTimeout(() => setWeeklySyncMsg(null), 6000);
+          } else {
+            // 결과 콘솔 출력
+            type WSResultRow = {
+              ticketKey: string;
+              ok: boolean;
+              skipped?: boolean;
+              reason?: string;
+              source?: string;
+              sourceWeek?: string;
+              schedulesTotal?: number;
+              newNotes?: number;
+              newCandidates?: number;
+              staleCandidates?: number;
+            };
+            const results: WSResultRow[] = wsData.results ?? [];
+            const totals = wsData.totals ?? {};
+            for (const r of results) {
+              if (r.skipped) continue;
+              if (!r.ok) {
+                console.warn(`[WeeklySync] ${r.ticketKey} FAILED`);
+                continue;
+              }
+              console.log(
+                `[WeeklySync] ${r.ticketKey} src=${r.source} week=${r.sourceWeek} ` +
+                `parsed=${r.schedulesTotal} newNotes=${r.newNotes} ` +
+                `candidates=${r.newCandidates} stale=${r.staleCandidates}`
+              );
+            }
+            setWeeklySyncMsg(
+              `Weekly Parsing 완료 — synced ${totals.synced ?? 0} · skipped ${totals.skipped ?? 0}` +
+              ` · notes +${totals.newNotes ?? 0} · candidates +${totals.newCandidates ?? 0}`
+            );
+            setTimeout(() => setWeeklySyncMsg(null), 8000);
+
+            // merge 결과를 UI 에 반영: cc-schedules + cc-weekly-notes + cc-update-candidates 재로드
+            try {
+              const kvRes = await fetch("/api/kv?keys=cc-schedules,cc-weekly-notes,cc-update-candidates");
+              const kvData = await kvRes.json();
+              if (kvData["cc-schedules"]) setSchedules(kvData["cc-schedules"]);
+              if (kvData["cc-weekly-notes"] && typeof kvData["cc-weekly-notes"] === "object" && !Array.isArray(kvData["cc-weekly-notes"])) {
+                setWeeklyNotes(kvData["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
+              }
+              if (Array.isArray(kvData["cc-update-candidates"])) {
+                setUpdateCandidates(kvData["cc-update-candidates"] as UpdateCandidate[]);
+              }
+            } catch (e) {
+              console.warn("[WeeklySync] KV reload failed:", e);
+            }
+          }
+        } catch (e) {
+          console.error("[WeeklySync] network error:", e);
+          setWeeklySyncMsg("Weekly Parsing 네트워크 오류");
+          setTimeout(() => setWeeklySyncMsg(null), 6000);
+        }
+      }
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
       setFetchError(isTimeout
@@ -3039,6 +3123,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
             {sheetSyncMsg && (
               <span className="text-xs text-green-600 font-medium">{sheetSyncMsg}</span>
+            )}
+            {weeklySyncMsg && (
+              <span
+                className="text-xs font-medium"
+                style={{ color: weeklySyncMsg.includes("실패") || weeklySyncMsg.includes("오류") ? "#ef4444" : "#818cf8" }}
+              >
+                {weeklySyncMsg}
+              </span>
             )}
             {syncedAt && (
               <span className="text-xs text-gray-400">
