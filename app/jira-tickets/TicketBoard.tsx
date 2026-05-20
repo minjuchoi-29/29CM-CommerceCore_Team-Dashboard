@@ -1180,6 +1180,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Phase C: checkbox 선택 / kind 필터
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
   const [candidateKindFilter, setCandidateKindFilter] = useState<"all" | "schedule" | "action" | "risk" | "note">("all");
+  // Phase D: Cleanup 패널 (자격 미달 jira_weekly row 정리)
+  const [cleanupPanelOpen, setCleanupPanelOpen] = useState(false);
+  const [selectedCleanupIds, setSelectedCleanupIds] = useState<Set<string>>(new Set());
+  const [cleanupInFlight, setCleanupInFlight] = useState<Set<string>>(new Set());
 
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta" | "ticketNo">("eta");
@@ -1437,6 +1441,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         let appliedTotal = 0;
         let foundMarkerTotal = 0;
         let skippedNoMarker = 0;
+        let skippedCommentOnly = 0;  // customfield/description 없이 comment fallback만 있는 경우
         let errorTotal = 0;
 
         // Phase B: ticket별 Weekly 원문 수집 (KV cc-weekly-source-text에 누적 저장)
@@ -1454,7 +1459,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               if (!src.foundMarker || !src.text) { skippedNoMarker++; return; }
               foundMarkerTotal++;
 
-              // 원문 수집
+              // 원문 수집 — Weekly Summary 표시는 source 무관 (history도 보존)
               collectedSources[t.key] = {
                 ticketKey: t.key,
                 text: src.text,
@@ -1464,6 +1469,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 sourceUpdatedAt: src.sourceUpdatedAt ?? "",
                 savedAt: nowIso,
               };
+
+              // 정책: schedule merge는 customfield(LIVE SoT) 또는 description weekly section만.
+              // automation comment는 IMMUTABLE history → schedule row append 금지.
+              if (src.source === "comment") {
+                skippedCommentOnly++;
+                console.log(`[WeeklySync] ${t.key} src=comment (history only) — merge skipped`);
+                return;
+              }
 
               const syncRes = await fetch("/api/weekly-sync", {
                 method: "POST",
@@ -1514,9 +1527,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const msg =
           `Weekly Sync 완료 — found ${foundMarkerTotal}` +
           ` · parsed ${parsedTotal} · candidates ${candidatesTotal}` +
-          (skippedHidden   ? ` · hidden ${skippedHidden}`     : "") +
-          (skippedNoMarker ? ` · no-marker ${skippedNoMarker}` : "") +
-          (errorTotal      ? ` · errors ${errorTotal}`         : "");
+          (skippedHidden      ? ` · hidden ${skippedHidden}`           : "") +
+          (skippedCommentOnly ? ` · comment-only ${skippedCommentOnly}` : "") +
+          (skippedNoMarker    ? ` · no-marker ${skippedNoMarker}`       : "") +
+          (errorTotal         ? ` · errors ${errorTotal}`               : "");
         setWeeklySyncMsg(msg);
         setTimeout(() => setWeeklySyncMsg(null), 10_000);
         console.log(
@@ -1524,6 +1538,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           `found=${foundMarkerTotal} parsed=${parsedTotal} ` +
           `updated=${updatedTotal} applied=${appliedTotal} ` +
           `candidates=${candidatesTotal} skippedHidden=${skippedHidden} ` +
+          `skippedCommentOnly=${skippedCommentOnly} ` +
           `skippedNoMarker=${skippedNoMarker} errors=${errorTotal}`,
         );
 
@@ -1552,6 +1567,91 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setFetching(false);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Phase D: cleanup 후보 추출 — source=jira_weekly + 자격 미달 row.
+  // 자동 삭제 금지. 사용자가 명시적으로 선택 후 삭제.
+  type CleanupCandidate = {
+    id: string;
+    ticketKey: string;
+    rowKey: string;        // 삭제 시 row 매칭용 합성 키
+    row: RoleSchedule;
+    reason: string;
+  };
+  function makeRowKey(r: RoleSchedule): string {
+    return r.mergeKey ?? `${r.role}|||${r.start ?? ""}|||${r.end ?? ""}|||${r.person ?? ""}`;
+  }
+  function buildCleanupCandidates(): CleanupCandidate[] {
+    const NON_SCHEDULE_RE = /PTG plan|yellow 유지|green 전환|red 유지|red 전환|blocker|리소스 부족|리소스 재산정|정책 이슈|조건부 진행|전제 조건|선행 조건/i;
+    const EXEC = new Set(["예정", "진행중", "완료"]);
+    const out: CleanupCandidate[] = [];
+    for (const [ticketKey, rows] of Object.entries(schedules)) {
+      const arr = Array.isArray(rows) ? rows : [];
+      for (const row of arr) {
+        // 정책: weekly에서 자동 생성된 row만 cleanup 대상 (manual schedule은 보호)
+        if (row.source !== "jira_weekly") continue;
+        const phase = row.phase ?? inferPhase(row.role);
+        const rowKey = makeRowKey(row);
+        const id = `${ticketKey}::${rowKey}`;
+
+        // 1. phase 미인식 또는 "기타"
+        if (!phase || phase === "기타") {
+          out.push({ id, ticketKey, rowKey, row, reason: `phase "${phase ?? "(없음)"}" — 운영 단계 인식 실패` });
+          continue;
+        }
+        // 2. status 실행성 아님 (확인필요/미정/지연/보류)
+        if (!EXEC.has(row.status)) {
+          out.push({ id, ticketKey, rowKey, row, reason: `status "${row.status}" — 실행성 아님` });
+          continue;
+        }
+        // 3. 명시적 non-schedule keyword (PTG plan / green 전환 / blocker 등)
+        const combined = `${row.role} ${row.detail ?? ""} ${row.detailPerson ?? ""}`;
+        if (NON_SCHEDULE_RE.test(combined)) {
+          out.push({ id, ticketKey, rowKey, row, reason: "non_schedule_indicator — 설명/조건성 문장" });
+          continue;
+        }
+        // 4. 날짜 없음 (jira_weekly인데 날짜가 안 잡힌 row)
+        if (!row.start && !row.end) {
+          out.push({ id, ticketKey, rowKey, row, reason: "no date — 날짜 미확정" });
+          continue;
+        }
+      }
+    }
+    return out;
+  }
+  // cleanup 단일 row 삭제 (race-safe: KV read → filter → write)
+  const deleteCleanupRow = useCallback(async (ticketKey: string, rowKey: string, id: string) => {
+    setCleanupInFlight(prev => { const n = new Set(prev); n.add(id); return n; });
+    // optimistic
+    setSchedules(prev => {
+      const arr = (prev[ticketKey] ?? []).filter(r => makeRowKey(r) !== rowKey);
+      return { ...prev, [ticketKey]: arr };
+    });
+    try {
+      const r = await fetch("/api/kv?keys=cc-schedules");
+      const d = await r.json();
+      const all: Record<string, RoleSchedule[]> =
+        d["cc-schedules"] && typeof d["cc-schedules"] === "object" && !Array.isArray(d["cc-schedules"])
+          ? d["cc-schedules"] : {};
+      const arr = (all[ticketKey] ?? []).filter(rr => makeRowKey(rr) !== rowKey);
+      const merged = { ...all, [ticketKey]: arr };
+      await fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-schedules", value: merged }),
+      });
+      console.log(`[cleanup] deleted ${ticketKey}/${rowKey}`);
+    } catch (e) {
+      console.error(`[cleanup] delete failed ${ticketKey}/${rowKey}:`, e);
+      // revert: KV에서 다시 받아 setSchedules
+      try {
+        const r2 = await fetch("/api/kv?keys=cc-schedules");
+        const d2 = await r2.json();
+        if (d2["cc-schedules"]) setSchedules(d2["cc-schedules"]);
+      } catch {}
+    } finally {
+      setCleanupInFlight(prev => { const n = new Set(prev); n.delete(id); return n; });
+    }
+  }, []);
 
   // Phase C: WeeklyNote 후보(action/risk/note)를 resolved 처리.
   // cc-weekly-notes KV의 ticketKey 배열에서 해당 noteId의 status를 "resolved"로 갱신.
@@ -1757,6 +1857,52 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       if (a.confidence !== "low" && b.confidence === "low") return -1;
       return KIND_ORDER[a.kind] - KIND_ORDER[b.kind];
     });
+  }
+
+  // ─── Phase D2: Action/Risk 분리 영역 (Weekly Summary 아래) ────────
+  // weeklyNotes에서 type별 분리해서 "리스크 / 액션 필요 / 참고" 박스로 표시.
+  // Weekly Summary는 원문 그대로 유지, 이 영역은 PM 정렬용 derived view.
+  function renderActionRiskBox(ticketKey: string) {
+    const notes = (weeklyNotes[ticketKey] ?? []).filter(n => n.status === "open");
+    if (notes.length === 0) return null;
+    const risks    = notes.filter(n => n.type === "risk");
+    const actions  = notes.filter(n => n.type === "next_action");
+    const progress = notes.filter(n => n.type === "progress");
+
+    const Section = (props: {
+      label: string;
+      color: string;
+      items: typeof notes;
+    }) => props.items.length === 0 ? null : (
+      <div className="text-[11px]">
+        <div className="font-semibold mb-1" style={{ color: props.color }}>
+          {props.label} <span className="ml-1 opacity-60">({props.items.length})</span>
+        </div>
+        <ul className="space-y-0.5 pl-3" style={{ color: "var(--text-secondary)" }}>
+          {props.items.map((n, i) => (
+            <li key={i} className="list-disc list-outside leading-relaxed">{n.content}</li>
+          ))}
+        </ul>
+      </div>
+    );
+
+    return (
+      <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+        <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+          <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>
+            Weekly에서 분리된 노트
+          </span>
+          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+            (Gantt에 자동 반영 안 됨)
+          </span>
+        </div>
+        <div className="px-3 py-2.5 space-y-2.5">
+          <Section label="리스크"    color="#ef4444" items={risks}    />
+          <Section label="액션 필요" color="#fbbf24" items={actions}  />
+          <Section label="참고"      color="#94a3b8" items={progress} />
+        </div>
+      </div>
+    );
   }
 
   // Phase B: Weekly 요약 카드 (Split View / Focus Mode 공통 렌더링)
@@ -3659,6 +3805,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 ⚡ 일정 변경 {updateCandidates.filter(c => !c.resolved).length}건
               </button>
             )}
+            {/* 🧹 정리 후보 — 자격 미달 jira_weekly row 정리 (Phase D) */}
+            {(() => {
+              const cleanupCount = buildCleanupCandidates().length;
+              if (cleanupCount === 0) return null;
+              return (
+                <button
+                  type="button"
+                  onClick={() => setCleanupPanelOpen(true)}
+                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition hover:brightness-110 active:scale-95"
+                  style={{ background: "rgba(148,163,184,0.10)", border: "1px solid rgba(148,163,184,0.35)", color: "#94a3b8" }}
+                  title="자격 미달로 분류된 weekly schedule row를 검토 / 삭제 (자동 삭제 안 함)"
+                >
+                  🧹 정리 후보 {cleanupCount}건
+                </button>
+              );
+            })()}
 
             {/* ── Candidate Review 모달 (Phase C) ─────────────────── */}
             {candidatePanelOpen && (() => {
@@ -4010,6 +4172,212 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
               );
             })()}
+
+            {/* ── Cleanup 모달 (Phase D) — 자격 미달 jira_weekly row 정리 ── */}
+            {cleanupPanelOpen && (() => {
+              const candidates = buildCleanupCandidates();
+              const titleByKey = new Map(tickets.map(t => [t.key, t.summary]));
+              const visibleIds = candidates.map(c => c.id);
+              const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedCleanupIds.has(id));
+              const someVisibleSelected = visibleIds.some(id => selectedCleanupIds.has(id));
+
+              const doBulkDelete = async (onlySelected: boolean) => {
+                const targets = onlySelected
+                  ? candidates.filter(c => selectedCleanupIds.has(c.id))
+                  : candidates;
+                if (targets.length === 0) return;
+                if (!confirm(`${targets.length}건의 row를 삭제하시겠습니까? (manual schedule은 영향 없음)`)) return;
+                for (const c of targets) {
+                  await deleteCleanupRow(c.ticketKey, c.rowKey, c.id);
+                }
+                setSelectedCleanupIds(new Set());
+              };
+
+              return (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center px-4"
+                  style={{ background: "rgba(0,0,0,0.45)" }}
+                  onClick={() => setCleanupPanelOpen(false)}
+                >
+                  <div
+                    className="rounded-xl shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-y-auto"
+                    style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    {/* 헤더 */}
+                    <div
+                      className="px-5 py-3 sticky top-0 z-10"
+                      style={{ background: "var(--bg-canvas)", borderBottom: "1px solid var(--border-2)" }}
+                    >
+                      <div className="flex items-center justify-between mb-2.5">
+                        <div>
+                          <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                            🧹 정리 후보 검토
+                          </h2>
+                          <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>
+                            {candidates.length}건 — 자격 미달로 분류된 weekly schedule row · 자동 삭제 안 함
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCleanupPanelOpen(false)}
+                          className="text-lg leading-none px-2 py-1 hover:bg-gray-100 rounded"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          ×
+                        </button>
+                      </div>
+                      {/* 일괄 액션 */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <label className="flex items-center gap-1.5 text-[11px] cursor-pointer select-none" style={{ color: "var(--text-secondary)" }}>
+                          <input
+                            type="checkbox"
+                            checked={allVisibleSelected}
+                            ref={el => { if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected; }}
+                            onChange={() => {
+                              if (allVisibleSelected) {
+                                setSelectedCleanupIds(new Set());
+                              } else {
+                                setSelectedCleanupIds(new Set(visibleIds));
+                              }
+                            }}
+                            className="cursor-pointer"
+                          />
+                          전체 선택 <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>({selectedCleanupIds.size}건 선택)</span>
+                        </label>
+                        <div className="flex-1" />
+                        <button
+                          type="button"
+                          onClick={() => doBulkDelete(true)}
+                          disabled={selectedCleanupIds.size === 0}
+                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                          style={{ background: "#ef4444", color: "white" }}
+                        >
+                          ✕ 선택 삭제
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => doBulkDelete(false)}
+                          disabled={candidates.length === 0}
+                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                          style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.45)", color: "#ef4444" }}
+                        >
+                          전체 정리
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setCleanupPanelOpen(false)}
+                          className="px-2.5 py-1 text-[11px] rounded font-medium transition"
+                          style={{ background: "transparent", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+                        >
+                          무시 / 나중에
+                        </button>
+                      </div>
+                    </div>
+                    {/* 본문 */}
+                    <div className="p-5 space-y-2">
+                      {candidates.length === 0 && (
+                        <p className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>
+                          정리 대상이 없습니다.
+                        </p>
+                      )}
+                      {candidates.map(c => {
+                        const inFlight = cleanupInFlight.has(c.id);
+                        const isSelected = selectedCleanupIds.has(c.id);
+                        const summary = titleByKey.get(c.ticketKey) ?? "";
+                        const phase = c.row.phase ?? inferPhase(c.row.role);
+                        const resourceTeam = c.row.resourceTeam ?? inferResourceTeam(c.row.role);
+                        const primary = phase ? PHASE_LABEL[phase] : c.row.role;
+                        const showSub = !!resourceTeam && resourceTeam !== primary;
+                        return (
+                          <div
+                            key={c.id}
+                            className="rounded-lg p-3"
+                            style={{
+                              background: isSelected ? "rgba(239,68,68,0.06)" : "var(--bg-item)",
+                              border: `1px solid ${isSelected ? "#ef4444" : "var(--border-2)"}`,
+                            }}
+                          >
+                            <div className="flex items-start gap-2.5">
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => {
+                                  setSelectedCleanupIds(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(c.id)) next.delete(c.id);
+                                    else next.add(c.id);
+                                    return next;
+                                  });
+                                }}
+                                className="mt-1 cursor-pointer"
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <a
+                                    href={`https://jira.team.musinsa.com/browse/${c.ticketKey}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-mono text-xs font-semibold hover:underline"
+                                    style={{ color: "#818cf8" }}
+                                  >
+                                    {c.ticketKey}
+                                  </a>
+                                  {summary && (
+                                    <>
+                                      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>·</span>
+                                      <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>{summary}</span>
+                                    </>
+                                  )}
+                                </div>
+                                <div className="flex items-center flex-wrap gap-1.5 text-xs mb-1">
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                    style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
+                                  >
+                                    {primary}
+                                  </span>
+                                  {showSub && (
+                                    <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>· {resourceTeam}</span>
+                                  )}
+                                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                    {c.row.start && c.row.end ? `${c.row.start} ~ ${c.row.end}` : c.row.start || c.row.end || "(날짜 없음)"}
+                                  </span>
+                                  <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
+                                    {c.row.status}
+                                  </span>
+                                  {c.row.sourceWeek && (
+                                    <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>{c.row.sourceWeek}</span>
+                                  )}
+                                </div>
+                                {c.row.detail && (
+                                  <p className="text-[11px] mb-1" style={{ color: "var(--text-muted)" }}>
+                                    └ {c.row.detail}
+                                  </p>
+                                )}
+                                <p className="text-[10.5px]" style={{ color: "#fbbf24" }}>
+                                  ⚠ 사유: {c.reason}
+                                </p>
+                              </div>
+                              <button
+                                type="button"
+                                disabled={inFlight}
+                                onClick={() => deleteCleanupRow(c.ticketKey, c.rowKey, c.id)}
+                                className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
+                                style={{ background: "#ef4444", color: "white" }}
+                              >
+                                {inFlight ? "삭제 중…" : "✕ 삭제"}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* 변화 보기 토글 */}
             <button
               onClick={() => setChangesMode(v => !v)}
@@ -5575,6 +5943,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <div data-fm-section="weekly-summary">{summary}</div>
                       ) : null;
                     })()}
+                    {/* Weekly에서 분리된 노트 (리스크 / 액션 / 참고) */}
+                    {(() => {
+                      const box = renderActionRiskBox(selected.key);
+                      return box ? (
+                        <div data-fm-section="weekly-notes">{box}</div>
+                      ) : null;
+                    })()}
 
                     {/* 주요 내용 요약 (Memo) */}
                     <div>
@@ -6296,6 +6671,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
               {renderWeeklySummary(selected.key)}
+              {/* ── Weekly에서 분리된 노트 (리스크 / 액션 / 참고) ────── */}
+              {renderActionRiskBox(selected.key)}
 
               {/* 주요 내용 요약 */}
               <div className="mb-4">

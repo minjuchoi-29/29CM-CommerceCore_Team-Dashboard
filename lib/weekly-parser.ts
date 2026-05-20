@@ -107,23 +107,30 @@ export const ALLOWED_SCHEDULE_ROLES = new Set<string>([
 // 날짜 없거나 불확실한 상태 표현 — schedule이 아닌 action으로 분류
 const LOW_CONFIDENCE_KEYWORDS = [
   "확인 필요", "확인필요", "논의중", "논의 중",
-  "가능 여부", "산정 필요", "산정필요", "검토 필요", "검토필요",
+  "가능 여부", "준수 가능", "산정 필요", "산정필요", "검토 필요", "검토필요",
   "재산정", "재검토", "TBD", "tbd", "미정",
+  "ETA 준수", "ETA 가능", "R&R 논의", "R&R 확정", "R&R 정리",
 ];
 
-// 설명/상태성 표현 — schedule이 아닌 note로 분류
+// 설명/상태성/조건성 표현 — schedule이 아닌 note로 분류
 const NON_SCHEDULE_INDICATORS = [
   "PTG plan", "ptg plan",
   "yellow 유지", "green 유지", "red 유지",
   "yellow 전환", "green 전환", "red 전환",
   "yellow → green", "green → yellow",
-  "blocker", "리소스 부족",
+  "blocker", "리소스 부족", "리소스 재산정",
+  "정책 이슈", "조건부 진행", "전제 조건", "선행 조건",
 ];
 
 // 리스크/이슈 시그널 — note 대신 risk로 분류
 const RISK_INDICATORS = [
   "blocker", "차단", "이슈", "리스크", "지연", "장애", "위험",
+  "dependency", "의존성", "선행 작업",
 ];
+
+// 실행성 status — 이 외(확인필요/미정/지연/보류)는 schedule 자격 박탈.
+// 사용자 정책: "실제 실행 일정"만 Gantt row.
+const EXECUTABLE_STATUSES: Set<ScheduleStatus> = new Set(["예정", "진행중", "완료"]);
 
 function matchesAny(text: string, keywords: string[]): boolean {
   const lower = text.toLowerCase();
@@ -405,7 +412,18 @@ export function classifyLine(
     };
   }
 
-  // 6) 허용 role + 날짜 + non-low confidence → schedule
+  // 6) 실행성 status 검증 — 정책: schedule 자격은 status가 예정/진행중/완료만.
+  //    확인필요/미정/지연/보류는 "실제 실행 일정"이 아니므로 action으로.
+  if (!EXECUTABLE_STATUSES.has(item.status)) {
+    return {
+      type: "action",
+      confidence: "low",
+      content, rawText: line,
+      declineReason: `status "${item.status}" not executable (need 예정/진행중/완료)`,
+    };
+  }
+
+  // 7) 허용 phase + 날짜 + non-low confidence + 실행성 status → schedule
   const confidence: Confidence = hasClearStatus ? "high" : "medium";
   const schedule: ParsedScheduleItem = { ...item, confidence };
   return { type: "schedule", confidence, content, rawText: line, schedule };
