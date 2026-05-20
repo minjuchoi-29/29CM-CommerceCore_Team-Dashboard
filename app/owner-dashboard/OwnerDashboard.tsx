@@ -9,6 +9,7 @@ import {
   type RoleScheduleMin,
   type EtrInfoMin,
 } from "@/lib/action-items";
+import { filterVisibleTickets } from "@/lib/ticket-utils";
 
 type Props = {
   userEmail: string;
@@ -258,11 +259,14 @@ export default function OwnerDashboard({ userEmail, userName }: Props) {
   useEffect(() => { load(); }, [load]);
 
   // ── 기본 데이터 가공 (hidden / 완료 / ETR 제외) ─────────────────────────
+  // hidden filter는 공통 helper filterVisibleTickets() 사용 — 정책 통일.
   const activeTickets = useMemo(
-    () => tickets.filter(t =>
-      !DONE_STATUSES.includes(t.status) &&
-      !t.key.startsWith("ETR-") &&
-      !hiddenKeys.has(t.key)
+    () => filterVisibleTickets(
+      tickets.filter(t =>
+        !DONE_STATUSES.includes(t.status) &&
+        !t.key.startsWith("ETR-")
+      ),
+      hiddenKeys,
     ),
     [tickets, hiddenKeys]
   );

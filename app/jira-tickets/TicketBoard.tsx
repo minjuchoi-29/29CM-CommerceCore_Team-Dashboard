@@ -18,6 +18,7 @@ import {
   summarizeTransitions,
 } from "@/lib/transitions";
 import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText } from "@/lib/weekly-types";
+import { filterVisibleTickets } from "@/lib/ticket-utils";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -1115,6 +1116,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [duplicateKeys, setDuplicateKeys] = useState<Set<string>>(new Set());
   // customKeys: 모든 티켓이 TICKET_KEYS(코드)로 관리되므로 더 이상 사용 안 함
   const [hiddenKeys, setHiddenKeys]       = useState<Set<string>>(new Set());
+  // hidden key hydrate 완료 여부 — render gate (flicker 방지)
+  // localStorage cache hit이면 cache에 동봉된 hiddenKeys로 즉시 true,
+  // cache miss면 mainFetch가 KV에서 cc-hidden-keys 도착시 true.
+  const [hiddenLoaded, setHiddenLoaded]   = useState(false);
   const [hiddenMeta, setHiddenMeta]       = useState<{ key: string; summary: string }[]>([]);
   const [showHiddenPanel, setShowHiddenPanel] = useState(false);
   const isResizing = useCallback((e: React.MouseEvent) => {
@@ -1149,13 +1154,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
       const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
       // hiddenKeys 필터 적용
-      return [...data.tickets, ...extraByKey.values()].filter(t => !hidden.has(t.key));
+      return filterVisibleTickets([...data.tickets, ...extraByKey.values()], hidden);
     });
     setSyncedAt(at);
     try {
+      // cache hit 시 즉시 hidden 필터링 가능하도록 hiddenKeys도 함께 저장
       localStorage.setItem(
         TICKET_CACHE_KEY,
-        JSON.stringify({ tickets: data.tickets, fetchedAt: at.toISOString() })
+        JSON.stringify({
+          tickets: data.tickets,
+          fetchedAt: at.toISOString(),
+          hiddenKeys: [...hidden],
+        }),
       );
     } catch {}
   }
@@ -1176,13 +1186,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     try {
       const raw = localStorage.getItem(TICKET_CACHE_KEY);
       if (raw) {
-        const cached = JSON.parse(raw) as { tickets: Ticket[]; fetchedAt: string };
+        const cached = JSON.parse(raw) as {
+          tickets: Ticket[];
+          fetchedAt: string;
+          hiddenKeys?: string[];
+        };
         if (cached.tickets.length > 0 && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MAX_MS) {
+          // cache에 동봉된 hiddenKeys로 즉시 hydrate → flicker 방지
+          // mainFetch가 KV에서 최신 hiddenKeys를 받으면 잠시 후 갱신됨 (stale 보정).
+          const cachedHidden = new Set<string>(cached.hiddenKeys ?? []);
+          hiddenKeysRef.current = cachedHidden;
+          setHiddenKeys(cachedHidden);
+          setHiddenLoaded(true);
           setTickets(prev => {
             const jiraKeys = new Set(cached.tickets.map((t: Ticket) => t.key));
             const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
             const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
-            return [...cached.tickets, ...extraByKey.values()];
+            return filterVisibleTickets([...cached.tickets, ...extraByKey.values()], cachedHidden);
           });
           setSyncedAt(new Date(cached.fetchedAt));
           setFetching(false);
@@ -1316,10 +1336,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // 흐름: jira-weekly-source → weekly-sync POST → KV reload.
       void (async () => {
         const DONE_FOR_WEEKLY = new Set(["론치완료", "완료", "배포완료"]);
-        const targets = (data.tickets as Ticket[]).filter(t => !DONE_FOR_WEEKLY.has(t.status));
-        if (targets.length === 0) return;
+        const hiddenForSync = hiddenSync;  // 위에서 forceRefresh가 잡아둔 hidden set
+        const activeAll = (data.tickets as Ticket[]).filter(t => !DONE_FOR_WEEKLY.has(t.status));
+        const targets = activeAll.filter(t => !hiddenForSync.has(t.key));
+        const skippedHidden = activeAll.length - targets.length;
+        if (targets.length === 0) {
+          if (skippedHidden > 0) {
+            console.log(`[WeeklySync] all targets hidden, skipped=${skippedHidden}`);
+          }
+          return;
+        }
 
-        setWeeklySyncMsg(`Weekly Sync 중… (대상 ${targets.length}건)`);
+        setWeeklySyncMsg(
+          `Weekly Sync 중… (대상 ${targets.length}건` +
+          (skippedHidden > 0 ? ` · hidden ${skippedHidden}건 제외` : "") +
+          `)`,
+        );
 
         let parsedTotal = 0;
         let updatedTotal = 0;
@@ -1404,6 +1436,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const msg =
           `Weekly Sync 완료 — found ${foundMarkerTotal}` +
           ` · parsed ${parsedTotal} · candidates ${candidatesTotal}` +
+          (skippedHidden   ? ` · hidden ${skippedHidden}`     : "") +
           (skippedNoMarker ? ` · no-marker ${skippedNoMarker}` : "") +
           (errorTotal      ? ` · errors ${errorTotal}`         : "");
         setWeeklySyncMsg(msg);
@@ -1412,7 +1445,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           `[WeeklySync] DONE total ${targets.length} | ` +
           `found=${foundMarkerTotal} parsed=${parsedTotal} ` +
           `updated=${updatedTotal} applied=${appliedTotal} ` +
-          `candidates=${candidatesTotal} skipped=${skippedNoMarker} errors=${errorTotal}`,
+          `candidates=${candidatesTotal} skippedHidden=${skippedHidden} ` +
+          `skippedNoMarker=${skippedNoMarker} errors=${errorTotal}`,
         );
 
         // KV reload — weekly-notes, update-candidates, schedules, source-text
@@ -2516,8 +2550,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         hiddenKeysRef.current = kvHiddenSet;
         setHiddenKeys(kvHiddenSet);
         if (kvHidden.length > 0) {
-          setTickets(prev => prev.filter(t => !kvHidden.includes(t.key)));
+          setTickets(prev => filterVisibleTickets(prev, kvHiddenSet));
         }
+        // hidden hydrate 완료 표시 — render gate 해제
+        setHiddenLoaded(true);
 
         // hidden meta (복원용 티켓 정보): KV에서만 로드
         const kvMeta: { key: string; summary: string }[] = Array.isArray(data["cc-hidden-meta"]) ? data["cc-hidden-meta"] : [];
@@ -2735,13 +2771,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // key 기준 중복 제거 (배치 + 커스텀 동시 로드 시 race condition 방어)
   const dedupedTickets = useMemo(() => {
+    // hidden hydrate 전에는 derived state를 모두 빈 결과로 두어 flicker 방지.
+    // cache hit는 loadTickets에서 hiddenLoaded를 즉시 true로 만들기 때문에 영향 없음.
+    // cache miss / 첫 진입에는 fetching 표시가 떠 있으므로 빈 상태가 자연스러움.
+    if (!hiddenLoaded) return [];
     const seen = new Set<string>();
-    return tickets.filter(t => {
+    // 안전망: tickets state가 어떤 경로로든 hidden을 포함했다면 여기서 제거.
+    const visible = filterVisibleTickets(tickets, hiddenKeys);
+    return visible.filter(t => {
       if (seen.has(t.key)) return false;
       seen.add(t.key);
       return true;
     });
-  }, [tickets]);
+  }, [tickets, hiddenLoaded, hiddenKeys]);
 
   // popstate: 뒤로가기/앞으로가기 시 상태 복원 (dedupedTickets 선언 후 배치)
   useEffect(() => {
