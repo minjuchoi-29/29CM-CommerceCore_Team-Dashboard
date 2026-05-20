@@ -1098,6 +1098,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Phase 4: Update Candidate Review 모달 / 진행 중인 candidateId set
   const [candidatePanelOpen, setCandidatePanelOpen] = useState(false);
   const [candidatesInFlight, setCandidatesInFlight] = useState<Set<string>>(new Set());
+  // Phase C: checkbox 선택 / kind 필터
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
+  const [candidateKindFilter, setCandidateKindFilter] = useState<"all" | "schedule" | "action" | "risk" | "note">("all");
 
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta" | "ticketNo">("eta");
@@ -1438,6 +1441,46 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Phase C: WeeklyNote 후보(action/risk/note)를 resolved 처리.
+  // cc-weekly-notes KV의 ticketKey 배열에서 해당 noteId의 status를 "resolved"로 갱신.
+  // 일정 후보(UpdateCandidate)는 별도 resolveCandidate가 처리.
+  const resolveNote = useCallback(async (ticketKey: string, noteId: string) => {
+    setCandidatesInFlight(prev => { const next = new Set(prev); next.add(noteId); return next; });
+    // optimistic
+    setWeeklyNotes(prev => {
+      const arr = prev[ticketKey] ?? [];
+      const updated = arr.map(n => n.id === noteId ? { ...n, status: "resolved" as const } : n);
+      return { ...prev, [ticketKey]: updated };
+    });
+    try {
+      // read-modify-write (race-safe: KV current 값 읽고 patch 적용 후 저장)
+      const r = await fetch("/api/kv?keys=cc-weekly-notes");
+      const d = await r.json();
+      const all: Record<string, WeeklyNote[]> =
+        d["cc-weekly-notes"] && typeof d["cc-weekly-notes"] === "object" && !Array.isArray(d["cc-weekly-notes"])
+          ? d["cc-weekly-notes"] : {};
+      const arr = all[ticketKey] ?? [];
+      const patched = arr.map(n => n.id === noteId ? { ...n, status: "resolved" as const } : n);
+      const merged = { ...all, [ticketKey]: patched };
+      await fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-weekly-notes", value: merged }),
+      });
+      console.log(`[resolveNote] ${ticketKey}/${noteId} → resolved`);
+    } catch (e) {
+      console.error(`[resolveNote] ${ticketKey}/${noteId} failed:`, e);
+      // revert (optimistic 되돌림)
+      setWeeklyNotes(prev => {
+        const arr = prev[ticketKey] ?? [];
+        const reverted = arr.map(n => n.id === noteId ? { ...n, status: "open" as const } : n);
+        return { ...prev, [ticketKey]: reverted };
+      });
+    } finally {
+      setCandidatesInFlight(prev => { const next = new Set(prev); next.delete(noteId); return next; });
+    }
+  }, []);
+
   // Phase 4: Update Candidate 승인/기각 처리
   // PUT /api/weekly-sync → optimistic update → 실패 시 revert + KV reload
   const resolveCandidate = useCallback(async (candidateId: string, action: "apply" | "dismiss") => {
@@ -1483,6 +1526,126 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       });
     }
   }, []);
+
+  // ─── Phase C: DisplayCandidate (UpdateCandidate + WeeklyNote 통합) ─────
+  type CandKind = "schedule" | "action" | "risk" | "note";
+  type CandConf = "high" | "medium" | "low";
+  type DisplayCandidate = {
+    id: string;
+    kind: CandKind;
+    confidence: CandConf;
+    ticketKey: string;
+    ticketSummary: string;
+    sourceWeek?: string;
+    // schedule (UpdateCandidate)
+    role?: string;
+    field?: string;
+    oldValue?: string;
+    newValue?: string;
+    autoApply?: boolean;
+    // note/action/risk
+    content?: string;
+    severity?: string;
+    actionCategory?: string;
+    reason?: string;        // 왜 candidate가 됐는지
+    declineReason?: string; // schedule 자격 박탈 사유 (있을 때)
+  };
+
+  const KIND_LABEL: Record<CandKind, string> = {
+    schedule: "일정 후보",
+    action:   "액션 후보",
+    risk:     "리스크/메모",
+    note:     "참고만",
+  };
+  const KIND_STYLE: Record<CandKind, { bg: string; color: string; border: string }> = {
+    schedule: { bg: "rgba(16,185,129,0.10)",  color: "#10b981", border: "rgba(16,185,129,0.35)" },
+    action:   { bg: "rgba(251,191,36,0.10)",  color: "#fbbf24", border: "rgba(251,191,36,0.35)" },
+    risk:     { bg: "rgba(239,68,68,0.10)",   color: "#f87171", border: "rgba(239,68,68,0.35)" },
+    note:     { bg: "rgba(100,116,139,0.08)", color: "#94a3b8", border: "rgba(100,116,139,0.30)" },
+  };
+  const CONF_STYLE: Record<CandConf, { bg: string; color: string; label: string }> = {
+    high:   { bg: "rgba(16,185,129,0.12)",  color: "#10b981", label: "high" },
+    medium: { bg: "rgba(129,140,248,0.12)", color: "#818cf8", label: "medium" },
+    low:    { bg: "rgba(148,163,184,0.12)", color: "#94a3b8", label: "low" },
+  };
+
+  function buildDisplayCandidates(): DisplayCandidate[] {
+    const titleByKey = new Map(tickets.map(t => [t.key, t.summary]));
+    const out: DisplayCandidate[] = [];
+
+    // 일정 후보: UpdateCandidate
+    for (const c of updateCandidates) {
+      if (c.resolved) continue;
+      const role = c.mergeKey.split("::")[1] ?? "";
+      out.push({
+        id: c.id,
+        kind: "schedule",
+        confidence: c.autoApply ? "high" : "medium",
+        ticketKey: c.ticketKey,
+        ticketSummary: titleByKey.get(c.ticketKey) ?? "",
+        sourceWeek: c.sourceWeek,
+        role,
+        field: c.field,
+        oldValue: c.oldValue,
+        newValue: c.newValue,
+        autoApply: c.autoApply,
+        reason: c.autoApply
+          ? `기존 ${role}/${c.field} 값과 Weekly 값 차이 — 자동 적용 가능 (conflict 1건)`
+          : `기존 ${role}/${c.field} 값과 Weekly 값 충돌 — 검토 필요 (conflict 2건+ 또는 manual locked)`,
+      });
+    }
+
+    // action/risk/note: WeeklyNote (status=open만)
+    for (const [ticketKey, notes] of Object.entries(weeklyNotes)) {
+      for (const n of notes) {
+        if (n.status === "resolved") continue;
+        const kind: CandKind =
+          n.type === "next_action" ? "action" :
+          n.type === "risk"        ? "risk"   :
+                                     "note";
+        const confidence: CandConf =
+          kind === "risk"   ? (n.severity === "high" ? "high" : n.severity === "medium" ? "medium" : "low") :
+          kind === "action" ? "medium" :
+                              "low"; // progress
+        out.push({
+          id: n.id,
+          kind,
+          confidence,
+          ticketKey,
+          ticketSummary: titleByKey.get(ticketKey) ?? "",
+          sourceWeek: n.sourceWeek,
+          content: n.content,
+          severity: n.severity,
+          actionCategory: n.actionCategory,
+          reason:
+            kind === "risk"   ? `Weekly에서 감지된 리스크 (severity=${n.severity ?? "medium"})` :
+            kind === "action" ? `Weekly의 "다음 액션" 항목 (category=${n.actionCategory ?? "unknown"})` :
+                                "Weekly의 진행상황 메모 — 자동 일정 반영 비추천",
+        });
+      }
+    }
+    return out;
+  }
+
+  function sortDisplayCandidates(cands: DisplayCandidate[]): DisplayCandidate[] {
+    // 우선순위: high schedule → medium schedule → action → risk → low confidence(아무 kind)
+    const CONF_ORDER: Record<CandConf, number> = { high: 0, medium: 1, low: 2 };
+    const KIND_ORDER: Record<CandKind, number> = { schedule: 0, action: 1, risk: 2, note: 3 };
+    return [...cands].sort((a, b) => {
+      // schedule이면 confidence별, 아니면 schedule 다음
+      const aIsSched = a.kind === "schedule" ? 0 : 1;
+      const bIsSched = b.kind === "schedule" ? 0 : 1;
+      if (aIsSched !== bIsSched) return aIsSched - bIsSched;
+      // schedule끼리는 confidence 우선
+      if (a.kind === "schedule" && b.kind === "schedule") {
+        return CONF_ORDER[a.confidence] - CONF_ORDER[b.confidence];
+      }
+      // 다른 kind끼리: action → risk → note, low는 뒤로
+      if (a.confidence === "low" && b.confidence !== "low") return 1;
+      if (a.confidence !== "low" && b.confidence === "low") return -1;
+      return KIND_ORDER[a.kind] - KIND_ORDER[b.kind];
+    });
+  }
 
   // Phase B: Weekly 요약 카드 (Split View / Focus Mode 공통 렌더링)
   // ticket별 cc-weekly-source-text 원문 우선, 없으면 weeklyNotes 합성 legacy.
@@ -3377,13 +3540,46 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </button>
             )}
 
-            {/* ── Candidate Review 모달 (Phase 4) ─────────────────── */}
+            {/* ── Candidate Review 모달 (Phase C) ─────────────────── */}
             {candidatePanelOpen && (() => {
-              const unresolved = updateCandidates.filter(c => !c.resolved);
-              const titleByKey = new Map(tickets.map(t => [t.key, t.summary]));
               const FIELD_LABEL: Record<string, string> = {
                 start: "시작일", end: "종료일", status: "상태", person: "담당자",
               };
+              const all = sortDisplayCandidates(buildDisplayCandidates());
+              const filtered = candidateKindFilter === "all"
+                ? all
+                : all.filter(c => c.kind === candidateKindFilter);
+              const counts = {
+                total:    all.length,
+                schedule: all.filter(c => c.kind === "schedule").length,
+                action:   all.filter(c => c.kind === "action").length,
+                risk:     all.filter(c => c.kind === "risk").length,
+                note:     all.filter(c => c.kind === "note").length,
+                high:     all.filter(c => c.confidence === "high").length,
+                low:      all.filter(c => c.confidence === "low").length,
+              };
+              const visibleIds = filtered.map(c => c.id);
+              const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedCandidateIds.has(id));
+              const someVisibleSelected = visibleIds.some(id => selectedCandidateIds.has(id));
+
+              // 일괄 액션 — 현재 filter 적용된 목록만 대상
+              const doBulk = async (action: "apply" | "dismiss", onlySelected: boolean) => {
+                const targets = onlySelected
+                  ? filtered.filter(c => selectedCandidateIds.has(c.id))
+                  : filtered;
+                if (targets.length === 0) return;
+                if (!confirm(`${targets.length}건을 ${action === "apply" ? "승인" : "기각"}하시겠습니까?`)) return;
+                for (const c of targets) {
+                  if (c.kind === "schedule") {
+                    await resolveCandidate(c.id, action);
+                  } else {
+                    // action/risk/note는 "기각"만 의미 있음 (resolved 처리). "승인"도 같은 의미로 취급.
+                    await resolveNote(c.ticketKey, c.id);
+                  }
+                }
+                setSelectedCandidateIds(new Set());
+              };
+
               return (
                 <div
                   className="fixed inset-0 z-50 flex items-center justify-center px-4"
@@ -3391,52 +3587,168 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   onClick={() => setCandidatePanelOpen(false)}
                 >
                   <div
-                    className="rounded-xl shadow-2xl max-w-3xl w-full max-h-[80vh] overflow-y-auto"
+                    className="rounded-xl shadow-2xl max-w-4xl w-full max-h-[85vh] overflow-y-auto"
                     style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
                     onClick={e => e.stopPropagation()}
                   >
-                    {/* 헤더 */}
+                    {/* 헤더 + Summary */}
                     <div
-                      className="px-5 py-3 flex items-center justify-between sticky top-0 z-10"
+                      className="px-5 py-3 sticky top-0 z-10"
                       style={{ background: "var(--bg-canvas)", borderBottom: "1px solid var(--border-2)" }}
                     >
-                      <div>
+                      <div className="flex items-center justify-between mb-2.5">
                         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                          Weekly 일정 변경 제안
+                          Weekly Sync 후보 검토
                         </h2>
-                        <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>
-                          {unresolved.length}건 검토 대기 · 승인 시 일정에 반영, 기각 시 무시
-                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setCandidatePanelOpen(false)}
+                          className="text-lg leading-none px-2 py-1 hover:bg-gray-100 rounded"
+                          style={{ color: "var(--text-muted)" }}
+                        >
+                          ×
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setCandidatePanelOpen(false)}
-                        className="text-lg leading-none px-2 py-1 hover:bg-gray-100 rounded"
-                        style={{ color: "var(--text-muted)" }}
-                      >
-                        ×
-                      </button>
+                      {/* Summary 카운트 */}
+                      <div className="flex items-center flex-wrap gap-1.5 mb-2">
+                        {([
+                          { key: "all" as const,      label: `전체 ${counts.total}`,    color: "var(--text-secondary)" },
+                          { key: "schedule" as const, label: `일정 ${counts.schedule}`, color: KIND_STYLE.schedule.color },
+                          { key: "action" as const,   label: `액션 ${counts.action}`,   color: KIND_STYLE.action.color },
+                          { key: "risk" as const,     label: `리스크 ${counts.risk}`,   color: KIND_STYLE.risk.color },
+                          { key: "note" as const,     label: `참고 ${counts.note}`,     color: KIND_STYLE.note.color },
+                        ]).map(t => {
+                          const active = candidateKindFilter === t.key;
+                          return (
+                            <button
+                              key={t.key}
+                              type="button"
+                              onClick={() => { setCandidateKindFilter(t.key); setSelectedCandidateIds(new Set()); }}
+                              className="px-2 py-0.5 rounded text-[10px] font-medium transition"
+                              style={{
+                                background: active ? t.color : "transparent",
+                                color: active ? "white" : t.color,
+                                border: `1px solid ${t.color}55`,
+                              }}
+                            >
+                              {t.label}
+                            </button>
+                          );
+                        })}
+                        <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+                          ⚡high {counts.high} · low {counts.low}
+                        </span>
+                      </div>
+                      {/* 일괄/선택 액션 */}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <label className="flex items-center gap-1.5 text-[11px] cursor-pointer select-none" style={{ color: "var(--text-secondary)" }}>
+                          <input
+                            type="checkbox"
+                            checked={allVisibleSelected}
+                            ref={el => { if (el) el.indeterminate = someVisibleSelected && !allVisibleSelected; }}
+                            onChange={() => {
+                              if (allVisibleSelected) {
+                                setSelectedCandidateIds(prev => {
+                                  const next = new Set(prev);
+                                  for (const id of visibleIds) next.delete(id);
+                                  return next;
+                                });
+                              } else {
+                                setSelectedCandidateIds(prev => {
+                                  const next = new Set(prev);
+                                  for (const id of visibleIds) next.add(id);
+                                  return next;
+                                });
+                              }
+                            }}
+                            className="cursor-pointer"
+                          />
+                          현재 보기 전체 선택
+                          <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                            ({selectedCandidateIds.size}건 선택됨)
+                          </span>
+                        </label>
+                        <div className="flex-1" />
+                        <button
+                          type="button"
+                          onClick={() => doBulk("apply", true)}
+                          disabled={selectedCandidateIds.size === 0}
+                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
+                          style={{ background: "#10b981", color: "white" }}
+                        >
+                          ✓ 선택 승인
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => doBulk("dismiss", true)}
+                          disabled={selectedCandidateIds.size === 0}
+                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                          style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-secondary)" }}
+                        >
+                          ✕ 선택 기각
+                        </button>
+                        <span className="text-[10px] mx-1" style={{ color: "var(--text-muted)" }}>|</span>
+                        <button
+                          type="button"
+                          onClick={() => doBulk("apply", false)}
+                          disabled={filtered.length === 0}
+                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
+                          style={{ background: "rgba(16,185,129,0.18)", border: "1px solid rgba(16,185,129,0.45)", color: "#10b981" }}
+                        >
+                          전체 승인
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => doBulk("dismiss", false)}
+                          disabled={filtered.length === 0}
+                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                          style={{ background: "transparent", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+                        >
+                          전체 기각
+                        </button>
+                      </div>
                     </div>
 
                     {/* 본문 */}
                     <div className="p-5 space-y-2.5">
-                      {unresolved.length === 0 && (
+                      {filtered.length === 0 && (
                         <p className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>
-                          검토할 변경 제안이 없습니다.
+                          {counts.total === 0 ? "검토할 후보가 없습니다." : "현재 필터에 해당하는 후보가 없습니다."}
                         </p>
                       )}
-                      {unresolved.map(c => {
-                        const role = c.mergeKey.split("::")[1] ?? "—";
+                      {filtered.map(c => {
                         const inFlight = candidatesInFlight.has(c.id);
-                        const summary = titleByKey.get(c.ticketKey) ?? "—";
+                        const isSelected = selectedCandidateIds.has(c.id);
+                        const kindStyle = KIND_STYLE[c.kind];
+                        const confStyle = CONF_STYLE[c.confidence];
+                        const isAutoApplyDiscouraged = c.confidence === "low";
+
                         return (
                           <div
                             key={c.id}
                             className="rounded-lg p-3"
-                            style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)" }}
+                            style={{
+                              background: isSelected ? "rgba(129,140,248,0.06)" : "var(--bg-item)",
+                              border: `1px solid ${isSelected ? "#818cf8" : "var(--border-2)"}`,
+                            }}
                           >
-                            <div className="flex items-start justify-between gap-3">
+                            <div className="flex items-start gap-2.5">
+                              {/* checkbox */}
+                              <input
+                                type="checkbox"
+                                checked={isSelected}
+                                onChange={() => {
+                                  setSelectedCandidateIds(prev => {
+                                    const next = new Set(prev);
+                                    if (next.has(c.id)) next.delete(c.id);
+                                    else next.add(c.id);
+                                    return next;
+                                  });
+                                }}
+                                className="mt-1 cursor-pointer"
+                              />
                               <div className="flex-1 min-w-0">
+                                {/* row 1: ticket + summary */}
                                 <div className="flex items-center gap-2 mb-1">
                                   <a
                                     href={`https://jira.team.musinsa.com/browse/${c.ticketKey}`}
@@ -3447,57 +3759,114 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   >
                                     {c.ticketKey}
                                   </a>
-                                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>·</span>
-                                  <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>
-                                    {summary}
-                                  </span>
+                                  {c.ticketSummary && (
+                                    <>
+                                      <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>·</span>
+                                      <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>
+                                        {c.ticketSummary}
+                                      </span>
+                                    </>
+                                  )}
                                 </div>
-                                <div className="flex items-center flex-wrap gap-1.5 text-xs mb-1.5">
+                                {/* row 2: kind / confidence / sourceWeek / autoApplyDiscouraged */}
+                                <div className="flex items-center flex-wrap gap-1.5 mb-1.5">
                                   <span
                                     className="px-1.5 py-0.5 rounded text-[10px] font-medium"
-                                    style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
+                                    style={{ background: kindStyle.bg, color: kindStyle.color, border: `1px solid ${kindStyle.border}` }}
                                   >
-                                    {role}
+                                    {KIND_LABEL[c.kind]}
                                   </span>
-                                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
-                                    {FIELD_LABEL[c.field] ?? c.field}
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                    style={{ background: confStyle.bg, color: confStyle.color }}
+                                  >
+                                    {confStyle.label}
                                   </span>
-                                  <span className="text-xs line-through" style={{ color: "var(--text-muted)" }}>
-                                    {c.oldValue || "(빈 값)"}
-                                  </span>
-                                  <span style={{ color: "var(--text-muted)" }}>→</span>
-                                  <span className="text-xs font-medium" style={{ color: "#10b981" }}>
-                                    {c.newValue || "(빈 값)"}
-                                  </span>
-                                </div>
-                                <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-                                  {c.sourceWeek}
-                                  {c.autoApply && (
-                                    <span className="ml-2 px-1.5 py-0.5 rounded" style={{ background: "rgba(16,185,129,0.12)", color: "#10b981" }}>
-                                      자동적용 가능
+                                  {c.sourceWeek && (
+                                    <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                                      {c.sourceWeek}
+                                    </span>
+                                  )}
+                                  {isAutoApplyDiscouraged && (
+                                    <span
+                                      className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                      style={{ background: "rgba(251,191,36,0.10)", color: "#fbbf24", border: "1px solid rgba(251,191,36,0.30)" }}
+                                      title="확인 필요 / 논의중 / 가능 여부 등으로 분류 — 자동 일정 반영 비추천"
+                                    >
+                                      ⚠ 자동 반영 비추천
                                     </span>
                                   )}
                                 </div>
+                                {/* row 3: schedule diff or note content */}
+                                {c.kind === "schedule" ? (
+                                  <div className="flex items-center flex-wrap gap-1.5 text-xs mb-1.5">
+                                    {c.role && (
+                                      <span
+                                        className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                        style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
+                                      >
+                                        {c.role}
+                                      </span>
+                                    )}
+                                    {c.field && (
+                                      <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                        {FIELD_LABEL[c.field] ?? c.field}
+                                      </span>
+                                    )}
+                                    <span className="text-xs line-through" style={{ color: "var(--text-muted)" }}>
+                                      {c.oldValue || "(빈 값)"}
+                                    </span>
+                                    <span style={{ color: "var(--text-muted)" }}>→</span>
+                                    <span className="text-xs font-medium" style={{ color: "#10b981" }}>
+                                      {c.newValue || "(빈 값)"}
+                                    </span>
+                                  </div>
+                                ) : c.content ? (
+                                  <p className="text-xs mb-1.5 leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                                    {c.content}
+                                  </p>
+                                ) : null}
+                                {/* row 4: reason */}
+                                {c.reason && (
+                                  <p className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                                    {c.reason}
+                                  </p>
+                                )}
                               </div>
-                              <div className="flex gap-1.5 shrink-0">
-                                <button
-                                  type="button"
-                                  disabled={inFlight}
-                                  onClick={() => resolveCandidate(c.id, "apply")}
-                                  className="px-2.5 py-1 text-xs rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
-                                  style={{ background: "#10b981", color: "white" }}
-                                >
-                                  {inFlight ? "처리 중…" : "✓ 승인"}
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={inFlight}
-                                  onClick={() => resolveCandidate(c.id, "dismiss")}
-                                  className="px-2.5 py-1 text-xs rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
-                                  style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-secondary)" }}
-                                >
-                                  ✕ 기각
-                                </button>
+                              {/* per-row action */}
+                              <div className="flex gap-1 shrink-0">
+                                {c.kind === "schedule" ? (
+                                  <>
+                                    <button
+                                      type="button"
+                                      disabled={inFlight}
+                                      onClick={() => resolveCandidate(c.id, "apply")}
+                                      className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
+                                      style={{ background: "#10b981", color: "white" }}
+                                    >
+                                      {inFlight ? "…" : "✓ 승인"}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={inFlight}
+                                      onClick={() => resolveCandidate(c.id, "dismiss")}
+                                      className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                      style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-secondary)" }}
+                                    >
+                                      ✕ 기각
+                                    </button>
+                                  </>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled={inFlight}
+                                    onClick={() => resolveNote(c.ticketKey, c.id)}
+                                    className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                    style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-secondary)" }}
+                                  >
+                                    {inFlight ? "…" : "✓ 확인"}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           </div>
