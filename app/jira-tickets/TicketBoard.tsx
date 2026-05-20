@@ -1089,6 +1089,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [wikiEditInput, setWikiEditInput] = useState("");
   const [wikiEditTitleInput, setWikiEditTitleInput] = useState("");
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
+  // Phase 2: Weekly Sync orchestration 진행 상황 토스트
+  const [weeklySyncMsg, setWeeklySyncMsg] = useState<string | null>(null);
 
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta" | "ticketNo">("eta");
@@ -1297,6 +1299,91 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           if (d["cc-memos"])     setMemos(d["cc-memos"]);
         })
         .catch(() => {});
+
+      // ─── Weekly Sync orchestration (Phase 2) ──────────────────
+      // fire-and-forget: Jira Sync UI는 즉시 끝나고, weekly 흐름은 background에서 진행.
+      // 활성 ticket만 (완료 제외) 대상. 5개씩 chunk로 병렬.
+      // 흐름: jira-weekly-source → weekly-sync POST → KV reload.
+      void (async () => {
+        const DONE_FOR_WEEKLY = new Set(["론치완료", "완료", "배포완료"]);
+        const targets = (data.tickets as Ticket[]).filter(t => !DONE_FOR_WEEKLY.has(t.status));
+        if (targets.length === 0) return;
+
+        setWeeklySyncMsg(`Weekly Sync 중… (대상 ${targets.length}건)`);
+
+        let parsedTotal = 0;
+        let updatedTotal = 0;
+        let candidatesTotal = 0;
+        let appliedTotal = 0;
+        let foundMarkerTotal = 0;
+        let skippedNoMarker = 0;
+        let errorTotal = 0;
+
+        const chunkSize = 5;
+        for (let i = 0; i < targets.length; i += chunkSize) {
+          const chunk = targets.slice(i, i + chunkSize);
+          await Promise.all(chunk.map(async (t) => {
+            try {
+              const srcRes = await fetch(`/api/jira-weekly-source?key=${encodeURIComponent(t.key)}`);
+              if (!srcRes.ok) { errorTotal++; return; }
+              const src = await srcRes.json();
+              if (!src.foundMarker || !src.text) { skippedNoMarker++; return; }
+              foundMarkerTotal++;
+
+              const syncRes = await fetch("/api/weekly-sync", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ ticketKey: t.key, weeklyText: src.text }),
+              });
+              if (!syncRes.ok) { errorTotal++; return; }
+              const result = await syncRes.json();
+
+              const parsedCnt = src.parseSummary?.schedulesCount ?? 0;
+              parsedTotal      += parsedCnt;
+              updatedTotal     += result.schedulesUpdated  ?? 0;
+              candidatesTotal  += result.updateCandidates  ?? 0;
+              appliedTotal     += result.appliedUpdates    ?? 0;
+
+              console.log(
+                `[WeeklySync] ${t.key} src=${src.source} ` +
+                `parsed=${parsedCnt} updated=${result.schedulesUpdated ?? 0} ` +
+                `candidates=${result.updateCandidates ?? 0} ` +
+                (result.isIdempotent ? "(idempotent)" : ""),
+              );
+            } catch (e) {
+              errorTotal++;
+              console.error(`[WeeklySync] ${t.key} error:`, e);
+            }
+          }));
+        }
+
+        const msg =
+          `Weekly Sync 완료 — found ${foundMarkerTotal}` +
+          ` · parsed ${parsedTotal} · candidates ${candidatesTotal}` +
+          (skippedNoMarker ? ` · no-marker ${skippedNoMarker}` : "") +
+          (errorTotal      ? ` · errors ${errorTotal}`         : "");
+        setWeeklySyncMsg(msg);
+        setTimeout(() => setWeeklySyncMsg(null), 10_000);
+        console.log(
+          `[WeeklySync] DONE total ${targets.length} | ` +
+          `found=${foundMarkerTotal} parsed=${parsedTotal} ` +
+          `updated=${updatedTotal} applied=${appliedTotal} ` +
+          `candidates=${candidatesTotal} skipped=${skippedNoMarker} errors=${errorTotal}`,
+        );
+
+        // KV reload — weekly-notes, update-candidates, schedules
+        try {
+          const r = await fetch("/api/kv?keys=cc-weekly-notes,cc-update-candidates,cc-schedules");
+          const d2 = await r.json();
+          if (d2["cc-weekly-notes"] && typeof d2["cc-weekly-notes"] === "object" && !Array.isArray(d2["cc-weekly-notes"]))
+            setWeeklyNotes(d2["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
+          if (Array.isArray(d2["cc-update-candidates"]))
+            setUpdateCandidates(d2["cc-update-candidates"] as UpdateCandidate[]);
+          if (d2["cc-schedules"]) setSchedules(d2["cc-schedules"]);
+        } catch (e) {
+          console.warn("[WeeklySync] KV reload failed:", e);
+        }
+      })().catch(e => console.error("[WeeklySync] orchestration failed:", e));
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
       setFetchError(isTimeout
@@ -3039,6 +3126,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
             {sheetSyncMsg && (
               <span className="text-xs text-green-600 font-medium">{sheetSyncMsg}</span>
+            )}
+            {weeklySyncMsg && (
+              <span className="text-xs text-indigo-500 font-medium">{weeklySyncMsg}</span>
             )}
             {syncedAt && (
               <span className="text-xs text-gray-400">

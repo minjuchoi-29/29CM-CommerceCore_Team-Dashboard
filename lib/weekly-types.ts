@@ -65,6 +65,12 @@ export interface ParsedWeekly {
   risks: ParsedRisk[];
   nextActions: ParsedNextAction[];
   noIssues: boolean;
+  /** parse 결과 디버깅 정보 — UI/로그용. merge 로직과 무관. */
+  debug?: {
+    sectionsFound: string[];      // 매칭된 섹션 이름들
+    ignoredLines: string[];       // 어느 섹션에도 안 들어간 줄들 (앞 5개)
+    warnings: string[];           // parsing 도중 발생한 경고
+  };
 }
 
 /**
