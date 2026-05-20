@@ -1429,11 +1429,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           return;
         }
 
-        setWeeklySyncMsg(
-          `Weekly Sync 중… (대상 ${targets.length}건` +
-          (skippedHidden > 0 ? ` · hidden ${skippedHidden}건 제외` : "") +
-          `)`,
-        );
+        // 진행 중 토스트도 사용자용 단순 메시지. hidden 등 정보는 console로.
+        setWeeklySyncMsg("Weekly Sync 중…");
+        if (skippedHidden > 0) {
+          console.log(`[WeeklySync] start — targets=${targets.length} (hidden ${skippedHidden} 제외)`);
+        }
 
         let parsedTotal = 0;
         let updatedTotal = 0;
@@ -1524,15 +1524,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           }
         }
 
+        // 사용자 토스트는 운영 액션만 — debug count는 console로만.
         const msg =
-          `Weekly Sync 완료 — found ${foundMarkerTotal}` +
-          ` · parsed ${parsedTotal} · candidates ${candidatesTotal}` +
-          (skippedHidden      ? ` · hidden ${skippedHidden}`           : "") +
-          (skippedCommentOnly ? ` · comment-only ${skippedCommentOnly}` : "") +
-          (skippedNoMarker    ? ` · no-marker ${skippedNoMarker}`       : "") +
-          (errorTotal         ? ` · errors ${errorTotal}`               : "");
+          errorTotal > 0 && candidatesTotal === 0
+            ? `Weekly Sync 일부 실패 (${errorTotal}건)`
+            : candidatesTotal > 0
+              ? `⚡ 검토 필요한 일정 변경 ${candidatesTotal}건`
+              : `Weekly Sync 완료`;
         setWeeklySyncMsg(msg);
-        setTimeout(() => setWeeklySyncMsg(null), 10_000);
+        setTimeout(() => setWeeklySyncMsg(null), 8_000);
         console.log(
           `[WeeklySync] DONE total ${targets.length} | ` +
           `found=${foundMarkerTotal} parsed=${parsedTotal} ` +
@@ -1859,15 +1859,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     });
   }
 
-  // ─── Phase D2: Action/Risk 분리 영역 (Weekly Summary 아래) ────────
-  // weeklyNotes에서 type별 분리해서 "리스크 / 액션 필요 / 참고" 박스로 표시.
-  // Weekly Summary는 원문 그대로 유지, 이 영역은 PM 정렬용 derived view.
+  // ─── Phase D2: 자동 감지된 액션 영역 (Weekly Summary 아래) ────────
+  // 정책 변경:
+  //   - Weekly Summary는 원문 그대로 (컨텍스트 유지)
+  //   - 이 박스는 "실제 follow-up이 필요한 액션"만 — 원문 line 복제 금지
+  //   - progress(참고) 섹션 제거 — 단순 설명/상황 line은 표시 안 함
+  //   - parser가 RISK_INDICATORS / LOW_CONFIDENCE_KEYWORDS 매칭된 line만 action/risk로 분류
   function renderActionRiskBox(ticketKey: string) {
     const notes = (weeklyNotes[ticketKey] ?? []).filter(n => n.status === "open");
-    if (notes.length === 0) return null;
-    const risks    = notes.filter(n => n.type === "risk");
-    const actions  = notes.filter(n => n.type === "next_action");
-    const progress = notes.filter(n => n.type === "progress");
+    const risks   = notes.filter(n => n.type === "risk");
+    const actions = notes.filter(n => n.type === "next_action");
+    // progress 노트는 의도적으로 표시 안 함 (단순 설명 line 중복 방지)
+    const totalShown = risks.length + actions.length;
+    if (totalShown === 0) return null;
 
     const Section = (props: {
       label: string;
@@ -1890,16 +1894,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
         <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
           <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>
-            Weekly에서 분리된 노트
+            자동 감지된 액션
+          </span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(251,191,36,0.10)", color: "#fbbf24", border: "1px solid rgba(251,191,36,0.30)" }}>
+            {totalShown}건
           </span>
           <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            (Gantt에 자동 반영 안 됨)
+            follow-up 필요 · Gantt 자동 반영 안 됨
           </span>
         </div>
         <div className="px-3 py-2.5 space-y-2.5">
-          <Section label="리스크"    color="#ef4444" items={risks}    />
-          <Section label="액션 필요" color="#fbbf24" items={actions}  />
-          <Section label="참고"      color="#94a3b8" items={progress} />
+          <Section label="리스크"    color="#ef4444" items={risks}   />
+          <Section label="액션 필요" color="#fbbf24" items={actions} />
         </div>
       </div>
     );

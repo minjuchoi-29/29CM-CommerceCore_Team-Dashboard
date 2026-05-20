@@ -104,12 +104,22 @@ export const ALLOWED_SCHEDULE_ROLES = new Set<string>([
   "Mobile", "DA", "QA", "CSE", "Release", "Launch",
 ]);
 
-// 날짜 없거나 불확실한 상태 표현 — schedule이 아닌 action으로 분류
+// Follow-up action 의미가 명확한 키워드 — schedule이 아니면 action으로 분류.
+// 매칭 안 되면 자동 ignored (note 박스에 노출 안 됨).
+// 사용자 정책: "실제 follow-up 의미가 있어야 함".
 const LOW_CONFIDENCE_KEYWORDS = [
-  "확인 필요", "확인필요", "논의중", "논의 중",
-  "가능 여부", "준수 가능", "산정 필요", "산정필요", "검토 필요", "검토필요",
-  "재산정", "재검토", "TBD", "tbd", "미정",
-  "ETA 준수", "ETA 가능", "R&R 논의", "R&R 확정", "R&R 정리",
+  "확인 필요", "확인필요",
+  "논의 필요", "논의필요", "논의중", "논의 중",
+  "리뷰 필요", "리뷰필요",
+  "검토 필요", "검토필요",
+  "산정 필요", "산정필요",
+  "가능 여부", "준수 가능",
+  "재산정", "재검토",
+  "ETA 준수", "ETA 가능", "ETA risk",
+  "R&R 논의", "R&R 확정", "R&R 정리",
+  "follow-up", "후속 조치",
+  "일정 미확정", "일정미확정",
+  "TBD", "tbd",
 ];
 
 // 설명/상태성/조건성 표현 — schedule이 아닌 note로 분류
@@ -357,24 +367,29 @@ export function classifyLine(
   const lowConf = matchesAny(content, LOW_CONFIDENCE_KEYWORDS);
   const isRisk = matchesAny(content, RISK_INDICATORS);
 
-  // 1) 설명/상태성 문장은 schedule 자격 자체 없음 → note
+  // ── 분류 우선순위 (사용자 정책) ─────────────────────────────────
+  //   schedule 자격 미달 line은 다음 순서로 분류:
+  //     RISK_INDICATORS 매칭         → risk
+  //     LOW_CONFIDENCE_KEYWORDS 매칭 → action (실제 follow-up 의미)
+  //     그 외                        → note (UI 출력 안 함, 단순 설명/상황 line)
+  //   "PTG plan ...", "yellow 유지" 같은 NON_SCHEDULE은 위 우선순위에 따라
+  //   RISK도 LOW_CONF도 아니면 자동 ignored.
+  const classifyDeclined = (declineReason: string) => ({
+    type: (isRisk ? "risk" : lowConf ? "action" : "note") as LineClassification,
+    confidence: "low" as Confidence,
+    content, rawText: line,
+    declineReason,
+  });
+
+  // 1) 설명/상태성 문장 (PTG plan / yellow 유지 / 정책 이슈 등)
   if (nonSchedule) {
-    return {
-      type: isRisk ? "risk" : "note",
-      confidence: "low",
-      content, rawText: line,
-      declineReason: "non_schedule_indicator (PTG plan / 전환 조건 등)",
-    };
+    return classifyDeclined("non_schedule_indicator (PTG plan / 전환 조건 등)");
   }
 
   // 2) schedule line 시도
   const item = parseScheduleLine(content, fallbackYear);
-
   if (!item) {
-    // 일정 파싱 실패 — risk/action/note 중 분류
-    if (isRisk) return { type: "risk", confidence: "low", content, rawText: line };
-    if (lowConf) return { type: "action", confidence: "low", content, rawText: line };
-    return { type: "note", confidence: "low", content, rawText: line };
+    return classifyDeclined("schedule line parse failed");
   }
 
   // schedule 자격 판정은 phase taxonomy 기준 — resourceTeam(Core AI BE 등 자유 text)은 무관.
@@ -382,45 +397,24 @@ export function classifyLine(
   const hasDate = !!item.startDate;
   const hasClearStatus = item.status !== "확인필요";
 
-  // 3) phase 화이트리스트 위반 → schedule 금지 (예: phase="기타" / "PTG plan" 같은 자유텍스트)
+  // 3) phase 화이트리스트 위반 → schedule 금지
   if (!phaseOK) {
-    return {
-      type: hasDate ? "action" : "note",
-      confidence: "low",
-      content, rawText: line,
-      declineReason: `phase "${item.phase ?? "(none)"}" not in allowed phases`,
-    };
+    return classifyDeclined(`phase "${item.phase ?? "(none)"}" not in allowed phases`);
   }
 
-  // 4) 날짜 없음 → schedule 금지, action으로
+  // 4) 날짜 없음 → schedule 금지
   if (!hasDate) {
-    return {
-      type: isRisk ? "risk" : "action",
-      confidence: "low",
-      content, rawText: line,
-      declineReason: "no date",
-    };
+    return classifyDeclined("no date");
   }
 
-  // 5) low-confidence 키워드 매칭 → schedule 금지, action으로
+  // 5) low-confidence 키워드 매칭 → schedule 금지, action 자격 (실제 follow-up)
   if (lowConf) {
-    return {
-      type: "action",
-      confidence: "low",
-      content, rawText: line,
-      declineReason: "low_confidence keyword",
-    };
+    return classifyDeclined("low_confidence keyword (follow-up 필요)");
   }
 
-  // 6) 실행성 status 검증 — 정책: schedule 자격은 status가 예정/진행중/완료만.
-  //    확인필요/미정/지연/보류는 "실제 실행 일정"이 아니므로 action으로.
+  // 6) 실행성 status 검증 — schedule 자격은 status가 예정/진행중/완료만.
   if (!EXECUTABLE_STATUSES.has(item.status)) {
-    return {
-      type: "action",
-      confidence: "low",
-      content, rawText: line,
-      declineReason: `status "${item.status}" not executable (need 예정/진행중/완료)`,
-    };
+    return classifyDeclined(`status "${item.status}" not executable (need 예정/진행중/완료)`);
   }
 
   // 7) 허용 phase + 날짜 + non-low confidence + 실행성 status → schedule
@@ -662,17 +656,16 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
             rawText: cls.rawText,
           });
         }
-        // type === "note"는 progressItems로
-        if (cls.type === "note" || cls.type === "action" || cls.type === "schedule") {
-          if (!progressItems.includes(cls.content)) progressItems.push(cls.content);
-        }
+        // 정책: type === "note"는 ignored — Weekly Summary 원문에만 남고,
+        // 분리 영역(액션 박스) / progressItems에 push 안 함.
+        // PTG plan / yellow 유지 같은 단순 설명 line이 복제되는 문제 방지.
       } catch (e) {
         warnings.push(`fallback classifyLine failed: "${line.slice(0, 60)}" — ${(e as Error).message}`);
       }
     }
     warnings.push(
       `no_section_marker — 전체 text fallback: schedule ${scheduleItems.length} / ` +
-      `action ${nextActions.length} / risk ${risks.length} / note ${progressItems.length}`,
+      `action ${nextActions.length} / risk ${risks.length} (note ignored)`,
     );
   }
 
