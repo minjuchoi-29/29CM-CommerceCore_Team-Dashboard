@@ -13,6 +13,9 @@ export type ActionCategory =
   | "release"
   | "unknown";
 export type NoteSeverity = "high" | "medium" | "low";
+export type Confidence = "high" | "medium" | "low";
+/** 한 줄의 분류 결과 */
+export type LineClassification = "schedule" | "action" | "risk" | "note";
 
 /**
  * 기존 RoleSchedule(TicketBoard.tsx)에 optional로 추가되는 source metadata.
@@ -40,6 +43,8 @@ export interface ParsedScheduleItem {
   assignee: string | null;
   rawText: string;
   isCancelled: boolean;
+  /** schedule candidate 신뢰도 — schedule row 후보화 시 사용 */
+  confidence?: Confidence;
 }
 
 export interface ParsedRisk {
@@ -65,6 +70,22 @@ export interface ParsedWeekly {
   risks: ParsedRisk[];
   nextActions: ParsedNextAction[];
   noIssues: boolean;
+  /**
+   * 자유형식(section header 없는) Weekly 본문에서 분류된 line 분류 결과.
+   * - schedule: ParsedScheduleItem으로 추출됨 (scheduleItems와 중복 가능)
+   * - action / risk / note: schedule이 아닌 candidate
+   * UI에서 type별 정렬 + checkbox 일괄 처리 시 사용.
+   */
+  classifiedLines?: Array<{
+    type: LineClassification;
+    confidence: Confidence;
+    content: string;
+    rawText: string;
+    /** type === "schedule"일 때만 채워짐 */
+    schedule?: ParsedScheduleItem;
+    /** schedule 아닌 이유 */
+    declineReason?: string;
+  }>;
   /** parse 결과 디버깅 정보 — UI/로그용. merge 로직과 무관. */
   debug?: {
     sectionsFound: string[];      // 매칭된 섹션 이름들
@@ -118,4 +139,25 @@ export interface WeeklySyncMeta {
   ticketKey: string;
   lastSyncAt: string;
   lastSourceWeek: string;
+}
+
+/**
+ * KV key: cc-weekly-source-text
+ * Structure: Record<ticketKey, WeeklySourceText>
+ *
+ * Weekly 원문 텍스트를 ticket별로 보관. UI에서 "최근 Weekly 요약"을
+ * 줄바꿈·bullet·문단 구조 유지해 표시하기 위함.
+ * weekly-sync 후 forceRefresh orchestration이 한 번에 합쳐 저장.
+ */
+export interface WeeklySourceText {
+  ticketKey: string;
+  /** customfield_10625 / description weekly section / latest comment 중 선택된 원문 */
+  text: string;
+  /** "customfield" | "description" | "comment" */
+  source: string;
+  /** "customfield-first" | "description-first" | "comment-fallback" */
+  policyReason: string;
+  sourceWeek: string;
+  sourceUpdatedAt: string;
+  savedAt: string;
 }

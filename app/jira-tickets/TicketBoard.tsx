@@ -17,7 +17,7 @@ import {
   selectCompareSnapshot,
   summarizeTransitions,
 } from "@/lib/transitions";
-import type { WeeklyNote, UpdateCandidate, ScheduleSource } from "@/lib/weekly-types";
+import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText } from "@/lib/weekly-types";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -1047,6 +1047,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const prevActionCountRef = useRef<Record<string, number>>({});
   // ── Weekly Notes (Jira Weekly 공유사항 Delta Sync) ────────────
   const [weeklyNotes,      setWeeklyNotes]      = useState<Record<string, WeeklyNote[]>>({});
+  // Phase B: ticket별 Weekly 원문 (customfield_10625 / description section / comment 중 선택된 본문)
+  const [weeklySourceTexts, setWeeklySourceTexts] = useState<Record<string, WeeklySourceText>>({});
+  // 우측 상세 패널 Weekly 원문 expand/collapse 상태 (ticket별)
+  const [weeklyExpanded, setWeeklyExpanded] = useState<Record<string, boolean>>({});
   const [updateCandidates, setUpdateCandidates] = useState<UpdateCandidate[]>([]);
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
   const [changesMode,           setChangesMode]           = useState(false);
@@ -1322,6 +1326,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         let skippedNoMarker = 0;
         let errorTotal = 0;
 
+        // Phase B: ticket별 Weekly 원문 수집 (KV cc-weekly-source-text에 누적 저장)
+        const collectedSources: Record<string, WeeklySourceText> = {};
+        const nowIso = new Date().toISOString();
+
         const chunkSize = 5;
         for (let i = 0; i < targets.length; i += chunkSize) {
           const chunk = targets.slice(i, i + chunkSize);
@@ -1332,6 +1340,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const src = await srcRes.json();
               if (!src.foundMarker || !src.text) { skippedNoMarker++; return; }
               foundMarkerTotal++;
+
+              // 원문 수집
+              collectedSources[t.key] = {
+                ticketKey: t.key,
+                text: src.text,
+                source: src.source ?? "",
+                policyReason: src.policyReason ?? "",
+                sourceWeek: src.parseSummary?.sourceWeek ?? "",
+                sourceUpdatedAt: src.sourceUpdatedAt ?? "",
+                savedAt: nowIso,
+              };
 
               const syncRes = await fetch("/api/weekly-sync", {
                 method: "POST",
@@ -1360,6 +1379,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           }));
         }
 
+        // 원문 수집 결과를 cc-weekly-source-text KV에 합쳐 저장 (read-modify-write 1회)
+        if (Object.keys(collectedSources).length > 0) {
+          try {
+            const existRes = await fetch("/api/kv?keys=cc-weekly-source-text");
+            const existData = await existRes.json();
+            const existing = (existData["cc-weekly-source-text"] && typeof existData["cc-weekly-source-text"] === "object" && !Array.isArray(existData["cc-weekly-source-text"]))
+              ? existData["cc-weekly-source-text"] as Record<string, WeeklySourceText>
+              : {};
+            const merged: Record<string, WeeklySourceText> = { ...existing, ...collectedSources };
+            await fetch("/api/kv", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ key: "cc-weekly-source-text", value: merged }),
+            });
+          } catch (e) {
+            console.warn("[WeeklySync] cc-weekly-source-text save failed:", e);
+          }
+        }
+
         const msg =
           `Weekly Sync 완료 — found ${foundMarkerTotal}` +
           ` · parsed ${parsedTotal} · candidates ${candidatesTotal}` +
@@ -1374,15 +1412,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           `candidates=${candidatesTotal} skipped=${skippedNoMarker} errors=${errorTotal}`,
         );
 
-        // KV reload — weekly-notes, update-candidates, schedules
+        // KV reload — weekly-notes, update-candidates, schedules, source-text
         try {
-          const r = await fetch("/api/kv?keys=cc-weekly-notes,cc-update-candidates,cc-schedules");
+          const r = await fetch("/api/kv?keys=cc-weekly-notes,cc-update-candidates,cc-schedules,cc-weekly-source-text");
           const d2 = await r.json();
           if (d2["cc-weekly-notes"] && typeof d2["cc-weekly-notes"] === "object" && !Array.isArray(d2["cc-weekly-notes"]))
             setWeeklyNotes(d2["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
           if (Array.isArray(d2["cc-update-candidates"]))
             setUpdateCandidates(d2["cc-update-candidates"] as UpdateCandidate[]);
           if (d2["cc-schedules"]) setSchedules(d2["cc-schedules"]);
+          if (d2["cc-weekly-source-text"] && typeof d2["cc-weekly-source-text"] === "object" && !Array.isArray(d2["cc-weekly-source-text"]))
+            setWeeklySourceTexts(d2["cc-weekly-source-text"] as Record<string, WeeklySourceText>);
         } catch (e) {
           console.warn("[WeeklySync] KV reload failed:", e);
         }
@@ -2191,7 +2231,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (두 요청으로 분리 — 메인 데이터 / 커스텀 티켓)
     // 1) 메인 메타데이터 (상대적으로 작은 데이터)
-    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates,cc-weekly-notes,cc-update-candidates")
+    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates,cc-weekly-notes,cc-update-candidates,cc-weekly-source-text")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -2205,6 +2245,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           setWeeklyNotes(data["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
         if (Array.isArray(data["cc-update-candidates"]))
           setUpdateCandidates(data["cc-update-candidates"] as UpdateCandidate[]);
+        if (data["cc-weekly-source-text"] && typeof data["cc-weekly-source-text"] === "object" && !Array.isArray(data["cc-weekly-source-text"]))
+          setWeeklySourceTexts(data["cc-weekly-source-text"] as Record<string, WeeklySourceText>);
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
@@ -5643,10 +5685,69 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {detailTab === "overview" && (<>
             <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
 
-              {/* ── 최근 Weekly 요약 ─────────────────────────────────── */}
+              {/* ── 최근 Weekly 요약 (Phase B: 원문 구조 유지) ─────────── */}
               {(() => {
+                // 1순위: customfield/description/comment에서 가져온 원문 (cc-weekly-source-text)
+                const src = weeklySourceTexts[selected.key];
+                // legacy fallback: weeklyNotes에서 합성 (원문이 아직 KV에 없을 때만)
                 const notes = weeklyNotes[selected.key] ?? [];
-                if (notes.length === 0) return null;
+
+                if (!src && notes.length === 0) return null;
+
+                // 원문이 있으면 우선 사용
+                if (src && src.text) {
+                  const PREVIEW_LINES = 5;
+                  const lines = src.text.split("\n");
+                  const isLong = lines.length > PREVIEW_LINES || src.text.length > 320;
+                  const expanded = !!weeklyExpanded[selected.key];
+                  const preview = isLong && !expanded
+                    ? lines.slice(0, PREVIEW_LINES).join("\n")
+                    : src.text;
+                  const sourceLabel =
+                    src.source === "customfield" ? "Weekly 공유사항 field" :
+                    src.source === "description" ? "description section"   :
+                    src.source === "comment"     ? "automation comment"    :
+                    src.source;
+                  return (
+                    <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+                      <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+                        <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
+                        {src.sourceWeek && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>
+                            {src.sourceWeek}
+                          </span>
+                        )}
+                        <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
+                          {sourceLabel}
+                        </span>
+                      </div>
+                      <div className="px-3 py-2.5">
+                        {/* 원문 그대로 — 줄바꿈 / bullet / 문단 유지 */}
+                        <pre
+                          className="text-[11.5px] leading-relaxed font-sans"
+                          style={{
+                            color: "var(--text-secondary)",
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word",
+                            margin: 0,
+                          }}
+                        >{preview}{isLong && !expanded ? " …" : ""}</pre>
+                        {isLong && (
+                          <button
+                            type="button"
+                            onClick={() => setWeeklyExpanded(prev => ({ ...prev, [selected.key]: !prev[selected.key] }))}
+                            className="mt-2 text-[11px] hover:underline transition-colors"
+                            style={{ color: "#818cf8" }}
+                          >
+                            {expanded ? "접기" : `더 보기 (전체 ${lines.length}줄)`}
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                }
+
+                // legacy: 원문 KV 없음 → notes 기반 합성 (구버전)
                 const weeks = [...new Set(notes.map(n => n.sourceWeek))];
                 const latestWeek = weeks.sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0)).at(-1)!;
                 const latestNotes = notes.filter(n => n.sourceWeek === latestWeek);
@@ -5658,24 +5759,31 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
                       <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>{latestWeek}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>legacy</span>
                     </div>
                     <div className="px-3 py-2 space-y-1.5">
                       {progress.length > 0 && (
-                        <div className="flex gap-2 text-[11px]">
-                          <span className="shrink-0 font-medium w-14" style={{ color: "var(--text-muted)" }}>진행</span>
-                          <span style={{ color: "var(--text-secondary)" }}>{progress.map(n => n.content).join(", ")}</span>
+                        <div className="text-[11px]">
+                          <div className="font-medium mb-0.5" style={{ color: "var(--text-muted)" }}>진행</div>
+                          <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+                            {progress.map((n, i) => <li key={i}>{n.content}</li>)}
+                          </ul>
                         </div>
                       )}
                       {risks.length > 0 && (
-                        <div className="flex gap-2 text-[11px]">
-                          <span className="shrink-0 font-medium w-14" style={{ color: "#ef4444" }}>리스크</span>
-                          <span style={{ color: "var(--text-secondary)" }}>{risks.map(n => n.content).join("; ")}</span>
+                        <div className="text-[11px]">
+                          <div className="font-medium mb-0.5" style={{ color: "#ef4444" }}>리스크</div>
+                          <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+                            {risks.map((n, i) => <li key={i}>{n.content}</li>)}
+                          </ul>
                         </div>
                       )}
                       {actions.length > 0 && (
-                        <div className="flex gap-2 text-[11px]">
-                          <span className="shrink-0 font-medium w-14" style={{ color: "#fbbf24" }}>다음 액션</span>
-                          <span style={{ color: "var(--text-secondary)" }}>{actions.map(n => n.content).join("; ")}</span>
+                        <div className="text-[11px]">
+                          <div className="font-medium mb-0.5" style={{ color: "#fbbf24" }}>다음 액션</div>
+                          <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+                            {actions.map((n, i) => <li key={i}>{n.content}</li>)}
+                          </ul>
                         </div>
                       )}
                     </div>

@@ -11,8 +11,52 @@
  */
 import type {
   ParsedWeekly, ParsedScheduleItem, ParsedRisk, ParsedNextAction,
-  ScheduleStatus, ActionCategory, NoteSeverity,
+  ScheduleStatus, ActionCategory, NoteSeverity, Confidence, LineClassification,
 } from "./weekly-types";
+
+// ─── 정책 화이트리스트 / 키워드 ─────────────────────────────────
+// 작업별 일정에 들어갈 수 있는 role만 허용 (PM/팀이 관리하는 실행 일정).
+// 그 외 자유 텍스트(예: "PTG plan", "Status", "Note")는 schedule이 아닌 note/action으로.
+export const ALLOWED_SCHEDULE_ROLES = new Set<string>([
+  "Kick-Off",
+  "기획",
+  "디자인",
+  "개발",
+  "BE-SP", "BE-PP", "BE-CFE", "BE-CE", "BE-메가존",
+  "FE-CFE", "FE-DFE", "FE-Sotatek",
+  "Mobile",
+  "DA",
+  "QA",
+  "CSE",
+  "Release",
+  "Launch",
+]);
+
+// 날짜 없거나 불확실한 상태 표현 — schedule이 아닌 action으로 분류
+const LOW_CONFIDENCE_KEYWORDS = [
+  "확인 필요", "확인필요", "논의중", "논의 중",
+  "가능 여부", "산정 필요", "산정필요", "검토 필요", "검토필요",
+  "재산정", "재검토", "TBD", "tbd", "미정",
+];
+
+// 설명/상태성 표현 — schedule이 아닌 note로 분류
+const NON_SCHEDULE_INDICATORS = [
+  "PTG plan", "ptg plan",
+  "yellow 유지", "green 유지", "red 유지",
+  "yellow 전환", "green 전환", "red 전환",
+  "yellow → green", "green → yellow",
+  "blocker", "리소스 부족",
+];
+
+// 리스크/이슈 시그널 — note 대신 risk로 분류
+const RISK_INDICATORS = [
+  "blocker", "차단", "이슈", "리스크", "지연", "장애", "위험",
+];
+
+function matchesAny(text: string, keywords: string[]): boolean {
+  const lower = text.toLowerCase();
+  return keywords.some(kw => text.includes(kw) || lower.includes(kw.toLowerCase()));
+}
 
 // ─── 정규화: status ────────────────────────────────────────────
 
@@ -203,6 +247,95 @@ function findStatusKeyword(text: string): { kw: string; index: number } | null {
     if (i >= 0) return { kw, index: i };
   }
   return null;
+}
+
+/**
+ * 한 줄을 분류 — schedule row로 적합한지 아닌지 판단.
+ * 정책:
+ *   - 허용 role + 명확한 날짜 + low-confidence 표현 없음 → schedule (high/medium)
+ *   - 허용 role + 날짜 없음 → action (low)
+ *   - 허용 role 외 → note 또는 action (low)
+ *   - NON_SCHEDULE_INDICATORS 매칭 → note (설명성 문장)
+ *   - RISK_INDICATORS 매칭 → risk
+ */
+export function classifyLine(
+  line: string,
+  fallbackYear?: number,
+): {
+  type: LineClassification;
+  confidence: Confidence;
+  content: string;
+  rawText: string;
+  schedule?: ParsedScheduleItem;
+  declineReason?: string;
+} {
+  const content = line.trim();
+  if (!content) {
+    return { type: "note", confidence: "low", content, rawText: line };
+  }
+
+  const nonSchedule = matchesAny(content, NON_SCHEDULE_INDICATORS);
+  const lowConf = matchesAny(content, LOW_CONFIDENCE_KEYWORDS);
+  const isRisk = matchesAny(content, RISK_INDICATORS);
+
+  // 1) 설명/상태성 문장은 schedule 자격 자체 없음 → note
+  if (nonSchedule) {
+    return {
+      type: isRisk ? "risk" : "note",
+      confidence: "low",
+      content, rawText: line,
+      declineReason: "non_schedule_indicator (PTG plan / 전환 조건 등)",
+    };
+  }
+
+  // 2) schedule line 시도
+  const item = parseScheduleLine(content, fallbackYear);
+
+  if (!item) {
+    // 일정 파싱 실패 — risk/action/note 중 분류
+    if (isRisk) return { type: "risk", confidence: "low", content, rawText: line };
+    if (lowConf) return { type: "action", confidence: "low", content, rawText: line };
+    return { type: "note", confidence: "low", content, rawText: line };
+  }
+
+  const roleOK = ALLOWED_SCHEDULE_ROLES.has(item.normalizedRole);
+  const hasDate = !!item.startDate;
+  const hasClearStatus = item.status !== "확인필요";
+
+  // 3) role 화이트리스트 위반 → schedule 금지
+  if (!roleOK) {
+    return {
+      type: hasDate ? "action" : "note",
+      confidence: "low",
+      content, rawText: line,
+      declineReason: `role "${item.normalizedRole}" not in allowed schedule roles`,
+    };
+  }
+
+  // 4) 날짜 없음 → schedule 금지, action으로
+  if (!hasDate) {
+    return {
+      type: isRisk ? "risk" : "action",
+      confidence: "low",
+      content, rawText: line,
+      declineReason: "no date",
+    };
+  }
+
+  // 5) low-confidence 키워드 매칭 → schedule 금지, action으로
+  if (lowConf) {
+    return {
+      type: "action",
+      confidence: "low",
+      content, rawText: line,
+      declineReason: "low_confidence keyword",
+    };
+  }
+
+  // 6) 허용 role + 날짜 + non-low confidence → schedule
+  const confidence: Confidence = hasClearStatus ? "high" : "medium";
+  const schedule: ParsedScheduleItem = { ...item, confidence };
+  return { type: "schedule", confidence, content, rawText: line, schedule };
 }
 
 function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleItem | null {
@@ -397,28 +530,53 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
 
   // ── Section header 없는 weekly 전체 fallback ──
   // customfield_10625처럼 PM이 자유롭게 적은 weekly는 [진행상황]/[일정] 같은 header가 없음.
-  // 이 경우 전체 text의 모든 bullet/line을 schedule + progress 후보로 시도.
-  // 표준 포맷은 위에서 이미 처리됐으니, 여기서는 보충용.
+  // 이 경우 전체 text의 모든 bullet/line을 classifyLine으로 분류:
+  //   - 허용 role + 날짜 + non-low confidence  → schedule (high/medium)
+  //   - 허용 role + 날짜 없음/low confidence  → action (low)
+  //   - 허용 role 외                          → action 또는 note
+  //   - 설명/상태성 문장 (PTG plan 등)         → note (또는 risk)
+  // schedule이 되지 못한 candidate들은 classifiedLines에 보관 → UI에서 검토.
+  const classifiedLines: NonNullable<ParsedWeekly["classifiedLines"]> = [];
+
   if (sectionsFound.length === 0) {
     const allBullets = extractBullets(text)
-      // 첫 줄 marker(주차 Weekly 공유사항/🧭...)는 제외
+      // 첫 줄 marker는 제외
       .filter(l => !/^\s*(🧭|\d+\s*주차\s*Weekly\s*공유\s*사항)/.test(l));
+
     for (const line of allBullets) {
       consumedLines.add(line);
       try {
-        const item = parseScheduleLine(line, fallbackYear);
-        if (item) scheduleItems.push(item);
+        const cls = classifyLine(line, fallbackYear);
+        classifiedLines.push({
+          type: cls.type,
+          confidence: cls.confidence,
+          content: cls.content,
+          rawText: cls.rawText,
+          schedule: cls.schedule,
+          declineReason: cls.declineReason,
+        });
+        if (cls.type === "schedule" && cls.schedule) {
+          scheduleItems.push(cls.schedule);
+        } else if (cls.type === "risk") {
+          risks.push({ content: cls.content, severity: "medium", rawText: cls.rawText });
+        } else if (cls.type === "action") {
+          nextActions.push({
+            content: cls.content,
+            actionCategory: inferActionCategory(cls.content),
+            rawText: cls.rawText,
+          });
+        }
+        // type === "note"는 progressItems로
+        if (cls.type === "note" || cls.type === "action" || cls.type === "schedule") {
+          if (!progressItems.includes(cls.content)) progressItems.push(cls.content);
+        }
       } catch (e) {
-        warnings.push(`fallback schedule line parse failed: "${line.slice(0, 60)}" — ${(e as Error).message}`);
+        warnings.push(`fallback classifyLine failed: "${line.slice(0, 60)}" — ${(e as Error).message}`);
       }
     }
-    // 동시에 progressItems에도 추가 (자유형 weekly는 진행상황성 노트로 간주)
-    for (const line of allBullets) {
-      if (!progressItems.includes(line)) progressItems.push(line);
-    }
     warnings.push(
-      `no_section_marker — 전체 text fallback으로 schedule ${scheduleItems.length}건 / ` +
-      `progress ${progressItems.length}건 추출`,
+      `no_section_marker — 전체 text fallback: schedule ${scheduleItems.length} / ` +
+      `action ${nextActions.length} / risk ${risks.length} / note ${progressItems.length}`,
     );
   }
 
@@ -432,6 +590,7 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
     risks,
     nextActions,
     noIssues,
+    classifiedLines,
     debug: { sectionsFound, ignoredLines, warnings },
   };
 }
