@@ -1484,6 +1484,105 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, []);
 
+  // Phase B: Weekly 요약 카드 (Split View / Focus Mode 공통 렌더링)
+  // ticket별 cc-weekly-source-text 원문 우선, 없으면 weeklyNotes 합성 legacy.
+  // 데이터 없으면 null 반환 → 호출처에서 layout gap 없이 그냥 사라짐.
+  function renderWeeklySummary(ticketKey: string) {
+    const src = weeklySourceTexts[ticketKey];
+    const notes = weeklyNotes[ticketKey] ?? [];
+    if (!src && notes.length === 0) return null;
+
+    // 1순위: 원문 그대로
+    if (src && src.text) {
+      const PREVIEW_LINES = 5;
+      const lines = src.text.split("\n");
+      const isLong = lines.length > PREVIEW_LINES || src.text.length > 320;
+      const expanded = !!weeklyExpanded[ticketKey];
+      const preview = isLong && !expanded
+        ? lines.slice(0, PREVIEW_LINES).join("\n")
+        : src.text;
+      const sourceLabel =
+        src.source === "customfield" ? "Weekly 공유사항 field" :
+        src.source === "description" ? "description section"   :
+        src.source === "comment"     ? "automation comment"    :
+        src.source;
+      return (
+        <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+          <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+            <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
+            {src.sourceWeek && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>
+                {src.sourceWeek}
+              </span>
+            )}
+            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
+              {sourceLabel}
+            </span>
+          </div>
+          <div className="px-3 py-2.5">
+            <pre
+              className="text-[11.5px] leading-relaxed font-sans"
+              style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}
+            >{preview}{isLong && !expanded ? " …" : ""}</pre>
+            {isLong && (
+              <button
+                type="button"
+                onClick={() => setWeeklyExpanded(prev => ({ ...prev, [ticketKey]: !prev[ticketKey] }))}
+                className="mt-2 text-[11px] hover:underline transition-colors"
+                style={{ color: "#818cf8" }}
+              >
+                {expanded ? "접기" : `더 보기 (전체 ${lines.length}줄)`}
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // legacy: 원문 KV 없음 → notes 기반 합성
+    const weeks = [...new Set(notes.map(n => n.sourceWeek))];
+    const latestWeek = weeks.sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0)).at(-1)!;
+    const latestNotes = notes.filter(n => n.sourceWeek === latestWeek);
+    const progress = latestNotes.filter(n => n.type === "progress");
+    const risks    = latestNotes.filter(n => n.type === "risk");
+    const actions  = latestNotes.filter(n => n.type === "next_action" && n.status === "open");
+    return (
+      <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+        <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+          <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>{latestWeek}</span>
+          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>legacy</span>
+        </div>
+        <div className="px-3 py-2 space-y-1.5">
+          {progress.length > 0 && (
+            <div className="text-[11px]">
+              <div className="font-medium mb-0.5" style={{ color: "var(--text-muted)" }}>진행</div>
+              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+                {progress.map((n, i) => <li key={i}>{n.content}</li>)}
+              </ul>
+            </div>
+          )}
+          {risks.length > 0 && (
+            <div className="text-[11px]">
+              <div className="font-medium mb-0.5" style={{ color: "#ef4444" }}>리스크</div>
+              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+                {risks.map((n, i) => <li key={i}>{n.content}</li>)}
+              </ul>
+            </div>
+          )}
+          {actions.length > 0 && (
+            <div className="text-[11px]">
+              <div className="font-medium mb-0.5" style={{ color: "#fbbf24" }}>다음 액션</div>
+              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
+                {actions.map((n, i) => <li key={i}>{n.content}</li>)}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   // Jira Sync 이후 스냅샷 저장 (오늘 하루 1회, 비동기 — 실패해도 무시)
   const saveTransitionSnapshot = useCallback((
     liveTickets: Ticket[],
@@ -4967,6 +5066,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </div>
                     )}
 
+                    {/* 최근 Weekly 요약 — Focus Mode 공통 helper. 데이터 없으면 outer div도 렌더 안 함. */}
+                    {(() => {
+                      const summary = renderWeeklySummary(selected.key);
+                      return summary ? (
+                        <div data-fm-section="weekly-summary">{summary}</div>
+                      ) : null;
+                    })()}
+
                     {/* 주요 내용 요약 (Memo) */}
                     <div>
                       <div className="flex items-center justify-between mb-2">
@@ -5685,111 +5792,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {detailTab === "overview" && (<>
             <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
 
-              {/* ── 최근 Weekly 요약 (Phase B: 원문 구조 유지) ─────────── */}
-              {(() => {
-                // 1순위: customfield/description/comment에서 가져온 원문 (cc-weekly-source-text)
-                const src = weeklySourceTexts[selected.key];
-                // legacy fallback: weeklyNotes에서 합성 (원문이 아직 KV에 없을 때만)
-                const notes = weeklyNotes[selected.key] ?? [];
-
-                if (!src && notes.length === 0) return null;
-
-                // 원문이 있으면 우선 사용
-                if (src && src.text) {
-                  const PREVIEW_LINES = 5;
-                  const lines = src.text.split("\n");
-                  const isLong = lines.length > PREVIEW_LINES || src.text.length > 320;
-                  const expanded = !!weeklyExpanded[selected.key];
-                  const preview = isLong && !expanded
-                    ? lines.slice(0, PREVIEW_LINES).join("\n")
-                    : src.text;
-                  const sourceLabel =
-                    src.source === "customfield" ? "Weekly 공유사항 field" :
-                    src.source === "description" ? "description section"   :
-                    src.source === "comment"     ? "automation comment"    :
-                    src.source;
-                  return (
-                    <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
-                      <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
-                        <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
-                        {src.sourceWeek && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>
-                            {src.sourceWeek}
-                          </span>
-                        )}
-                        <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
-                          {sourceLabel}
-                        </span>
-                      </div>
-                      <div className="px-3 py-2.5">
-                        {/* 원문 그대로 — 줄바꿈 / bullet / 문단 유지 */}
-                        <pre
-                          className="text-[11.5px] leading-relaxed font-sans"
-                          style={{
-                            color: "var(--text-secondary)",
-                            whiteSpace: "pre-wrap",
-                            wordBreak: "break-word",
-                            margin: 0,
-                          }}
-                        >{preview}{isLong && !expanded ? " …" : ""}</pre>
-                        {isLong && (
-                          <button
-                            type="button"
-                            onClick={() => setWeeklyExpanded(prev => ({ ...prev, [selected.key]: !prev[selected.key] }))}
-                            className="mt-2 text-[11px] hover:underline transition-colors"
-                            style={{ color: "#818cf8" }}
-                          >
-                            {expanded ? "접기" : `더 보기 (전체 ${lines.length}줄)`}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                }
-
-                // legacy: 원문 KV 없음 → notes 기반 합성 (구버전)
-                const weeks = [...new Set(notes.map(n => n.sourceWeek))];
-                const latestWeek = weeks.sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0)).at(-1)!;
-                const latestNotes = notes.filter(n => n.sourceWeek === latestWeek);
-                const progress = latestNotes.filter(n => n.type === "progress");
-                const risks    = latestNotes.filter(n => n.type === "risk");
-                const actions  = latestNotes.filter(n => n.type === "next_action" && n.status === "open");
-                return (
-                  <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
-                    <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
-                      <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>{latestWeek}</span>
-                      <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>legacy</span>
-                    </div>
-                    <div className="px-3 py-2 space-y-1.5">
-                      {progress.length > 0 && (
-                        <div className="text-[11px]">
-                          <div className="font-medium mb-0.5" style={{ color: "var(--text-muted)" }}>진행</div>
-                          <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
-                            {progress.map((n, i) => <li key={i}>{n.content}</li>)}
-                          </ul>
-                        </div>
-                      )}
-                      {risks.length > 0 && (
-                        <div className="text-[11px]">
-                          <div className="font-medium mb-0.5" style={{ color: "#ef4444" }}>리스크</div>
-                          <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
-                            {risks.map((n, i) => <li key={i}>{n.content}</li>)}
-                          </ul>
-                        </div>
-                      )}
-                      {actions.length > 0 && (
-                        <div className="text-[11px]">
-                          <div className="font-medium mb-0.5" style={{ color: "#fbbf24" }}>다음 액션</div>
-                          <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
-                            {actions.map((n, i) => <li key={i}>{n.content}</li>)}
-                          </ul>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })()}
+              {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
+              {renderWeeklySummary(selected.key)}
 
               {/* 주요 내용 요약 */}
               <div className="mb-4">
