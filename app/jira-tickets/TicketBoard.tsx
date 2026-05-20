@@ -135,6 +135,25 @@ const PHASE_ORDER: Record<NonNullable<RoleSchedule["phase"]>, number> = {
   "기타":     7,
 };
 
+// Focus Queue + Split View 공통: phase 배지 색상 토큰
+const PHASE_QUEUE_STYLE: Record<NonNullable<RoleSchedule["phase"]>, { bg: string; color: string }> = {
+  "Kick-Off": { bg: "rgba(129,140,248,0.18)", color: "#a5b4fc" },
+  "기획":     { bg: "rgba(99,102,241,0.18)",  color: "#818cf8" },
+  "디자인":   { bg: "rgba(168,85,247,0.18)",  color: "#c084fc" },
+  "개발":     { bg: "rgba(59,130,246,0.18)",  color: "#60a5fa" },
+  "QA":       { bg: "rgba(34,197,94,0.18)",   color: "#4ade80" },
+  "Release":  { bg: "rgba(249,115,22,0.18)",  color: "#fb923c" },
+  "Launch":   { bg: "rgba(16,185,129,0.18)",  color: "#10b981" },
+  "기타":     { bg: "rgba(148,163,184,0.18)", color: "#94a3b8" },
+};
+
+// ETA urgency 토큰 (overdue / imminent / normal)
+const ETA_URGENCY_COLOR = {
+  overdue:  "#f87171",
+  imminent: "#fbbf24",
+  normal:   "var(--text-muted)" as const,
+};
+
 // 단일 row가 cleanup 자격 미달인지 판정 (Gantt 노출 차단 + Cleanup panel 후보)
 // 정책: manual schedule(source != jira_weekly)은 절대 cleanup 후보 안 됨.
 function isCleanupCandidate(row: RoleSchedule): { isCleanup: boolean; reason?: string } {
@@ -5217,21 +5236,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {isDetailExpanded ? (
               <span className="flex-1 min-w-0">티켓</span>
             ) : (
+              /* Split View: 카드 stream — 헤더는 정렬·총계용으로만 사용 */
               <>
-                <span className="w-6 shrink-0 flex items-center justify-center" title="복사">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.35 }}>
-                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-                  </svg>
-                </span>
+                <span className="w-6 shrink-0" />
                 <span className="w-8 shrink-0 text-center">#</span>
-                <span className="w-32 shrink-0">티켓</span>
-                <span className="flex-1 min-w-0">제목</span>
-                <span className="w-20 shrink-0 text-center">레벨</span>
-                <span className="w-16 shrink-0 text-center">프로젝트</span>
-                <span className="w-20 shrink-0 text-center">담당자</span>
-                <span className="w-36 shrink-0 text-center">상태</span>
-                <span className="w-28 shrink-0 text-center">시작일</span>
-                <span className="w-28 shrink-0 text-center">ETA</span>
+                <span className="flex-1 min-w-0">티켓 / 제목 / 운영 메타</span>
+                <span className="w-32 shrink-0 text-center">상태</span>
+                <span className="w-24 shrink-0 text-center">ETA</span>
                 <span className="w-6 shrink-0" />
               </>
             )}
@@ -5270,32 +5281,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 : isNew                 ? "rgba(16,185,129,0.06)"   // 임시: 신규 추가
                 : undefined;
 
-              // Focus Mode 카드 강조 — selected이면 outer에 진한 indigo accent + shadow
-              const fmCardStyle: React.CSSProperties = isDetailExpanded
-                ? {
-                    borderLeft: isSelected
-                      ? "4px solid #6366f1"
-                      : etaWarnLevel === "overdue"  ? "3px solid rgba(248,113,113,0.85)"
-                      : etaWarnLevel === "imminent" ? "3px solid rgba(251,191,36,0.75)"
-                      : isHold                      ? "3px solid rgba(245,158,11,0.65)"
-                      : isReviewNeeded              ? "3px solid rgba(96,165,250,0.65)"
-                      : "3px solid transparent",
-                    background: isSelected ? "rgba(99,102,241,0.14)" : rowBg,
-                    boxShadow: isSelected
-                      ? "inset 0 0 0 1px rgba(129,140,248,0.45), 0 1px 0 rgba(99,102,241,0.18)"
-                      : undefined,
-                    borderBottom: "1px solid var(--border)",
-                  }
-                : {
-                    borderBottom: "1px solid var(--border)",
-                    borderLeft: isSelected                  ? "3px solid #6366f1"
-                              : etaWarnLevel === "overdue"   ? "3px solid rgba(248,113,113,0.85)"
-                              : etaWarnLevel === "imminent"  ? "3px solid rgba(251,191,36,0.75)"
-                              : isHold                       ? "3px solid rgba(245,158,11,0.65)"
-                              : isReviewNeeded               ? "3px solid rgba(96,165,250,0.65)"
-                              : "3px solid transparent",
-                    background: rowBg,
-                  };
+              // Focus Mode + Split View 통합 카드 강조 — selected이면 진한 indigo accent + shadow
+              // 양쪽 모드 모두 같은 시각 언어 (Focus Queue와 Split Queue 일관성).
+              const fmCardStyle: React.CSSProperties = {
+                borderBottom: "1px solid var(--border)",
+                borderLeft: isSelected
+                  ? "4px solid #6366f1"
+                  : etaWarnLevel === "overdue"  ? "3px solid rgba(248,113,113,0.85)"
+                  : etaWarnLevel === "imminent" ? "3px solid rgba(251,191,36,0.75)"
+                  : isHold                      ? "3px solid rgba(245,158,11,0.65)"
+                  : isReviewNeeded              ? "3px solid rgba(96,165,250,0.65)"
+                  : "3px solid transparent",
+                background: isSelected ? "rgba(99,102,241,0.14)" : rowBg,
+                boxShadow: isSelected
+                  ? "inset 0 0 0 1px rgba(129,140,248,0.4), 0 1px 0 rgba(99,102,241,0.15)"
+                  : undefined,
+              };
 
               return (
                 <div
@@ -5312,9 +5313,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     }
                   }}
                 >
-                  {/* 메인 행 */}
+                  {/* 메인 행 — Focus는 items-start(다중 row), Split도 카드 layout으로 items-start */}
                   <div
-                    className={`flex items-center ${isDetailExpanded ? "px-3 py-2.5" : "px-4 py-3"}`}
+                    className={`flex items-start ${isDetailExpanded ? "px-3 py-2.5" : "px-4 py-3"}`}
                   >
                     {isDetailExpanded ? (
                       /* Focus Mode 미니 레일: phase 배지 + ticket key + ETA + indicators + title */
@@ -5324,17 +5325,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         const actionCount    = indicators?.actionCount    ?? 0;
                         const riskCount      = indicators?.riskCount      ?? 0;
                         const cleanupCount   = indicators?.cleanupCount   ?? 0;
-                        const phaseBgByName: Record<string, { bg: string; color: string }> = {
-                          "Kick-Off": { bg: "rgba(129,140,248,0.18)", color: "#a5b4fc" },
-                          "기획":     { bg: "rgba(99,102,241,0.18)",  color: "#818cf8" },
-                          "디자인":   { bg: "rgba(168,85,247,0.18)",  color: "#c084fc" },
-                          "개발":     { bg: "rgba(59,130,246,0.18)",  color: "#60a5fa" },
-                          "QA":       { bg: "rgba(34,197,94,0.18)",   color: "#4ade80" },
-                          "Release":  { bg: "rgba(249,115,22,0.18)",  color: "#fb923c" },
-                          "Launch":   { bg: "rgba(16,185,129,0.18)",  color: "#10b981" },
-                          "기타":     { bg: "rgba(148,163,184,0.18)", color: "#94a3b8" },
-                        };
-                        const phaseStyle = phase ? phaseBgByName[phase] : null;
+                        const phaseStyle = phase ? PHASE_QUEUE_STYLE[phase] : null;
                         // ETA 표시 (M/D)
                         const etaShort = t.eta && t.eta !== "-"
                           ? `${parseInt(t.eta.split("-")[1])}/${parseInt(t.eta.split("-")[2])}`
@@ -5437,87 +5428,176 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         );
                       })()
                     ) : (
-                      /* 기본 뷰: 전체 컬럼 */
-                      <>
-                        <span className="w-6 shrink-0 flex items-center justify-center">
-                          <TicketCopyButton ticketKey={t.key} summary={t.summary} size="xs" />
-                        </span>
-                        <span className="w-8 shrink-0 text-center text-xs font-mono" style={{ color: "var(--text-subtle)" }}>{idx + 1}</span>
-                        <a
-                          href={`${JIRA_BASE}${t.key}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          onClick={(e) => e.stopPropagation()}
-                          className="w-32 shrink-0 font-mono text-sm font-semibold text-blue-400 hover:text-blue-300 hover:underline"
-                        >
-                          {t.key}
-                        </a>
-                        {isNew && (
-                          <span className="shrink-0 mr-1 px-1.5 py-0.5 rounded text-xs font-semibold bg-emerald-100 text-emerald-700 border border-emerald-300 animate-pulse">
-                            추가됨
-                          </span>
-                        )}
-                        {activePriorities[t.key] && (
-                          <span className="shrink-0 mr-2 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
-                            P{activePriorities[t.key]}
-                          </span>
-                        )}
-                        {/* Transition 배지 (변화 보기 모드) */}
-                        {changesMode && transitionNewlyAdded.has(t.key) && (
-                          <span
-                            className="shrink-0 mr-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                            style={{ background: "rgba(100,116,139,0.10)", border: "1px solid rgba(100,116,139,0.25)", color: "#94a3b8" }}
-                          >
-                            + 신규
-                          </span>
-                        )}
-                        {changesMode && !transitionNewlyAdded.has(t.key) && transitionMap.get(t.key)?.map(kind => {
-                          const m = TRANSITION_META[kind];
-                          return (
-                            <span
-                              key={kind}
-                              className="shrink-0 mr-1 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold"
-                              style={{ background: m.bgColor, border: `1px solid ${m.borderColor}`, color: m.color }}
-                            >
-                              {m.emoji} {m.label}
+                      /* Split View 카드 — Compact Operational Queue
+                         Layout:
+                           Row 1: [phase] TM-XXXX ↗ P2 · 담당자 · 프로젝트 · [type]
+                           Row 2: ⚡N ⚠N ☐N 🧹N · transition badges (있을 때만)
+                           Row 3: 제목 (2줄 clamp)
+                         우측: [상태 배지] [ETA urgency] [×]
+                      */
+                      (() => {
+                        const phase          = indicators?.phase ?? null;
+                        const candidateCount = indicators?.candidateCount ?? 0;
+                        const actionCount    = indicators?.actionCount    ?? 0;
+                        const riskCount      = indicators?.riskCount      ?? 0;
+                        const cleanupCount   = indicators?.cleanupCount   ?? 0;
+                        const phaseStyle     = phase ? PHASE_QUEUE_STYLE[phase] : null;
+                        const hasIndicators  = candidateCount + actionCount + riskCount + cleanupCount > 0;
+                        const etaShort = t.eta && t.eta !== "-"
+                          ? `${parseInt(t.eta.split("-")[1])}/${parseInt(t.eta.split("-")[2])}`
+                          : null;
+                        const etaColor = isEtaOverdue  ? ETA_URGENCY_COLOR.overdue
+                                       : isEtaImminent ? ETA_URGENCY_COLOR.imminent
+                                       : "var(--text-primary)";
+                        return (
+                          <>
+                            <span className="w-6 shrink-0 pt-0.5 flex items-start justify-center">
+                              <TicketCopyButton ticketKey={t.key} summary={t.summary} size="xs" />
                             </span>
-                          );
-                        })}
-                        <span className="flex-1 min-w-0 text-base font-semibold truncate pr-3" style={{ color: "var(--text-primary)" }}>{t.summary}</span>
-                        <span className="w-20 shrink-0 flex justify-center">
-                          <span className={`inline-block px-2 py-0.5 rounded-full text-xs font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
-                            {t.type}
-                          </span>
-                        </span>
-                        <span className="w-16 shrink-0 text-xs text-center" style={{ color: "var(--text-muted)" }}>{t.project}</span>
-                        <span className="w-20 shrink-0 text-sm font-semibold text-center truncate" style={{ color: "var(--text-primary)" }}>{t.assignee}</span>
-                        <span className="w-36 shrink-0 flex justify-center">
-                          <span className={`inline-block px-2.5 py-1 rounded-full text-sm font-semibold whitespace-nowrap ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
-                            {t.status}
-                          </span>
-                        </span>
-                        <span className="w-28 shrink-0 text-sm font-medium text-center" style={{ color: t.startDate ? "var(--text-primary)" : "var(--text-subtle)" }}>
-                          {t.startDate ? formatDateWithDay(t.startDate) : "미정"}
-                        </span>
-                        <span className="w-28 shrink-0 text-sm font-medium text-center"
-                          title={
-                            isEtaOverdue  ? "ETA 초과 — 일정 재조율 또는 상태 업데이트가 필요합니다" :
-                            isEtaImminent ? "ETA 7일 이내 — 개발·QA 진행 상황을 확인하세요" :
-                            (!t.eta || t.eta === "-") ? "ETA 미입력 — 목표 완료일을 입력해주세요" :
-                            undefined
-                          }
-                          style={{ color: isEtaOverdue ? "#f87171" : isEtaImminent ? "#fbbf24" : (!t.eta || t.eta === "-") ? "var(--text-subtle)" : "var(--text-primary)",
-                                   fontWeight: etaWarnLevel ? 700 : undefined }}>
-                          {!t.eta || t.eta === "-" ? "미정" : formatDateWithDay(t.eta)}
-                          {isEtaOverdue  && <span className="ml-1 text-[10px]">(!)</span>}
-                          {isEtaImminent && <span className="ml-1 text-[10px]">▲</span>}
-                        </span>
-                        <button
-                          onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}
-                          title="목록에서 제거"
-                          className="w-6 shrink-0 flex justify-center items-center hover:text-red-400 transition-colors" style={{ color: "var(--text-subtle)" }}
-                        >×</button>
-                      </>
+                            <span className="w-8 shrink-0 pt-0.5 text-center text-xs font-mono" style={{ color: "var(--text-subtle)" }}>
+                              {idx + 1}
+                            </span>
+
+                            {/* 카드 본문 */}
+                            <div className="flex-1 min-w-0 pr-3">
+                              {/* Row 1: phase + key + 부속 메타 */}
+                              <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                                {phaseStyle && (
+                                  <span
+                                    className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold tracking-tight"
+                                    style={{ background: phaseStyle.bg, color: phaseStyle.color }}
+                                    title={`phase: ${phase}`}
+                                  >
+                                    {phase}
+                                  </span>
+                                )}
+                                <a
+                                  href={`${JIRA_BASE}${t.key}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="shrink-0 font-mono text-sm font-semibold hover:underline"
+                                  style={{ color: isSelected ? "#a5b4fc" : "#60a5fa" }}
+                                >
+                                  {t.key}
+                                </a>
+                                {isNew && (
+                                  <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700 border border-emerald-300 animate-pulse">
+                                    추가됨
+                                  </span>
+                                )}
+                                {activePriorities[t.key] && (
+                                  <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
+                                    P{activePriorities[t.key]}
+                                  </span>
+                                )}
+                                <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
+                                  {t.type}
+                                </span>
+                                <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                  {t.assignee}
+                                </span>
+                                <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                                  · {t.project}
+                                </span>
+                              </div>
+
+                              {/* Row 2: indicators + transition badges (있을 때만) */}
+                              {(hasIndicators || (changesMode && (transitionNewlyAdded.has(t.key) || transitionMap.get(t.key)?.length))) && (
+                                <div className="flex items-center gap-2 flex-wrap mb-1 text-[11px]">
+                                  {candidateCount > 0 && (
+                                    <span title={`Weekly 일정 변경 후보 ${candidateCount}건`} style={{ color: "#fbbf24" }}>
+                                      ⚡{candidateCount}
+                                    </span>
+                                  )}
+                                  {riskCount > 0 && (
+                                    <span title={`리스크 ${riskCount}건`} style={{ color: "#f87171" }}>
+                                      ⚠{riskCount}
+                                    </span>
+                                  )}
+                                  {actionCount > 0 && (
+                                    <span title={`액션 필요 ${actionCount}건`} style={{ color: "#fbbf24" }}>
+                                      ☐{actionCount}
+                                    </span>
+                                  )}
+                                  {cleanupCount > 0 && (
+                                    <span title={`정리 필요 ${cleanupCount}건`} style={{ color: "#94a3b8" }}>
+                                      🧹{cleanupCount}
+                                    </span>
+                                  )}
+                                  {/* Transition badges (changesMode) */}
+                                  {changesMode && transitionNewlyAdded.has(t.key) && (
+                                    <span
+                                      className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                      style={{ background: "rgba(100,116,139,0.10)", border: "1px solid rgba(100,116,139,0.25)", color: "#94a3b8" }}
+                                    >
+                                      + 신규
+                                    </span>
+                                  )}
+                                  {changesMode && !transitionNewlyAdded.has(t.key) && transitionMap.get(t.key)?.map(kind => {
+                                    const m = TRANSITION_META[kind];
+                                    return (
+                                      <span
+                                        key={kind}
+                                        className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                                        style={{ background: m.bgColor, border: `1px solid ${m.borderColor}`, color: m.color }}
+                                      >
+                                        {m.emoji} {m.label}
+                                      </span>
+                                    );
+                                  })}
+                                </div>
+                              )}
+
+                              {/* Row 3: 제목 (2줄 clamp) */}
+                              <p
+                                className="text-[13px] leading-snug line-clamp-2"
+                                style={{
+                                  color: "var(--text-primary)",
+                                  fontWeight: isSelected ? 600 : 500,
+                                  wordBreak: "break-word",
+                                }}
+                              >
+                                {t.summary}
+                              </p>
+                            </div>
+
+                            {/* 우측: 상태 배지 */}
+                            <span className="w-32 shrink-0 pt-0.5 flex justify-center">
+                              <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-semibold whitespace-nowrap ${STATUS_COLOR[t.status] ?? "bg-gray-100 text-gray-500"}`}>
+                                {t.status}
+                              </span>
+                            </span>
+
+                            {/* 우측: ETA with urgency */}
+                            <span
+                              className="w-24 shrink-0 pt-0.5 text-[12px] font-medium text-center"
+                              title={
+                                isEtaOverdue  ? "ETA 초과 — 일정 재조율 또는 상태 업데이트가 필요합니다" :
+                                isEtaImminent ? "ETA 7일 이내 — 개발·QA 진행 상황을 확인하세요" :
+                                (!t.eta || t.eta === "-") ? "ETA 미입력 — 목표 완료일을 입력해주세요" :
+                                undefined
+                              }
+                              style={{
+                                color: etaShort ? etaColor : "var(--text-subtle)",
+                                fontWeight: etaWarnLevel ? 700 : undefined,
+                              }}
+                            >
+                              {!etaShort ? "미정" : `ETA ${etaShort}`}
+                              {isEtaOverdue  && <span className="ml-1 text-[10px]">!</span>}
+                              {isEtaImminent && <span className="ml-1 text-[10px]">▲</span>}
+                            </span>
+
+                            {/* 우측: 삭제 */}
+                            <button
+                              onClick={(e) => { e.stopPropagation(); removeTicket(t.key); }}
+                              title="목록에서 제거"
+                              className="w-6 shrink-0 pt-0.5 flex justify-center items-start hover:text-red-400 transition-colors"
+                              style={{ color: "var(--text-subtle)" }}
+                            >×</button>
+                          </>
+                        );
+                      })()
                     )}
                   </div>
 
