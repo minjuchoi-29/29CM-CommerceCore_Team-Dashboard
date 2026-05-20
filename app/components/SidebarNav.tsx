@@ -121,6 +121,8 @@ export default function SidebarNav({ user, logoutAction }: Props) {
     setVisible(true);
   }, [pathname]);
 
+  const isHome = pathname === "/";
+
   // ── 접힌 상태 ──────────────────────────────────────────────────────────────
   if (!visible) {
     return (
@@ -128,10 +130,24 @@ export default function SidebarNav({ user, logoutAction }: Props) {
         className="w-10 h-screen sticky top-0 flex flex-col items-center shrink-0"
         style={{ background: "var(--bg-sidebar)", borderRight: "1px solid var(--border)" }}
       >
+        {/* 홈 버튼 (29 로고) — collapsed 상태에서도 홈 진입 보장 */}
+        <Link
+          href="/"
+          title="홈으로 이동"
+          aria-label="홈으로 이동"
+          aria-current={isHome ? "page" : undefined}
+          className="mt-3 w-7 h-7 flex items-center justify-center rounded-md transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          style={{
+            background: "linear-gradient(135deg, #6366f1, #8b5cf6)",
+            boxShadow: isHome ? "0 0 0 2px rgba(165,180,252,0.55)" : undefined,
+          }}
+        >
+          <span className="text-[10px] font-bold text-white">29</span>
+        </Link>
         <button
           onClick={() => setVisible(true)}
           title="메뉴 펼치기"
-          className="mt-4 w-7 h-7 flex items-center justify-center rounded-lg transition-colors text-xs"
+          className="mt-2 w-7 h-7 flex items-center justify-center rounded-lg transition-colors text-xs"
           style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
         >
           »
@@ -192,12 +208,25 @@ export default function SidebarNav({ user, logoutAction }: Props) {
       className="w-52 h-screen sticky top-0 flex flex-col shrink-0"
       style={{ background: "var(--bg-sidebar)", borderRight: "1px solid var(--border)" }}
     >
-      {/* ── 헤더 ── */}
+      {/* ── 헤더 (29 로고 + 브랜드 → 홈 링크) ── */}
       <div
         className="px-4 py-4 flex items-center justify-between"
         style={{ borderBottom: "1px solid var(--border)" }}
       >
-        <div className="flex items-center gap-2.5">
+        <Link
+          href="/"
+          title="홈으로 이동"
+          aria-label="홈으로 이동"
+          aria-current={isHome ? "page" : undefined}
+          className="flex items-center gap-2.5 rounded-md px-1.5 py-1 -mx-1.5 -my-1 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+          style={{ background: isHome ? "rgba(99,102,241,0.10)" : "transparent" }}
+          onMouseEnter={e => {
+            if (!isHome) (e.currentTarget as HTMLElement).style.background = "var(--bg-item)";
+          }}
+          onMouseLeave={e => {
+            if (!isHome) (e.currentTarget as HTMLElement).style.background = "transparent";
+          }}
+        >
           <div
             className="w-6 h-6 rounded-md flex items-center justify-center shrink-0"
             style={{ background: "linear-gradient(135deg, #6366f1, #8b5cf6)" }}
@@ -208,7 +237,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
             <h1 className="text-xs font-bold leading-tight" style={{ color: "var(--text-primary)" }}>29CM</h1>
             <p className="text-[10px] leading-tight" style={{ color: "var(--text-subtle)" }}>Commerce Core</p>
           </div>
-        </div>
+        </Link>
         <button
           onClick={() => setVisible(false)}
           title="메뉴 접기"
