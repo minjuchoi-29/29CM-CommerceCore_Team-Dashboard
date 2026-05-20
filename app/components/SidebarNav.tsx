@@ -123,6 +123,17 @@ export default function SidebarNav({ user, logoutAction }: Props) {
 
   const isHome = pathname === "/";
 
+  // ── 홈 이동 시 ticket workspace state 완전 reset ─────────────────────────
+  // SidebarNav는 별도 컴포넌트라 TicketBoard state에 직접 접근 불가.
+  // CustomEvent로 의도를 전달 → TicketBoard listener가 selected / focus mode /
+  // candidate·cleanup panel / navigationContext 모두 reset.
+  // URL query 정리는 <Link href="/">가 자체적으로 처리 (Next.js navigation).
+  function handleHomeNavigate() {
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("home-navigate"));
+    }
+  }
+
   // ── 접힌 상태 ──────────────────────────────────────────────────────────────
   if (!visible) {
     return (
@@ -133,6 +144,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
         {/* 홈 버튼 (29 로고) — collapsed 상태에서도 홈 진입 보장 */}
         <Link
           href="/"
+          onClick={handleHomeNavigate}
           title="홈으로 이동"
           aria-label="홈으로 이동"
           aria-current={isHome ? "page" : undefined}
@@ -215,6 +227,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
       >
         <Link
           href="/"
+          onClick={handleHomeNavigate}
           title="홈으로 이동"
           aria-label="홈으로 이동"
           aria-current={isHome ? "page" : undefined}

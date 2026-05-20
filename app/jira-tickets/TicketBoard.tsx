@@ -3088,6 +3088,42 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => window.removeEventListener("popstate", handler);
   }, [dedupedTickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Sidebar 홈 클릭 → ticket workspace 완전 reset.
+  // SidebarNav가 dispatch한 "home-navigate" CustomEvent를 listen.
+  // navigation cleanup + UI cleanup을 동기화 — URL은 Link href="/"가 자체 처리.
+  useEffect(() => {
+    function handler() {
+      // 1) ticket selection / detail panel / focus mode
+      setSelected(null);
+      setIsDetailExpanded(false);
+      setFocusForKey(null);
+      setFocusContext(null);
+      // 2) ticket edit / memo 상태
+      setEditMode(false);
+      setMemoEditMode(false);
+      setEditFocusKey(null);
+      // 3) candidate / cleanup 패널
+      setCandidatePanelOpen(false);
+      setCleanupPanelOpen(false);
+      setSelectedCandidateIds(new Set());
+      setSelectedCleanupIds(new Set());
+      setCandidateKindFilter("all");
+      // 4) workspace navigation context (owner_dashboard source 등)
+      workspaceNavRef.current = {
+        source: null,
+        fromOwnerDashboard: false,
+        entryFocus: null,
+        prevPtab: null,
+        prevScrollY: 0,
+      };
+      // 5) detail-panel 닫힘 알림 → SidebarNav visible 복원
+      window.dispatchEvent(new CustomEvent("detail-panel", { detail: { open: false } }));
+      console.log("[home-navigate] workspace state reset complete");
+    }
+    window.addEventListener("home-navigate", handler);
+    return () => window.removeEventListener("home-navigate", handler);
+  }, []);
+
   const planningCounts = useMemo(() => {
     // "전체"는 ETR 제외 (preFiltered와 동일 기준, 탭 카운트 = 실제 표시 행 수 일치)
     const nonEtrCount = dedupedTickets.filter(t => !t.key.startsWith("ETR-")).length;
