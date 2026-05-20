@@ -81,6 +81,46 @@ type RoleSchedule = {
   mergeKey?: string;
   lastSeenAt?: string;
   confidence?: "high" | "medium" | "low";
+  // Phase taxonomy + resource team 분리 (optional, backward compatible).
+  // 기존 row는 없을 수 있음 → infer via inferPhase(role) helper로 fallback.
+  phase?: "Kick-Off" | "기획" | "디자인" | "개발" | "QA" | "Release" | "Launch" | "기타";
+  resourceTeam?: string | null;
+};
+
+// 기존 row에 phase가 없을 때 role 문자열에서 phase를 추정.
+// weekly-parser의 extractPhaseAndResource와 일관된 룰 (lib import는 client bundle 부담 → 인라인).
+function inferPhase(role: string): RoleSchedule["phase"] {
+  const s = (role ?? "").trim();
+  if (!s) return undefined;
+  if (/kick[-\s]?off|킥\s*오프/i.test(s)) return "Kick-Off";
+  if (/release|릴리즈|릴리스|배포/i.test(s)) return "Release";
+  if (/launch|론치|런치|오픈/i.test(s))      return "Launch";
+  if (/\bqa\b|qc|테스트|test|검수|검증/i.test(s)) return "QA";
+  if (/디자인|design|\bui\b|\bux\b/i.test(s)) return "디자인";
+  if (/be[-\s]?pp|be[-\s]?sp|be[-\s]?ce|be[-\s]?cfe|fe[-\s]?cfe|fe[-\s]?dfe|fe[-\s]?sotatek|\bbe\b|\bfe\b|메가존|sotatek|core|platform|engineering|\bcfe\b|\bdfe\b|\bsp\b|\bpp\b|mobile|모바일|\bda\b|\bcse\b/i.test(s)
+      || /개발|코드\s*리뷰|development|api|^dev$/i.test(s)) return "개발";
+  if (/기획|planning|요구사항|정책|product|requirement/i.test(s)) return "기획";
+  return undefined;
+}
+
+// 기존 row에서 resourceTeam 추정 — role이 phase 단어 그 자체이면 null, 아니면 role.
+function inferResourceTeam(role: string): string | null {
+  const s = (role ?? "").trim();
+  if (!s) return null;
+  if (/^(kick[-\s]?off|킥\s*오프|기획|디자인|design|\bqa\b|release|릴리즈|launch|론치|개발|dev)$/i.test(s)) return null;
+  return s;
+}
+
+// Phase 표시 라벨 (한국어 통일)
+const PHASE_LABEL: Record<NonNullable<RoleSchedule["phase"]>, string> = {
+  "Kick-Off": "Kick-Off",
+  "기획":     "기획",
+  "디자인":   "디자인",
+  "개발":     "개발",
+  "QA":       "QA",
+  "Release":  "Release",
+  "Launch":   "Launch",
+  "기타":     "기타",
 };
 
 type MemoEntry = {
@@ -411,13 +451,38 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
           return (
           <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5 group/ganttrow">
             <div className="flex items-start">
-              {/* 좌측: role + person, 세부작업 */}
+              {/* 좌측: phase (primary) + resourceTeam (sublabel) + person, 세부작업 */}
               <div className="w-48 shrink-0 pt-0.5">
-                <div className="flex items-center gap-1.5">
-                  <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
-                  <span className={`text-sm font-medium shrink-0 whitespace-nowrap w-20 ${MILESTONE_ROLES.includes(r.role) ? "font-semibold" : ""}`} style={{ color: MILESTONE_ROLES.includes(r.role) ? "#818cf8" : "var(--text-muted)" }}>{r.role}</span>
-                  <span className="text-sm whitespace-nowrap" style={{ color: "#9ca3af" }} title={r.person}>{r.person}</span>
-                </div>
+                {(() => {
+                  // phase가 있으면 phase를 라벨로, 없으면 role에서 inferPhase
+                  // resourceTeam이 있고 phase와 다르면 sublabel로
+                  const phase = r.phase ?? inferPhase(r.role);
+                  const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
+                  const primary = phase ? PHASE_LABEL[phase] : r.role;
+                  const showSubResource = !!resourceTeam && resourceTeam !== primary;
+                  const isMilestone = MILESTONE_ROLES.includes(r.role)
+                    || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
+                  return (
+                    <>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
+                        <span
+                          className={`text-sm font-medium shrink-0 whitespace-nowrap ${showSubResource ? "" : "w-20"} ${isMilestone ? "font-semibold" : ""}`}
+                          style={{ color: isMilestone ? "#818cf8" : "var(--text-muted)" }}
+                          title={resourceTeam ? `${primary} · ${resourceTeam}` : primary}
+                        >
+                          {primary}
+                        </span>
+                        <span className="text-sm whitespace-nowrap" style={{ color: "#9ca3af" }} title={r.person}>{r.person}</span>
+                      </div>
+                      {showSubResource && (
+                        <p className="text-[10.5px] mt-0.5 pl-3.5 leading-tight" style={{ color: "var(--text-muted)" }} title={resourceTeam ?? undefined}>
+                          {resourceTeam}
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
                 {r.detail && (
                   <p className="text-xs text-gray-400 mt-0.5 pl-3.5 leading-snug" title={`${r.detail}${r.detailPerson ? ` · ${r.detailPerson}` : ""}`}>
                     {r.detail}
@@ -536,10 +601,23 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
               <div className="grid gap-y-1" style={{ gridTemplateColumns: "auto auto auto 1fr" }}>
                 {pastDoneRoles.map((r, i) => (
                   <Fragment key={`past-${r.role}-${r.person}-${i}`}>
-                    {/* role */}
+                    {/* role: phase + (resourceTeam) */}
                     <div className="flex items-center gap-1.5 pr-3 py-0.5">
                       <span className={`inline-block w-1.5 h-1.5 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-500"}`} />
-                      <span className="text-xs font-medium whitespace-nowrap" style={{ color: "var(--text-muted)" }}>{r.role}</span>
+                      {(() => {
+                        const phase = r.phase ?? inferPhase(r.role);
+                        const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
+                        const primary = phase ? PHASE_LABEL[phase] : r.role;
+                        const showSub = !!resourceTeam && resourceTeam !== primary;
+                        return (
+                          <span className="text-xs font-medium whitespace-nowrap" style={{ color: "var(--text-muted)" }} title={showSub ? `${primary} · ${resourceTeam}` : primary}>
+                            {primary}
+                            {showSub && (
+                              <span className="ml-1 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {resourceTeam}</span>
+                            )}
+                          </span>
+                        );
+                      })()}
                     </div>
                     {/* person */}
                     <span className="text-xs whitespace-nowrap pr-3 py-0.5" style={{ color: "var(--text-muted)" }} title={r.person}>{r.person}</span>
@@ -3842,14 +3920,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 {/* row 3: schedule diff or note content */}
                                 {c.kind === "schedule" ? (
                                   <div className="flex items-center flex-wrap gap-1.5 text-xs mb-1.5">
-                                    {c.role && (
-                                      <span
-                                        className="px-1.5 py-0.5 rounded text-[10px] font-medium"
-                                        style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
-                                      >
-                                        {c.role}
-                                      </span>
-                                    )}
+                                    {(() => {
+                                      // c.role은 mergeKey에서 추출한 normalizedRole = resourceTeam || phase.
+                                      // phase/resourceTeam을 분리해서 표시 (Core AI BE → 개발 · Core AI BE)
+                                      const phase = c.role ? inferPhase(c.role) : undefined;
+                                      const resourceTeam = c.role ? inferResourceTeam(c.role) : null;
+                                      const primary = phase ? PHASE_LABEL[phase] : (c.role ?? "—");
+                                      const showSub = !!resourceTeam && resourceTeam !== primary;
+                                      return (
+                                        <>
+                                          <span
+                                            className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                            style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
+                                          >
+                                            {primary}
+                                          </span>
+                                          {showSub && (
+                                            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>· {resourceTeam}</span>
+                                          )}
+                                        </>
+                                      );
+                                    })()}
                                     {c.field && (
                                       <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                                         {FIELD_LABEL[c.field] ?? c.field}
@@ -6431,6 +6522,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <div className="space-y-1.5">
                       {tCand.map(c => {
                         const role = c.mergeKey.split("::")[1] ?? "—";
+                        const phase = inferPhase(role);
+                        const resourceTeam = inferResourceTeam(role);
+                        const primary = phase ? PHASE_LABEL[phase] : role;
+                        const showSub = !!resourceTeam && resourceTeam !== primary;
                         const inFlight = candidatesInFlight.has(c.id);
                         return (
                           <div
@@ -6445,8 +6540,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     className="px-1.5 py-0.5 rounded text-[10px] font-medium"
                                     style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
                                   >
-                                    {role}
+                                    {primary}
                                   </span>
+                                  {showSub && (
+                                    <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>· {resourceTeam}</span>
+                                  )}
                                   <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                                     {FIELD_LABEL[c.field] ?? c.field}
                                   </span>
@@ -6849,7 +6947,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="w-full text-xs font-medium text-indigo-400 hover:text-indigo-300 rounded-lg py-1.5 transition-colors" style={{ background: "rgba(99,102,241,0.07)", border: "1px dashed rgba(99,102,241,0.3)" }}
                   >+ 작업 추가</button>
                   {editRows.map((row, i) => {
-                    const custom    = isCustomRole(row.role);
+                    // (custom 분기는 phase + resourceTeam 모델로 대체됨 — 항상 detail input 표시)
+                    void isCustomRole;
                     const errRole   = !!editError && !row.role;
                     const errPerson = !!editError && !row.person;
                     const errStart  = !!editError && row.status !== "미정" && !row.start;
@@ -6889,36 +6988,59 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         }}
                       >
                         <div className="flex items-center gap-1.5">
-                          {/* 작업 프리셋 선택 */}
-                          <select
-                            value={custom ? "직접입력" : row.role}
-                            onChange={(e) => {
-                              setEditError(null);
-                              if (e.target.value === "직접입력") {
-                                updateRow(i, "role", "");
-                              } else {
-                                updateRow(i, "role", e.target.value);
-                              }
-                            }}
-                            className={`text-xs border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 shrink-0 w-24`} style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
-                          >
-                            <optgroup label="마일스톤">
-                              {MILESTONE_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                            </optgroup>
-                            <optgroup label="팀 작업">
-                              {PRESET_ROLES.map(r => <option key={r} value={r}>{r}</option>)}
-                            </optgroup>
-                            <option value="직접입력">직접입력</option>
-                          </select>
-                          {/* 직접입력 시: 작업명 입력 */}
-                          {custom && (
-                            <input
-                              value={row.role}
-                              onChange={(e) => { setEditError(null); updateRow(i, "role", e.target.value); }}
-                              placeholder="작업명"
-                              className={`text-xs border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 w-24 shrink-0`} style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
-                            />
-                          )}
+                          {/* Phase select (운영 단계 taxonomy) */}
+                          {(() => {
+                            // 현재 row의 phase 추론 — 명시값 > role에서 추론 > "기타"
+                            const currentPhase: NonNullable<RoleSchedule["phase"]> =
+                              row.phase ?? inferPhase(row.role) ?? "기타";
+                            const PHASE_OPTIONS: NonNullable<RoleSchedule["phase"]>[] =
+                              ["Kick-Off", "기획", "디자인", "개발", "QA", "Release", "Launch", "기타"];
+                            return (
+                              <select
+                                value={currentPhase}
+                                onChange={(e) => {
+                                  setEditError(null);
+                                  const nextPhase = e.target.value as NonNullable<RoleSchedule["phase"]>;
+                                  setEditRows(prev => prev.map((r, idx) => {
+                                    if (idx !== i) return r;
+                                    const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
+                                    const nextRole = resourceTeam || nextPhase;
+                                    return { ...r, phase: nextPhase, role: nextRole };
+                                  }));
+                                }}
+                                className={`text-xs border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 shrink-0 w-20`}
+                                style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
+                                title="운영 단계 (taxonomy)"
+                              >
+                                {PHASE_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                              </select>
+                            );
+                          })()}
+                          {/* ResourceTeam free input — 자유 조직 명칭 (Core AI BE, BE-PP 등). 비워두면 phase 만 사용 */}
+                          {(() => {
+                            const currentResource = row.resourceTeam
+                              ?? (row.resourceTeam === null ? "" : inferResourceTeam(row.role) ?? "");
+                            return (
+                              <input
+                                value={currentResource ?? ""}
+                                onChange={(e) => {
+                                  setEditError(null);
+                                  const nextResource = e.target.value;
+                                  setEditRows(prev => prev.map((r, idx) => {
+                                    if (idx !== i) return r;
+                                    const phase = r.phase ?? inferPhase(r.role) ?? "기타";
+                                    const team = nextResource.trim() || null;
+                                    const nextRole = team || phase;
+                                    return { ...r, resourceTeam: team, role: nextRole };
+                                  }));
+                                }}
+                                placeholder="resource (예: Core AI BE)"
+                                className="text-xs border border-gray-300 rounded px-1.5 py-1 w-32 shrink-0"
+                                style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
+                                title="resource team — 자유 입력 (선택). 비우면 phase로만 표시"
+                              />
+                            );
+                          })()}
                           {/* 담당자 */}
                           <input
                             value={row.person}
@@ -6952,24 +7074,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 className="hover:text-red-400 text-base leading-none shrink-0" style={{ color: "var(--text-subtle)" }}>×</button>
                           }
                         </div>
-                        {/* 상세 작업 (프리셋 선택 시에만 표시) */}
-                        {!custom && (
-                          <div className="flex items-center gap-1.5 pl-1" style={{ borderLeft: "2px solid var(--border-2)" }}>
-                            <span className="text-xs shrink-0" style={{ color: "var(--text-subtle)" }}>└</span>
-                            <input
-                              value={row.detail ?? ""}
-                              onChange={(e) => updateRow(i, "detail", e.target.value)}
-                              placeholder="상세 작업명 (선택)"
-                              className="text-xs rounded px-1.5 py-1 flex-1 min-w-0" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                            />
-                            <input
-                              value={row.detailPerson ?? ""}
-                              onChange={(e) => updateRow(i, "detailPerson", e.target.value)}
-                              placeholder="담당자 (선택)"
-                              className="text-xs rounded px-1.5 py-1 w-20 shrink-0" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                            />
-                          </div>
-                        )}
+                        {/* 상세 작업 (세부 task 명칭 + 담당자) */}
+                        <div className="flex items-center gap-1.5 pl-1" style={{ borderLeft: "2px solid var(--border-2)" }}>
+                          <span className="text-xs shrink-0" style={{ color: "var(--text-subtle)" }}>└</span>
+                          <input
+                            value={row.detail ?? ""}
+                            onChange={(e) => updateRow(i, "detail", e.target.value)}
+                            placeholder="상세 작업명 (선택)"
+                            className="text-xs rounded px-1.5 py-1 flex-1 min-w-0" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                          />
+                          <input
+                            value={row.detailPerson ?? ""}
+                            onChange={(e) => updateRow(i, "detailPerson", e.target.value)}
+                            placeholder="담당자 (선택)"
+                            className="text-xs rounded px-1.5 py-1 w-20 shrink-0" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                          />
+                        </div>
                         {row.status === "미정" ? (
                           <div className="flex items-center gap-1.5">
                             <span className="text-xs text-orange-400 italic">기간 산정중 — 날짜 확정 후 상태를 변경해주세요</span>
