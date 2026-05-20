@@ -123,6 +123,34 @@ const PHASE_LABEL: Record<NonNullable<RoleSchedule["phase"]>, string> = {
   "기타":     "기타",
 };
 
+// Gantt 정렬용 phase 순서 (운영 단계 흐름순)
+const PHASE_ORDER: Record<NonNullable<RoleSchedule["phase"]>, number> = {
+  "Kick-Off": 0,
+  "기획":     1,
+  "디자인":   2,
+  "개발":     3,
+  "QA":       4,
+  "Release":  5,
+  "Launch":   6,
+  "기타":     7,
+};
+
+// 단일 row가 cleanup 자격 미달인지 판정 (Gantt 노출 차단 + Cleanup panel 후보)
+// 정책: manual schedule(source != jira_weekly)은 절대 cleanup 후보 안 됨.
+function isCleanupCandidate(row: RoleSchedule): { isCleanup: boolean; reason?: string } {
+  if (row.source !== "jira_weekly") return { isCleanup: false };
+  const phase = row.phase ?? inferPhase(row.role);
+  const EXEC = new Set(["예정", "진행중", "완료"]);
+  const NON_SCHEDULE_RE = /PTG plan|yellow 유지|green 전환|red 유지|red 전환|blocker|리소스 부족|리소스 재산정|정책 이슈|조건부 진행|전제 조건|선행 조건/i;
+  const combined = `${row.role} ${row.detail ?? ""} ${row.detailPerson ?? ""}`;
+  if (!phase || phase === "기타") return { isCleanup: true, reason: `phase "${phase ?? "(없음)"}" — 운영 단계 인식 실패` };
+  if (!EXEC.has(row.status))    return { isCleanup: true, reason: `status "${row.status}" — 실행성 아님` };
+  if (NON_SCHEDULE_RE.test(combined)) return { isCleanup: true, reason: "non_schedule_indicator — 설명/조건성 문장" };
+  if (!row.start && !row.end)   return { isCleanup: true, reason: "no date — 날짜 미확정" };
+  if (row.confidence === "low") return { isCleanup: true, reason: "low confidence" };
+  return { isCleanup: false };
+}
+
 type MemoEntry = {
   text: string;
   author: string;
@@ -378,11 +406,21 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   const { pct, barLeft, barWidth } = makeViewFns(viewStart, viewEnd);
   const todayPct = pct(TODAY_MS);
 
-  // 시작일 오름차순 → 동일 시 종료일 오름차순 정렬 (빈 날짜는 맨 뒤)
-  const sortedRoles = [...(roles ?? [])].sort((a, b) => {
+  // Gantt 본문은 cleanup 자격 미달 row 제외 (Cleanup panel에서만 표시).
+  // 정렬: phase order → 시작일 → resourceTeam → 종료일
+  const qualifiedRoles = (roles ?? []).filter(r => !isCleanupCandidate(r).isCleanup);
+  const sortedRoles = [...qualifiedRoles].sort((a, b) => {
+    const ap = a.phase ?? inferPhase(a.role) ?? "기타";
+    const bp = b.phase ?? inferPhase(b.role) ?? "기타";
+    const pa = PHASE_ORDER[ap] ?? 99;
+    const pb = PHASE_ORDER[bp] ?? 99;
+    if (pa !== pb) return pa - pb;
     const aS = a.start ? new Date(a.start).getTime() : Infinity;
     const bS = b.start ? new Date(b.start).getTime() : Infinity;
     if (aS !== bS) return aS - bS;
+    const ar = a.resourceTeam ?? inferResourceTeam(a.role) ?? "";
+    const br = b.resourceTeam ?? inferResourceTeam(b.role) ?? "";
+    if (ar !== br) return ar.localeCompare(br);
     const aE = a.end ? new Date(a.end).getTime() : Infinity;
     const bE = b.end ? new Date(b.end).getTime() : Infinity;
     return aE - bE;
@@ -1581,39 +1619,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return r.mergeKey ?? `${r.role}|||${r.start ?? ""}|||${r.end ?? ""}|||${r.person ?? ""}`;
   }
   function buildCleanupCandidates(): CleanupCandidate[] {
-    const NON_SCHEDULE_RE = /PTG plan|yellow 유지|green 전환|red 유지|red 전환|blocker|리소스 부족|리소스 재산정|정책 이슈|조건부 진행|전제 조건|선행 조건/i;
-    const EXEC = new Set(["예정", "진행중", "완료"]);
+    // isCleanupCandidate(row) helper로 통일 — Gantt 필터와 cleanup panel이 동일 정책.
     const out: CleanupCandidate[] = [];
     for (const [ticketKey, rows] of Object.entries(schedules)) {
       const arr = Array.isArray(rows) ? rows : [];
       for (const row of arr) {
-        // 정책: weekly에서 자동 생성된 row만 cleanup 대상 (manual schedule은 보호)
-        if (row.source !== "jira_weekly") continue;
-        const phase = row.phase ?? inferPhase(row.role);
+        const check = isCleanupCandidate(row);
+        if (!check.isCleanup) continue;
         const rowKey = makeRowKey(row);
-        const id = `${ticketKey}::${rowKey}`;
-
-        // 1. phase 미인식 또는 "기타"
-        if (!phase || phase === "기타") {
-          out.push({ id, ticketKey, rowKey, row, reason: `phase "${phase ?? "(없음)"}" — 운영 단계 인식 실패` });
-          continue;
-        }
-        // 2. status 실행성 아님 (확인필요/미정/지연/보류)
-        if (!EXEC.has(row.status)) {
-          out.push({ id, ticketKey, rowKey, row, reason: `status "${row.status}" — 실행성 아님` });
-          continue;
-        }
-        // 3. 명시적 non-schedule keyword (PTG plan / green 전환 / blocker 등)
-        const combined = `${row.role} ${row.detail ?? ""} ${row.detailPerson ?? ""}`;
-        if (NON_SCHEDULE_RE.test(combined)) {
-          out.push({ id, ticketKey, rowKey, row, reason: "non_schedule_indicator — 설명/조건성 문장" });
-          continue;
-        }
-        // 4. 날짜 없음 (jira_weekly인데 날짜가 안 잡힌 row)
-        if (!row.start && !row.end) {
-          out.push({ id, ticketKey, rowKey, row, reason: "no date — 날짜 미확정" });
-          continue;
-        }
+        out.push({
+          id: `${ticketKey}::${rowKey}`,
+          ticketKey, rowKey, row,
+          reason: check.reason ?? "qualification failed",
+        });
       }
     }
     return out;
@@ -4359,8 +4377,30 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 {c.row.detail && (
                                   <p className="text-[11px] mb-1" style={{ color: "var(--text-muted)" }}>
                                     └ {c.row.detail}
+                                    {c.row.detailPerson && <span className="ml-1">· {c.row.detailPerson}</span>}
                                   </p>
                                 )}
+                                {/* 메타: source / 생성·갱신 시점 / mergeKey */}
+                                <div className="flex items-center flex-wrap gap-1.5 mb-1 text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                                  <span className="px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
+                                    source: {c.row.source ?? "jira_weekly"}
+                                  </span>
+                                  {weeklySourceTexts[c.ticketKey]?.policyReason && (
+                                    <span style={{ color: "var(--text-muted)" }}>
+                                      ({weeklySourceTexts[c.ticketKey]?.source ?? "?"})
+                                    </span>
+                                  )}
+                                  {c.row.lastSeenAt && (
+                                    <span title={`lastSeenAt: ${c.row.lastSeenAt}`}>
+                                      최근 갱신 {new Date(c.row.lastSeenAt).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                                    </span>
+                                  )}
+                                  {c.row.mergeKey && (
+                                    <span className="font-mono opacity-70" title={c.row.mergeKey}>
+                                      key: {c.row.mergeKey.slice(0, 40)}{c.row.mergeKey.length > 40 ? "…" : ""}
+                                    </span>
+                                  )}
+                                </div>
                                 <p className="text-[10.5px]" style={{ color: "#fbbf24" }}>
                                   ⚠ 사유: {c.reason}
                                 </p>
