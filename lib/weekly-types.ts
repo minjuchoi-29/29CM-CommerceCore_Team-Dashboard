@@ -31,12 +31,33 @@ export interface ScheduleSourceMeta {
   manualLocked?: boolean;
   cancelledCandidate?: boolean;
   mergeKey?: string;  // `${ticketKey}::${normalizedRole}`
+  /** Phase taxonomy (Kick-Off/기획/디자인/개발/QA/Release/Launch/기타). UI lane 분리용. */
+  phase?: SchedulePhase;
+  /** 자유 text resource team (예: "Core AI BE", "BE-PP"). UI sublabel용. */
+  resourceTeam?: string | null;
 }
+
+/**
+ * Phase taxonomy — 운영 단계.
+ * normalize 대상: Kick-Off / 기획 / 디자인 / 개발 / QA / Release / Launch.
+ * "기타"는 표준 phase 매칭 실패 시 fallback (schedule 자격 없음).
+ */
+export type SchedulePhase =
+  | "Kick-Off" | "기획" | "디자인" | "개발" | "QA" | "Release" | "Launch" | "기타";
 
 /** 파싱된 일정 항목 */
 export interface ParsedScheduleItem {
   role: string;
+  /**
+   * @deprecated Use `phase` + `resourceTeam`.
+   * mergeKey 호환을 위해 유지. 새 코드는 phase / resourceTeam를 사용해 lane/sublabel 분리.
+   * 값 규칙: resourceTeam이 있으면 resourceTeam, 없으면 phase.
+   */
   normalizedRole: string;
+  /** 운영 단계 — 정해진 phase taxonomy 기준 normalize */
+  phase?: SchedulePhase;
+  /** 자유 text resource team 명칭 (예: "Core AI BE", "BE-PP", "메가존"). null이면 phase만 있는 단일 단계 (예: 기획/QA/Launch) */
+  resourceTeam?: string | null;
   startDate: string | null;
   endDate: string | null;
   status: ScheduleStatus;

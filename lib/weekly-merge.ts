@@ -103,6 +103,9 @@ export function mergeWeeklySync(
         lastSeenAt: nowIso,
         mergeKey: mk,
         cancelledCandidate: item.isCancelled,
+        // phase/resourceTeam 동봉 — Gantt lane 분리 및 candidate UI에서 사용
+        phase: item.phase,
+        resourceTeam: item.resourceTeam ?? null,
       };
       scheduleMap.set(mk, newRow);
     } else {

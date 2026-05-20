@@ -12,24 +12,96 @@
 import type {
   ParsedWeekly, ParsedScheduleItem, ParsedRisk, ParsedNextAction,
   ScheduleStatus, ActionCategory, NoteSeverity, Confidence, LineClassification,
+  SchedulePhase,
 } from "./weekly-types";
 
 // ─── 정책 화이트리스트 / 키워드 ─────────────────────────────────
-// 작업별 일정에 들어갈 수 있는 role만 허용 (PM/팀이 관리하는 실행 일정).
-// 그 외 자유 텍스트(예: "PTG plan", "Status", "Note")는 schedule이 아닌 note/action으로.
+// Phase taxonomy — 운영 단계 (PM이 관리하는 실행 일정 단위).
+// resourceTeam은 자유 text로 phase 안에 들어감 (예: "Core AI BE", "BE-PP", "메가존").
+// schedule 자격 판정은 phase 기준.
+export const ALLOWED_PHASES = new Set<string>([
+  "Kick-Off", "기획", "디자인", "개발", "QA", "Release", "Launch",
+]);
+
+// 명시적 dev resource 명칭 — 발견되면 phase="개발"로 분류하고 raw 전체를 resourceTeam에 보관.
+// "Core AI BE", "BE-PP", "FE-CFE", "메가존 개발 및 코드리뷰" 등 자유 조합 모두 처리.
+const DEV_RESOURCE_PATTERNS: RegExp[] = [
+  /be[-\s]?pp/i, /be[-\s]?sp/i, /be[-\s]?ce/i, /be[-\s]?cfe/i,
+  /fe[-\s]?cfe/i, /fe[-\s]?dfe/i, /fe[-\s]?sotatek/i,
+  /\bbe\b/i, /\bfe\b/i,
+  /메가존/, /sotatek/i, /core/i, /platform/i,
+  /\bcfe\b/i, /\bdfe\b/i, /\bsp\b/i, /\bpp\b/i,
+  /mobile/i, /모바일/, /\bda\b/i, /\bcse\b/i,
+  /engineering/i,
+];
+
+/**
+ * raw role text를 phase + resourceTeam으로 분리.
+ * 운영 organisation 구조와 phase taxonomy를 모두 표현.
+ *
+ * - phase: ALLOWED_PHASES 중 하나 또는 "기타"
+ * - resourceTeam: 자유 text (null이면 phase만 있는 단일 단계)
+ *
+ * 예시:
+ *   "Core AI BE"            → { phase: "개발", resourceTeam: "Core AI BE" }
+ *   "BE-PP"                 → { phase: "개발", resourceTeam: "BE-PP" }
+ *   "메가존 개발 및 코드리뷰" → { phase: "개발", resourceTeam: "메가존 개발 및 코드리뷰" }
+ *   "기획"                  → { phase: "기획", resourceTeam: null }
+ *   "QA-내부"               → { phase: "QA",   resourceTeam: "내부" }
+ *   "Launch"                → { phase: "Launch", resourceTeam: null }
+ *   "PTG plan"              → { phase: "기타", resourceTeam: "PTG plan" }
+ */
+export function extractPhaseAndResource(raw: string): { phase: SchedulePhase; resourceTeam: string | null } {
+  const s = raw.trim();
+  if (!s) return { phase: "기타", resourceTeam: null };
+
+  // 1. Milestone (resource 없는 단일 phase)
+  if (/kick[-\s]?off|킥\s*오프/i.test(s)) return { phase: "Kick-Off", resourceTeam: null };
+  if (/release|릴리즈|릴리스|배포/i.test(s)) return { phase: "Release",  resourceTeam: null };
+  if (/launch|론치|런치|오픈/i.test(s))      return { phase: "Launch",   resourceTeam: null };
+
+  // 2. QA (phase + 선택적 resource)
+  if (/\bqa\b|qc|테스트|test|검수|검증/i.test(s)) {
+    const stripped = s.replace(/\bqa\b|qc|테스트|test|검수|검증/gi, "").replace(/[-:\s]+/g, " ").trim();
+    return { phase: "QA", resourceTeam: stripped || null };
+  }
+
+  // 3. 디자인
+  if (/디자인|design|\bui\b|\bux\b/i.test(s)) {
+    const stripped = s.replace(/디자인|design|\bui\b|\bux\b/gi, "").replace(/[-:\s]+/g, " ").trim();
+    return { phase: "디자인", resourceTeam: stripped || null };
+  }
+
+  // 4. 개발 — dev resource pattern 매칭 또는 개발 키워드
+  // (기획보다 먼저 체크 — "Core AI BE 기획"처럼 섞여 있어도 dev resource 우선)
+  const hasDevResource = DEV_RESOURCE_PATTERNS.some(re => re.test(s));
+  const hasDevKeyword  = /개발|코드\s*리뷰|development|api/i.test(s) || /^dev$/i.test(s);
+  if (hasDevResource || hasDevKeyword) {
+    const isJustDev = /^(개발|dev|development|코드리뷰|코드\s*리뷰)$/i.test(s);
+    return { phase: "개발", resourceTeam: isJustDev ? null : s };
+  }
+
+  // 5. 기획
+  if (/기획|planning|요구사항|정책|product|requirement/i.test(s)) {
+    const stripped = s.replace(/기획|planning|요구사항|정책|product|requirement/gi, "").replace(/[-:\s]+/g, " ").trim();
+    return { phase: "기획", resourceTeam: stripped || null };
+  }
+
+  // 6. fallback — schedule 자격 없음 (ALLOWED_PHASES 미포함)
+  return { phase: "기타", resourceTeam: s };
+}
+
+/** normalizedRole derivation: resourceTeam이 있으면 그것, 없으면 phase. mergeKey 호환용. */
+export function deriveNormalizedRole(phase: SchedulePhase, resourceTeam: string | null): string {
+  return resourceTeam || phase;
+}
+
+// @deprecated — backward compat. 새 코드는 ALLOWED_PHASES + extractPhaseAndResource 사용.
 export const ALLOWED_SCHEDULE_ROLES = new Set<string>([
-  "Kick-Off",
-  "기획",
-  "디자인",
-  "개발",
+  "Kick-Off", "기획", "디자인", "개발",
   "BE-SP", "BE-PP", "BE-CFE", "BE-CE", "BE-메가존",
   "FE-CFE", "FE-DFE", "FE-Sotatek",
-  "Mobile",
-  "DA",
-  "QA",
-  "CSE",
-  "Release",
-  "Launch",
+  "Mobile", "DA", "QA", "CSE", "Release", "Launch",
 ]);
 
 // 날짜 없거나 불확실한 상태 표현 — schedule이 아닌 action으로 분류
@@ -298,17 +370,18 @@ export function classifyLine(
     return { type: "note", confidence: "low", content, rawText: line };
   }
 
-  const roleOK = ALLOWED_SCHEDULE_ROLES.has(item.normalizedRole);
+  // schedule 자격 판정은 phase taxonomy 기준 — resourceTeam(Core AI BE 등 자유 text)은 무관.
+  const phaseOK = !!item.phase && ALLOWED_PHASES.has(item.phase);
   const hasDate = !!item.startDate;
   const hasClearStatus = item.status !== "확인필요";
 
-  // 3) role 화이트리스트 위반 → schedule 금지
-  if (!roleOK) {
+  // 3) phase 화이트리스트 위반 → schedule 금지 (예: phase="기타" / "PTG plan" 같은 자유텍스트)
+  if (!phaseOK) {
     return {
       type: hasDate ? "action" : "note",
       confidence: "low",
       content, rawText: line,
-      declineReason: `role "${item.normalizedRole}" not in allowed schedule roles`,
+      declineReason: `phase "${item.phase ?? "(none)"}" not in allowed phases`,
     };
   }
 
@@ -392,11 +465,16 @@ function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleI
   // role이 없는데 status/date도 못 찾으면 line은 schedule 아님
   if (!roleRaw && !startDate && !statusRaw) return null;
 
-  const normalizedRole = normalizeRole(roleRaw || "기타");
+  // 정책: phase + resourceTeam 분리. normalizedRole은 mergeKey 호환용으로 derive.
+  // "Core AI BE", "BE-PP" 같은 resource는 phase="개발" + resourceTeam=원문으로 보존.
+  const { phase, resourceTeam } = extractPhaseAndResource(roleRaw || "기타");
+  const normalizedRole = deriveNormalizedRole(phase, resourceTeam);
 
   return {
     role: roleRaw,
     normalizedRole,
+    phase,
+    resourceTeam,
     startDate,
     endDate,
     status: normalizeStatus(statusRaw),
