@@ -395,8 +395,31 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
     if (ignoredLines.length >= 5) break;
   }
 
+  // ── Section header 없는 weekly 전체 fallback ──
+  // customfield_10625처럼 PM이 자유롭게 적은 weekly는 [진행상황]/[일정] 같은 header가 없음.
+  // 이 경우 전체 text의 모든 bullet/line을 schedule + progress 후보로 시도.
+  // 표준 포맷은 위에서 이미 처리됐으니, 여기서는 보충용.
   if (sectionsFound.length === 0) {
-    warnings.push("no_section_marker — 어떤 섹션도 매칭되지 않음");
+    const allBullets = extractBullets(text)
+      // 첫 줄 marker(주차 Weekly 공유사항/🧭...)는 제외
+      .filter(l => !/^\s*(🧭|\d+\s*주차\s*Weekly\s*공유\s*사항)/.test(l));
+    for (const line of allBullets) {
+      consumedLines.add(line);
+      try {
+        const item = parseScheduleLine(line, fallbackYear);
+        if (item) scheduleItems.push(item);
+      } catch (e) {
+        warnings.push(`fallback schedule line parse failed: "${line.slice(0, 60)}" — ${(e as Error).message}`);
+      }
+    }
+    // 동시에 progressItems에도 추가 (자유형 weekly는 진행상황성 노트로 간주)
+    for (const line of allBullets) {
+      if (!progressItems.includes(line)) progressItems.push(line);
+    }
+    warnings.push(
+      `no_section_marker — 전체 text fallback으로 schedule ${scheduleItems.length}건 / ` +
+      `progress ${progressItems.length}건 추출`,
+    );
   }
 
   return {

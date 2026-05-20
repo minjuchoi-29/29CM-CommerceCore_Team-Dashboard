@@ -22,13 +22,14 @@ const BLOCK_TYPES = new Set([
   "rule", "panel", "expand", "nestedExpand", "mediaSingle",
 ]);
 
-function adfToText(node: AdfNode | null | undefined): string {
+function adfToText(node: AdfNode | null | undefined, typesSeen?: Set<string>): string {
   if (!node) return "";
+  if (typesSeen && node.type) typesSeen.add(node.type);
   if (node.type === "text") return node.text ?? "";
   if (node.type === "hardBreak") return "\n";
 
   const inner = Array.isArray(node.content)
-    ? node.content.map(adfToText).join("")
+    ? node.content.map(c => adfToText(c, typesSeen)).join("")
     : "";
 
   if (node.type === "listItem") return `- ${inner.trim()}\n`;
@@ -52,6 +53,47 @@ function findMarkers(text: string): string[] {
     if (m.re.test(text)) out.push(m.name);
   }
   return out;
+}
+
+// ─── description 내부 "Weekly 공유사항" 섹션 추출 ────────────────
+// 운영 약속:
+//   description 안에는 PRD/기대결과/링크 등 여러 섹션이 공존한다.
+//   그중 "Weekly 공유사항" 헤더 아래 영역만이 live operational weekly.
+//   PRD 본문은 weekly와 무관 — 추출 대상 아님.
+//
+// 헤더 표기 허용:
+//   - "Weekly 공유사항"
+//   - "🧭 21주차 Weekly 공유사항"
+//   - "[Weekly 공유사항]"
+//   - "*Weekly 공유사항"
+// 종료 조건 (Stop section):
+//   - "연결된 업무 항목" / "활동" / "Confluence 콘텐츠" / "Linked work items" / "Activity"
+//   - description EOF
+
+const WEEKLY_HEADER_RE =
+  /(?:^|\n)\s*[*🧭#[]*\s*(?:\d+\s*주차\s*)?Weekly\s*공유\s*사항\s*\]?\s*[:\n]?/i;
+
+const WEEKLY_STOP_PATTERNS: RegExp[] = [
+  /\n\s*[*#]*\s*(?:연결된\s*업무\s*항목|활동|Confluence\s*콘텐츠|Linked\s*work\s*items|Activity)\s*[:\n]/i,
+  /\n\s*\[\s*(?:연결된\s*업무\s*항목|활동|Confluence\s*콘텐츠|Linked\s*work\s*items|Activity)\s*\]/i,
+];
+
+function extractWeeklySection(text: string): { section: string; headerMatched: string | null } {
+  const m = text.match(WEEKLY_HEADER_RE);
+  if (!m || m.index === undefined) return { section: "", headerMatched: null };
+
+  const headerMatched = m[0].trim();
+  const startIdx = m.index + m[0].length;
+  const after = text.slice(startIdx);
+
+  // 첫 stop pattern 매치 위치 찾음
+  let stopAt = after.length;
+  for (const stopRe of WEEKLY_STOP_PATTERNS) {
+    const sm = after.match(stopRe);
+    if (sm && sm.index !== undefined && sm.index < stopAt) stopAt = sm.index;
+  }
+
+  return { section: after.slice(0, stopAt).trim(), headerMatched };
 }
 
 // ─── Jira fetch helper ───────────────────────────────────────
@@ -95,11 +137,71 @@ export async function GET(req: NextRequest) {
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const headers = { Authorization: `Basic ${auth}`, Accept: "application/json" };
 
+  // ── 디버깅 옵션: ?discover=fields (dev-only) ──────────────────
+  // 전체 field 메타데이터(custom field id ↔ display name 매핑)와
+  // weekly 후보 field를 찾아서 응답. source discovery 단계 전용.
+  // production에서는 비활성화 (운영 안전성 + 노이즈 방지).
+  if (req.nextUrl.searchParams.get("discover") === "fields") {
+    if (process.env.NODE_ENV === "production") {
+      return NextResponse.json(
+        { error: "?discover=fields is disabled in production (debug-only)" },
+        { status: 404 },
+      );
+    }
+    const url = `${JIRA_HOST}/rest/api/3/issue/${encodeURIComponent(key)}` +
+                `?expand=names&fields=*all`;
+    const res = await fetchWithTimeout(url, { headers, cache: "no-store" });
+    if (!res.ok) {
+      const body = await res.text();
+      return NextResponse.json(
+        { error: `Jira issue API ${res.status}: ${body.slice(0, 300)}` },
+        { status: 502 },
+      );
+    }
+    const data = await res.json();
+    const names = (data.names ?? {}) as Record<string, string>;
+    const fields = (data.fields ?? {}) as Record<string, unknown>;
+    const candidates = Object.entries(names)
+      .filter(([, n]) => typeof n === "string" && (
+        n.includes("Weekly") || n.includes("공유사항") || n.includes("주차") ||
+        n.toLowerCase().includes("weekly") || n.includes("주간")
+      ))
+      .map(([id, name]) => {
+        const v = fields[id];
+        return {
+          id,
+          name,
+          hasValue: v !== null && v !== undefined,
+          valueType: Array.isArray(v) ? "array" : typeof v,
+          valuePreview: v !== null && v !== undefined
+            ? JSON.stringify(v).slice(0, 600)
+            : null,
+        };
+      });
+    const allFieldsWithValues = Object.entries(fields)
+      .filter(([, v]) => v !== null && v !== undefined)
+      .map(([id, v]) => ({
+        id,
+        name: names[id] ?? "(no name)",
+        valueType: Array.isArray(v) ? "array" : typeof v,
+        valuePreview: JSON.stringify(v).slice(0, 200),
+      }));
+    return NextResponse.json({
+      ticketKey: key,
+      weeklyCandidates: candidates,
+      allCustomFieldsWithValues: allFieldsWithValues.filter(f => f.id.startsWith("customfield_")),
+      allFieldNamesMap: names,
+    });
+  }
+
   try {
-    // 1) description + updated
+    // 1) description + updated + Weekly 공유사항 custom field
+    //    customfield_10625 = "Weekly 공유사항" (29CM Jira). PM이 직접 갱신하는 진짜 SoT.
+    const WEEKLY_CUSTOM_FIELD_ID = "customfield_10625";
+    const WEEKLY_CUSTOM_FIELD_NAME = "Weekly 공유사항";
     const issueUrl =
       `${JIRA_HOST}/rest/api/3/issue/${encodeURIComponent(key)}` +
-      `?fields=description,updated`;
+      `?fields=description,updated,${WEEKLY_CUSTOM_FIELD_ID}`;
     const issueRes = await fetchWithTimeout(issueUrl, { headers, cache: "no-store" });
     if (!issueRes.ok) {
       const body = await issueRes.text();
@@ -110,9 +212,19 @@ export async function GET(req: NextRequest) {
     }
     const issueData = await issueRes.json();
     const descAdf = (issueData.fields?.description ?? null) as AdfNode | null;
-    const descText = adfToText(descAdf).trim();
+    const descAdfNodeTypes = new Set<string>();
+    const descText = adfToText(descAdf, descAdfNodeTypes).trim();
     const descUpdated = (issueData.fields?.updated as string | undefined) ?? "";
-    const descMarkers = descText ? findMarkers(descText) : [];
+    // description 내부 "Weekly 공유사항" 섹션 추출 (fallback용)
+    const { section: descWeeklySection, headerMatched: descWeeklyHeader } =
+      descText ? extractWeeklySection(descText) : { section: "", headerMatched: null };
+    const descMarkers = descWeeklySection ? findMarkers(descWeeklySection) : [];
+
+    // ── 진짜 SoT: customfield_10625 = "Weekly 공유사항" ─────────
+    // PM이 매주 직접 갱신하는 dedicated field. description/comment보다 우선.
+    const cfWeeklyAdf = (issueData.fields?.[WEEKLY_CUSTOM_FIELD_ID] ?? null) as AdfNode | null;
+    const cfWeeklyText = cfWeeklyAdf ? adfToText(cfWeeklyAdf).trim() : "";
+    const cfWeeklyMarkers = cfWeeklyText ? findMarkers(cfWeeklyText) : [];
 
     // 2) comments — 최신순 (Jira는 기본 created asc, 최근 N개만 보려면 orderBy=-created)
     const commentUrl =
@@ -149,36 +261,52 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ─── 우선순위 결정 (2026-05-20 정책 확정) ───────────────────
+    // ─── 우선순위 결정 (2026-05-20 정책 재확정 v3) ───────────────
     //
     // [운영 흐름]
-    //   description = LIVE operational state   — PM이 매주 월/화에 직접 수정하는 현재 주차 working area
-    //   comment     = IMMUTABLE weekly history — Jira Automation rule이 description을 archive한 과거 snapshot
+    //   customfield_10625 ("Weekly 공유사항") = LIVE SoT (PM이 매주 직접 갱신하는 dedicated field).
+    //   description "Weekly 공유사항" 섹션   = legacy fallback (혹시 PM이 description에 적은 경우).
+    //   automation comment                  = IMMUTABLE weekly history (archive).
     //
-    // [선택 정책]
-    //   1) description에 weekly marker가 있으면 → 무조건 description (current SoT)
-    //   2) description에 marker가 없을 때만   → latest comment (transition 기간 fallback)
-    //   3) 둘 다 없으면 null
+    // [선택 정책 — 우선순위]
+    //   1) customfield_10625 값 있음 → customfield-first
+    //   2) description "Weekly 공유사항" 섹션 있음 → description-first
+    //   3) latest automation comment 있음 → comment-fallback
+    //   4) 모두 없음 → null
     //
     // [중요 운영 약속]
-    //   - planning / review / release / launch 같은 상태 변화의 SoT는 항상 description.
-    //   - comment의 sourceWeek가 더 최신이라도 description marker가 있으면 description 우선
-    //     (PM이 이번 주 working area를 갱신 중인 상태는 가장 신뢰할 만한 정보).
-    //   - comment는 향후 stale 감지 / backtracking / 주차별 transition 분석에만 사용.
+    //   - PRD 본문은 schedule/note 추출 대상 아님.
+    //   - planning / review / release / launch 같은 상태 변화의 SoT는 customfield.
+    //   - comment의 sourceWeek가 더 최신이라도 customfield/description weekly가 있으면 그쪽 우선.
+    //   - comment는 stale 감지 / backtracking / 주차별 transition 분석에만 사용.
     type Pick = {
       text: string;
-      source: "description" | "comment";
+      source: "customfield" | "description" | "comment";
       sourceUpdatedAt: string;
       markers: string[];
-      policyReason: "description-first" | "comment-fallback";
+      policyReason: "customfield-first" | "description-first" | "comment-fallback";
     };
 
-    const descCandidate: Pick | null = descMarkers.length > 0 && descText
+    // customfield_10625 가 진짜 SoT.
+    const cfCandidate: Pick | null = cfWeeklyText
       ? {
-          text: descText,
+          text: cfWeeklyText,
+          source: "customfield",
+          sourceUpdatedAt: descUpdated,  // field별 timestamp 없음 — issue updated를 그대로 사용
+          markers: cfWeeklyMarkers.length > 0
+            ? cfWeeklyMarkers
+            : ["customfield_10625_weekly"],
+          policyReason: "customfield-first",
+        }
+      : null;
+
+    // description "Weekly 공유사항" 섹션 (legacy fallback)
+    const descCandidate: Pick | null = descWeeklySection
+      ? {
+          text: descWeeklySection,
           source: "description",
           sourceUpdatedAt: descUpdated,
-          markers: descMarkers,
+          markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
           policyReason: "description-first",
         }
       : null;
@@ -193,9 +321,8 @@ export async function GET(req: NextRequest) {
         }
       : null;
 
-    // description-first: description marker 있으면 무조건 description.
-    // updatedAt 비교 없음 — description이 가장 최근 working area라는 운영 약속이 우선.
-    const pick: Pick | null = descCandidate ?? commentCandidate;
+    // 최종 우선순위: customfield (LIVE SoT) → description weekly section → comment archive
+    const pick: Pick | null = cfCandidate ?? descCandidate ?? commentCandidate;
 
     // ─── 파싱 결과 (선택) — text가 있으면 parseWeekly 실행 ───────
     const parsed = pick ? parseWeekly(pick.text, key) : null;
@@ -222,12 +349,26 @@ export async function GET(req: NextRequest) {
       parsed,
       parseSummary,
       debug: {
-        // ─── description (LIVE working area) ───
+        // ─── customfield_10625 = "Weekly 공유사항" (진짜 SoT) ───
+        weeklyCustomFieldId: WEEKLY_CUSTOM_FIELD_ID,
+        weeklyCustomFieldName: WEEKLY_CUSTOM_FIELD_NAME,
+        weeklyCustomFieldHasValue: !!cfWeeklyText,
+        weeklyCustomFieldLength: cfWeeklyText.length,
+        weeklyCustomFieldPreview: cfWeeklyText.slice(0, 1200),
+        weeklyCustomFieldMarkers: cfWeeklyMarkers,
+        // ─── description (legacy fallback) ───
         descriptionLength: descText.length,
-        descriptionHasMarker: descMarkers.length > 0,
-        descriptionMarkers: descMarkers,
-        descriptionPreview: descText.slice(0, 200),
+        descriptionPreview: descText.slice(0, 1200),
         descriptionUpdated: descUpdated,
+        descriptionAdfNodeTypes: Array.from(descAdfNodeTypes).sort(),
+        descriptionAdfRaw: process.env.NODE_ENV === "development" ? descAdf : undefined,
+        // ─── description 내부 Weekly 섹션 (실제 SoT) ───
+        descriptionWeeklyHeaderMatched: descWeeklyHeader,
+        descriptionWeeklySectionLength: descWeeklySection.length,
+        descriptionWeeklySectionPreview: descWeeklySection.slice(0, 1200),
+        descriptionWeeklySectionMarkers: descMarkers,
+        descriptionHasMarker: !!descWeeklySection,  // legacy 호환: 섹션 존재 여부로 의미 변경
+        descriptionMarkers: descMarkers,             // legacy 호환
         // ─── comment (IMMUTABLE history archive) ───
         commentCount: comments.length,
         markedCommentFound: !!markedComment,
@@ -236,6 +377,18 @@ export async function GET(req: NextRequest) {
         markedCommentAuthor: markedComment?.author ?? null,
         markedCommentLength: markedComment?.text.length ?? 0,
         markedCommentPreview: markedComment?.text.slice(0, 200) ?? null,
+        // 디버깅: 모든 comment 요약 (auto-archive vs human 구분, marker 매칭 여부)
+        allComments: comments.map(c => {
+          const t = adfToText(c.body).trim();
+          return {
+            created: c.created,
+            updated: c.updated,
+            author: c.author?.displayName ?? "-",
+            length: t.length,
+            markers: t ? findMarkers(t) : [],
+            preview: t.slice(0, 150),
+          };
+        }),
         // ─── 운영 정책 명시 ───
         policyDescription:
           "description = LIVE SoT (PM working area), comment = IMMUTABLE archive (automation). " +
