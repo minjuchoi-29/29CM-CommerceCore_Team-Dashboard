@@ -55,10 +55,12 @@ export function extractPhaseAndResource(raw: string): { phase: SchedulePhase; re
   const s = raw.trim();
   if (!s) return { phase: "기타", resourceTeam: null };
 
-  // 1. Milestone (resource 없는 단일 phase)
+  // 1. Milestone (resource 없는 단일 phase) — 운영 키워드 확장
   if (/kick[-\s]?off|킥\s*오프/i.test(s)) return { phase: "Kick-Off", resourceTeam: null };
-  if (/release|릴리즈|릴리스|배포/i.test(s)) return { phase: "Release",  resourceTeam: null };
-  if (/launch|론치|런치|오픈/i.test(s))      return { phase: "Launch",   resourceTeam: null };
+  // Release: 배포 / sign-off / 릴리즈 / 릴리스
+  if (/release|릴리즈|릴리스|배포|sign[-\s]?off/i.test(s)) return { phase: "Release", resourceTeam: null };
+  // Launch: 론치 / 런치 / 런칭 / 오픈 / 대고객 (오픈|런칭)
+  if (/launch|론치|런치|런칭|오픈|대고객/i.test(s)) return { phase: "Launch", resourceTeam: null };
 
   // 2. QA (phase + 선택적 resource)
   if (/\bqa\b|qc|테스트|test|검수|검증/i.test(s)) {
@@ -407,18 +409,28 @@ export function classifyLine(
     return classifyDeclined("no date");
   }
 
-  // 5) low-confidence 키워드 매칭 → schedule 금지, action 자격 (실제 follow-up)
-  if (lowConf) {
+  // 5) low-confidence 키워드 매칭 → schedule 금지 (단, milestone phase는 예외)
+  // 사용자 정책: Release/Launch/Kick-Off 같은 milestone은 조건부 표현이어도
+  // medium confidence candidate로 허용 — "7/27 런칭 ETA 준수 가능 여부" 같은
+  // 케이스도 일정 검토 대상이 되어야 함.
+  const isMilestonePhase = item.phase === "Release" || item.phase === "Launch" || item.phase === "Kick-Off";
+  if (lowConf && !isMilestonePhase) {
     return classifyDeclined("low_confidence keyword (follow-up 필요)");
   }
 
-  // 6) 실행성 status 검증 — schedule 자격은 status가 예정/진행중/완료만.
-  if (!EXECUTABLE_STATUSES.has(item.status)) {
+  // 6) 실행성 status 검증 — milestone phase는 status 비실행성이어도 허용 (조건부 일정도 candidate)
+  if (!EXECUTABLE_STATUSES.has(item.status) && !isMilestonePhase) {
     return classifyDeclined(`status "${item.status}" not executable (need 예정/진행중/완료)`);
   }
 
-  // 7) 허용 phase + 날짜 + non-low confidence + 실행성 status → schedule
-  const confidence: Confidence = hasClearStatus ? "high" : "medium";
+  // 7) confidence 결정
+  //    - milestone + lowConf  → low (조건부 표현이라 확정 X, candidate로만)
+  //    - 일반 + clear status   → high
+  //    - 일반 + 확인필요 status → medium
+  const confidence: Confidence =
+    (isMilestonePhase && lowConf) ? "low"
+    : hasClearStatus                ? "high"
+    :                                 "medium";
   const schedule: ParsedScheduleItem = { ...item, confidence };
   return { type: "schedule", confidence, content, rawText: line, schedule };
 }
@@ -477,9 +489,18 @@ function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleI
   // role이 없는데 status/date도 못 찾으면 line은 schedule 아님
   if (!roleRaw && !startDate && !statusRaw) return null;
 
-  // 정책: phase + resourceTeam 분리. normalizedRole은 mergeKey 호환용으로 derive.
-  // "Core AI BE", "BE-PP" 같은 resource는 phase="개발" + resourceTeam=원문으로 보존.
-  const { phase, resourceTeam } = extractPhaseAndResource(roleRaw || "기타");
+  // 정책: phase + resourceTeam 분리.
+  // 1순위: 콜론 앞 role 텍스트에서 추출
+  // 2순위: role이 비었거나 "기타"로만 잡히면, line 본문 전체에서 milestone 키워드 검색
+  //         (예: "5/20 최종 론치 진행 예정" → phase=Launch, "7/1 일정 오픈" → Launch)
+  let { phase, resourceTeam } = extractPhaseAndResource(roleRaw || "기타");
+  if (phase === "기타") {
+    const fullPR = extractPhaseAndResource(line);
+    if (fullPR.phase !== "기타") {
+      phase = fullPR.phase;
+      resourceTeam = fullPR.resourceTeam;
+    }
+  }
   const normalizedRole = deriveNormalizedRole(phase, resourceTeam);
 
   return {
