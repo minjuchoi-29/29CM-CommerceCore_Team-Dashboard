@@ -1091,6 +1091,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
   // Phase 2: Weekly Sync orchestration 진행 상황 토스트
   const [weeklySyncMsg, setWeeklySyncMsg] = useState<string | null>(null);
+  // Phase 4: Update Candidate Review 모달 / 진행 중인 candidateId set
+  const [candidatePanelOpen, setCandidatePanelOpen] = useState(false);
+  const [candidatesInFlight, setCandidatesInFlight] = useState<Set<string>>(new Set());
 
   // 정렬
   const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta" | "ticketNo">("eta");
@@ -1394,6 +1397,52 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setFetching(false);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Phase 4: Update Candidate 승인/기각 처리
+  // PUT /api/weekly-sync → optimistic update → 실패 시 revert + KV reload
+  const resolveCandidate = useCallback(async (candidateId: string, action: "apply" | "dismiss") => {
+    setCandidatesInFlight(prev => {
+      const next = new Set(prev);
+      next.add(candidateId);
+      return next;
+    });
+    // optimistic: candidate를 resolved로 표시
+    setUpdateCandidates(prev => prev.map(c =>
+      c.id === candidateId
+        ? { ...c, resolved: true, resolvedAt: new Date().toISOString() }
+        : c,
+    ));
+    try {
+      const res = await fetch("/api/weekly-sync", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidateId, action }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // apply의 경우 cc-schedules가 갱신됐으므로 함께 재로드
+      const keys = action === "apply"
+        ? "cc-schedules,cc-update-candidates"
+        : "cc-update-candidates";
+      const kvRes = await fetch(`/api/kv?keys=${keys}`);
+      const d = await kvRes.json();
+      if (action === "apply" && d["cc-schedules"]) setSchedules(d["cc-schedules"]);
+      if (Array.isArray(d["cc-update-candidates"]))
+        setUpdateCandidates(d["cc-update-candidates"] as UpdateCandidate[]);
+      console.log(`[resolveCandidate] ${candidateId} ${action} → ok`);
+    } catch (e) {
+      console.error(`[resolveCandidate] ${candidateId} ${action} failed:`, e);
+      // revert
+      setUpdateCandidates(prev => prev.map(c =>
+        c.id === candidateId ? { ...c, resolved: false, resolvedAt: undefined } : c,
+      ));
+    } finally {
+      setCandidatesInFlight(prev => {
+        const next = new Set(prev);
+        next.delete(candidateId);
+        return next;
+      });
+    }
+  }, []);
 
   // Jira Sync 이후 스냅샷 저장 (오늘 하루 1회, 비동기 — 실패해도 무시)
   const saveTransitionSnapshot = useCallback((
@@ -3174,16 +3223,150 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </svg>
               {fetching ? "Syncing…" : "Jira Sync"}
             </button>
-            {/* ⚡ 일정 변경 감지 배지 */}
+            {/* ⚡ 일정 변경 감지 — 클릭 시 검토 패널 (Phase 4) */}
             {updateCandidates.filter(c => !c.resolved).length > 0 && (
-              <span
-                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium"
+              <button
+                type="button"
+                onClick={() => setCandidatePanelOpen(true)}
+                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition hover:brightness-110 active:scale-95"
                 style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }}
-                title={`${updateCandidates.filter(c => !c.resolved).length}건의 일정 변경이 감지됨 — 티켓 상세 → 일정 탭에서 확인`}
+                title="클릭하여 Weekly에서 들어온 일정 변경 제안을 검토 / 승인 / 기각"
               >
                 ⚡ 일정 변경 {updateCandidates.filter(c => !c.resolved).length}건
-              </span>
+              </button>
             )}
+
+            {/* ── Candidate Review 모달 (Phase 4) ─────────────────── */}
+            {candidatePanelOpen && (() => {
+              const unresolved = updateCandidates.filter(c => !c.resolved);
+              const titleByKey = new Map(tickets.map(t => [t.key, t.summary]));
+              const FIELD_LABEL: Record<string, string> = {
+                start: "시작일", end: "종료일", status: "상태", person: "담당자",
+              };
+              return (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center px-4"
+                  style={{ background: "rgba(0,0,0,0.45)" }}
+                  onClick={() => setCandidatePanelOpen(false)}
+                >
+                  <div
+                    className="rounded-xl shadow-2xl max-w-3xl w-full max-h-[80vh] overflow-y-auto"
+                    style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+                    onClick={e => e.stopPropagation()}
+                  >
+                    {/* 헤더 */}
+                    <div
+                      className="px-5 py-3 flex items-center justify-between sticky top-0 z-10"
+                      style={{ background: "var(--bg-canvas)", borderBottom: "1px solid var(--border-2)" }}
+                    >
+                      <div>
+                        <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                          Weekly 일정 변경 제안
+                        </h2>
+                        <p className="text-[11px] mt-0.5" style={{ color: "var(--text-muted)" }}>
+                          {unresolved.length}건 검토 대기 · 승인 시 일정에 반영, 기각 시 무시
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setCandidatePanelOpen(false)}
+                        className="text-lg leading-none px-2 py-1 hover:bg-gray-100 rounded"
+                        style={{ color: "var(--text-muted)" }}
+                      >
+                        ×
+                      </button>
+                    </div>
+
+                    {/* 본문 */}
+                    <div className="p-5 space-y-2.5">
+                      {unresolved.length === 0 && (
+                        <p className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>
+                          검토할 변경 제안이 없습니다.
+                        </p>
+                      )}
+                      {unresolved.map(c => {
+                        const role = c.mergeKey.split("::")[1] ?? "—";
+                        const inFlight = candidatesInFlight.has(c.id);
+                        const summary = titleByKey.get(c.ticketKey) ?? "—";
+                        return (
+                          <div
+                            key={c.id}
+                            className="rounded-lg p-3"
+                            style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)" }}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 mb-1">
+                                  <a
+                                    href={`https://jira.team.musinsa.com/browse/${c.ticketKey}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="font-mono text-xs font-semibold hover:underline"
+                                    style={{ color: "#818cf8" }}
+                                  >
+                                    {c.ticketKey}
+                                  </a>
+                                  <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>·</span>
+                                  <span className="text-xs truncate" style={{ color: "var(--text-secondary)" }}>
+                                    {summary}
+                                  </span>
+                                </div>
+                                <div className="flex items-center flex-wrap gap-1.5 text-xs mb-1.5">
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                    style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
+                                  >
+                                    {role}
+                                  </span>
+                                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                    {FIELD_LABEL[c.field] ?? c.field}
+                                  </span>
+                                  <span className="text-xs line-through" style={{ color: "var(--text-muted)" }}>
+                                    {c.oldValue || "(빈 값)"}
+                                  </span>
+                                  <span style={{ color: "var(--text-muted)" }}>→</span>
+                                  <span className="text-xs font-medium" style={{ color: "#10b981" }}>
+                                    {c.newValue || "(빈 값)"}
+                                  </span>
+                                </div>
+                                <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                                  {c.sourceWeek}
+                                  {c.autoApply && (
+                                    <span className="ml-2 px-1.5 py-0.5 rounded" style={{ background: "rgba(16,185,129,0.12)", color: "#10b981" }}>
+                                      자동적용 가능
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={inFlight}
+                                  onClick={() => resolveCandidate(c.id, "apply")}
+                                  className="px-2.5 py-1 text-xs rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
+                                  style={{ background: "#10b981", color: "white" }}
+                                >
+                                  {inFlight ? "처리 중…" : "✓ 승인"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={inFlight}
+                                  onClick={() => resolveCandidate(c.id, "dismiss")}
+                                  className="px-2.5 py-1 text-xs rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                  style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-secondary)" }}
+                                >
+                                  ✕ 기각
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
             {/* 변화 보기 토글 */}
             <button
               onClick={() => setChangesMode(v => !v)}
@@ -5699,6 +5882,95 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 Planning & Schedule 탭: 플래닝 상태
                 ══════════════════════════════════════════ */}
             {detailTab === "ops" && (<>
+              {/* ── Phase 4: ticket-specific Weekly 일정 변경 제안 ── */}
+              {(() => {
+                const tCand = updateCandidates.filter(c => !c.resolved && c.ticketKey === selected.key);
+                if (tCand.length === 0) return null;
+                const FIELD_LABEL: Record<string, string> = {
+                  start: "시작일", end: "종료일", status: "상태", person: "담당자",
+                };
+                return (
+                  <div
+                    className="pt-4 mb-4"
+                    style={{ borderTop: "1px solid var(--border)" }}
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-[13px] font-semibold" style={{ color: "var(--text-secondary)" }}>
+                        Weekly 일정 변경 제안
+                      </span>
+                      <span
+                        className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                        style={{ background: "rgba(251,191,36,0.12)", color: "#fbbf24", border: "1px solid rgba(251,191,36,0.35)" }}
+                      >
+                        {tCand.length}건
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {tCand.map(c => {
+                        const role = c.mergeKey.split("::")[1] ?? "—";
+                        const inFlight = candidatesInFlight.has(c.id);
+                        return (
+                          <div
+                            key={c.id}
+                            className="rounded-md p-2.5"
+                            style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)" }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center flex-wrap gap-1.5 text-xs mb-1">
+                                  <span
+                                    className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                    style={{ background: "rgba(129,140,248,0.15)", color: "#818cf8" }}
+                                  >
+                                    {role}
+                                  </span>
+                                  <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                    {FIELD_LABEL[c.field] ?? c.field}
+                                  </span>
+                                  <span className="text-xs line-through" style={{ color: "var(--text-muted)" }}>
+                                    {c.oldValue || "(빈 값)"}
+                                  </span>
+                                  <span style={{ color: "var(--text-muted)" }}>→</span>
+                                  <span className="text-xs font-medium" style={{ color: "#10b981" }}>
+                                    {c.newValue || "(빈 값)"}
+                                  </span>
+                                </div>
+                                <div className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                                  {c.sourceWeek}
+                                  {c.autoApply && (
+                                    <span className="ml-1.5">· 자동적용 가능</span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="flex gap-1 shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={inFlight}
+                                  onClick={() => resolveCandidate(c.id, "apply")}
+                                  className="px-2 py-0.5 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
+                                  style={{ background: "#10b981", color: "white" }}
+                                >
+                                  {inFlight ? "…" : "✓ 승인"}
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={inFlight}
+                                  onClick={() => resolveCandidate(c.id, "dismiss")}
+                                  className="px-2 py-0.5 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                  style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-secondary)" }}
+                                >
+                                  ✕ 기각
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* 플래닝 상태 — data-focus-section="planning" */}
               <div
                 data-focus-section="planning"
