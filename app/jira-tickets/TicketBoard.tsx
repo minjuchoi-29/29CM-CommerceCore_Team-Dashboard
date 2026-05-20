@@ -3286,12 +3286,49 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // Focus Mini Rail: owner_dashboard source 진입 시 Action 우선순위 기반 정렬
   // focusForKey !== null = owner_dashboard source 진입 신호 (state이므로 reactive ✅)
-  const railItems = useMemo<{ ticket: Ticket; topAction: ReturnType<typeof getActionItems>[0] | null }[]>(() => {
-    const base = filtered.map(t => ({
-      ticket: t,
-      topAction: getActionItems(t, planning[t.key], schedules[t.key] ?? t.roles ?? [], etrMap[t.key])[0] ?? null,
-    }));
-    if (!focusForKey) return base; // 일반 split view → 기존 순서 유지
+  // status → phase 매핑 (Focus Mode rail에서 현재 phase 표시용)
+  const statusToPhase = (status: string): NonNullable<RoleSchedule["phase"]> | null => {
+    if (/론치완료|배포완료/.test(status))            return "Launch";
+    if (/QA중|QA/.test(status))                       return "QA";
+    if (/개발완료/.test(status))                       return "Release";
+    if (/개발중|In Progress/.test(status))            return "개발";
+    if (/디자인중|디자인완료/.test(status))           return "디자인";
+    if (/기획중|기획완료/.test(status))                return "기획";
+    if (/준비중|Backlog|SUGGESTED/.test(status))      return "Kick-Off";
+    return null;
+  };
+
+  const railItems = useMemo<{
+    ticket: Ticket;
+    topAction: ReturnType<typeof getActionItems>[0] | null;
+    indicators: {
+      phase: NonNullable<RoleSchedule["phase"]> | null;
+      candidateCount: number;
+      actionCount: number;
+      riskCount: number;
+      cleanupCount: number;
+    };
+  }[]>(() => {
+    const base = filtered.map(t => {
+      // schedule rows에서 가장 활성 phase (없으면 status 기반 fallback)
+      const rows = schedules[t.key] ?? [];
+      const activeSched = rows.find(r => r.status === "진행중") ?? rows.find(r => r.status === "예정");
+      const phase: NonNullable<RoleSchedule["phase"]> | null =
+        (activeSched?.phase ?? (activeSched ? inferPhase(activeSched.role) : null))
+        ?? statusToPhase(t.status);
+      // candidate / action / risk / cleanup 카운트
+      const candidateCount = updateCandidates.filter(c => c.ticketKey === t.key && !c.resolved).length;
+      const notes = (weeklyNotes[t.key] ?? []).filter(n => n.status === "open");
+      const actionCount = notes.filter(n => n.type === "next_action").length;
+      const riskCount   = notes.filter(n => n.type === "risk").length;
+      const cleanupCount = rows.filter(r => isCleanupCandidate(r).isCleanup).length;
+      return {
+        ticket: t,
+        topAction: getActionItems(t, planning[t.key], rows.length > 0 ? rows : (t.roles ?? []), etrMap[t.key])[0] ?? null,
+        indicators: { phase, candidateCount, actionCount, riskCount, cleanupCount },
+      };
+    });
+    if (!focusForKey) return base;
     // owner_dashboard 진입: 현재 선택 티켓 최상단 → 나머지는 action priority 오름차순
     return [...base].sort((a, b) => {
       if (a.ticket.key === selected?.key) return -1;
@@ -3300,7 +3337,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const pb = b.topAction?.priority ?? 999;
       return pa - pb;
     });
-  }, [filtered, focusForKey, selected?.key, planning, schedules, etrMap]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, focusForKey, selected?.key, planning, schedules, etrMap, updateCandidates, weeklyNotes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── changesMode: 스냅샷 로드 → Transition 계산 ────────────────
   useEffect(() => {
@@ -5203,7 +5240,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           {filtered.length === 0 ? (
             <div className="py-12 text-center text-sm" style={{ color: "var(--text-subtle)" }}>검색 결과가 없습니다.</div>
           ) : (
-            displayItems.map(({ ticket: t, topAction: railTopAction }, idx) => {
+            displayItems.map((item, idx) => {
+              const { ticket: t, topAction: railTopAction } = item;
+              const indicators = "indicators" in item ? item.indicators : undefined;
               const isSelected = selected?.key === t.key;
               const isNew = newlyAddedKeys.has(t.key);
               const isDuplicate = duplicateKeys.has(t.key);
@@ -5231,12 +5270,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 : isNew                 ? "rgba(16,185,129,0.06)"   // 임시: 신규 추가
                 : undefined;
 
-              return (
-                <div
-                  key={t.key}
-                  data-ticket-key={t.key}
-                  className={`group transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""} cursor-pointer`}
-                  style={{
+              // Focus Mode 카드 강조 — selected이면 outer에 진한 indigo accent + shadow
+              const fmCardStyle: React.CSSProperties = isDetailExpanded
+                ? {
+                    borderLeft: isSelected
+                      ? "4px solid #6366f1"
+                      : etaWarnLevel === "overdue"  ? "3px solid rgba(248,113,113,0.85)"
+                      : etaWarnLevel === "imminent" ? "3px solid rgba(251,191,36,0.75)"
+                      : isHold                      ? "3px solid rgba(245,158,11,0.65)"
+                      : isReviewNeeded              ? "3px solid rgba(96,165,250,0.65)"
+                      : "3px solid transparent",
+                    background: isSelected ? "rgba(99,102,241,0.14)" : rowBg,
+                    boxShadow: isSelected
+                      ? "inset 0 0 0 1px rgba(129,140,248,0.45), 0 1px 0 rgba(99,102,241,0.18)"
+                      : undefined,
+                    borderBottom: "1px solid var(--border)",
+                  }
+                : {
                     borderBottom: "1px solid var(--border)",
                     borderLeft: isSelected                  ? "3px solid #6366f1"
                               : etaWarnLevel === "overdue"   ? "3px solid rgba(248,113,113,0.85)"
@@ -5245,73 +5295,147 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               : isReviewNeeded               ? "3px solid rgba(96,165,250,0.65)"
                               : "3px solid transparent",
                     background: rowBg,
-                  }}
+                  };
+
+              return (
+                <div
+                  key={t.key}
+                  data-ticket-key={t.key}
+                  className={`group transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""} cursor-pointer`}
+                  style={fmCardStyle}
                   onClick={() => handleSelect(t)}
                   onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-item)"; }}
-                  onMouseLeave={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = rowBg ?? ""; }}
+                  onMouseLeave={e => {
+                    if (!isSelected) {
+                      const bg = isDetailExpanded ? (rowBg ?? "") : (rowBg ?? "");
+                      (e.currentTarget as HTMLDivElement).style.background = bg;
+                    }
+                  }}
                 >
                   {/* 메인 행 */}
                   <div
-                    className={`flex items-center ${isDetailExpanded ? "px-3 py-2" : "px-4 py-3"}`}
+                    className={`flex items-center ${isDetailExpanded ? "px-3 py-2.5" : "px-4 py-3"}`}
                   >
                     {isDetailExpanded ? (
-                      /* Focus Mode 미니 레일: 키 + action 배지 + 제목 */
-                      <div className="flex flex-col gap-0.5 min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          {/* Action 레벨 배지 — owner_dashboard 진입 시만 */}
-                          {focusForKey && railTopAction && (
+                      /* Focus Mode 미니 레일: phase 배지 + ticket key + ETA + indicators + title */
+                      (() => {
+                        const phase = indicators?.phase ?? null;
+                        const candidateCount = indicators?.candidateCount ?? 0;
+                        const actionCount    = indicators?.actionCount    ?? 0;
+                        const riskCount      = indicators?.riskCount      ?? 0;
+                        const cleanupCount   = indicators?.cleanupCount   ?? 0;
+                        const phaseBgByName: Record<string, { bg: string; color: string }> = {
+                          "Kick-Off": { bg: "rgba(129,140,248,0.18)", color: "#a5b4fc" },
+                          "기획":     { bg: "rgba(99,102,241,0.18)",  color: "#818cf8" },
+                          "디자인":   { bg: "rgba(168,85,247,0.18)",  color: "#c084fc" },
+                          "개발":     { bg: "rgba(59,130,246,0.18)",  color: "#60a5fa" },
+                          "QA":       { bg: "rgba(34,197,94,0.18)",   color: "#4ade80" },
+                          "Release":  { bg: "rgba(249,115,22,0.18)",  color: "#fb923c" },
+                          "Launch":   { bg: "rgba(16,185,129,0.18)",  color: "#10b981" },
+                          "기타":     { bg: "rgba(148,163,184,0.18)", color: "#94a3b8" },
+                        };
+                        const phaseStyle = phase ? phaseBgByName[phase] : null;
+                        // ETA 표시 (M/D)
+                        const etaShort = t.eta && t.eta !== "-"
+                          ? `${parseInt(t.eta.split("-")[1])}/${parseInt(t.eta.split("-")[2])}`
+                          : null;
+                        const etaColor = etaWarnLevel === "overdue"  ? "#f87171"
+                                       : etaWarnLevel === "imminent" ? "#fbbf24"
+                                       : "var(--text-muted)";
+                        const hasIndicators = candidateCount + actionCount + riskCount + cleanupCount > 0;
+                        return (
+                          <div className="flex flex-col gap-1 min-w-0 flex-1">
+                            {/* Row 1: phase 배지 + ticket key + JIRA link */}
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              {phaseStyle && (
+                                <span
+                                  className="shrink-0 px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-tight"
+                                  style={{ background: phaseStyle.bg, color: phaseStyle.color }}
+                                  title={`phase: ${phase}`}
+                                >
+                                  {phase}
+                                </span>
+                              )}
+                              <span
+                                className="font-mono text-[10px] font-semibold shrink-0"
+                                style={{ color: isSelected ? "#818cf8" : "var(--text-subtle)" }}
+                              >
+                                {t.key}
+                              </span>
+                              <a
+                                href={`${JIRA_BASE}${t.key}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                onClick={(e) => e.stopPropagation()}
+                                className="shrink-0 opacity-40 hover:opacity-80 transition-opacity"
+                                title="JIRA에서 열기"
+                              >
+                                <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                                  <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
+                                </svg>
+                              </a>
+                            </div>
+                            {/* Row 2: ETA + indicators */}
+                            {(etaShort || hasIndicators) && (
+                              <div className="flex items-center gap-2 flex-wrap text-[10px]">
+                                {etaShort && (
+                                  <span style={{ color: etaColor, fontWeight: etaWarnLevel ? 700 : undefined }} title={`ETA ${t.eta}`}>
+                                    ETA {etaShort}
+                                    {etaWarnLevel === "overdue"  && <span className="ml-0.5">!</span>}
+                                    {etaWarnLevel === "imminent" && <span className="ml-0.5">▲</span>}
+                                  </span>
+                                )}
+                                {candidateCount > 0 && (
+                                  <span title={`Weekly 일정 변경 후보 ${candidateCount}건`} style={{ color: "#fbbf24" }}>
+                                    ⚡{candidateCount}
+                                  </span>
+                                )}
+                                {riskCount > 0 && (
+                                  <span title={`리스크 ${riskCount}건`} style={{ color: "#f87171" }}>
+                                    ⚠{riskCount}
+                                  </span>
+                                )}
+                                {actionCount > 0 && (
+                                  <span title={`액션 필요 ${actionCount}건`} style={{ color: "#fbbf24" }}>
+                                    ☐{actionCount}
+                                  </span>
+                                )}
+                                {cleanupCount > 0 && (
+                                  <span title={`정리 필요 ${cleanupCount}건`} style={{ color: "#94a3b8" }}>
+                                    🧹{cleanupCount}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {/* Row 3: action label (owner_dashboard 진입 + 미선택 시) */}
+                            {focusForKey && railTopAction && !isSelected && (
+                              <span
+                                className="text-[10px] leading-tight truncate"
+                                style={{
+                                  color:
+                                    railTopAction.level === "critical" ? "#f87171" :
+                                    railTopAction.level === "warning"  ? "#fbbf24" :
+                                                                          "#94a3b8",
+                                }}
+                              >
+                                → {railTopAction.label}
+                              </span>
+                            )}
+                            {/* Row 4: title (2줄 clamp) */}
                             <span
-                              className="w-1.5 h-1.5 rounded-full shrink-0"
-                              title={railTopAction.label}
+                              className="text-[11px] leading-snug line-clamp-2"
                               style={{
-                                background:
-                                  railTopAction.level === "critical" ? "#ef4444" :
-                                  railTopAction.level === "warning"  ? "#f59e0b" :
-                                                                        "#64748b",
+                                color: isSelected ? "var(--text-primary)" : "var(--text-secondary)",
+                                wordBreak: "break-word",
+                                fontWeight: isSelected ? 600 : undefined,
                               }}
-                            />
-                          )}
-                          <span
-                            className="font-mono text-[10px] font-semibold shrink-0"
-                            style={{ color: isSelected ? "#818cf8" : "var(--text-subtle)" }}
-                          >
-                            {t.key}
-                          </span>
-                          <a
-                            href={`${JIRA_BASE}${t.key}`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={(e) => e.stopPropagation()}
-                            className="shrink-0 opacity-40 hover:opacity-80 transition-opacity"
-                            title="JIRA에서 열기"
-                          >
-                            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                              <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-                            </svg>
-                          </a>
-                        </div>
-                        {/* action 레이블 (owner_dashboard 진입 + 해당 티켓 action 있을 때) */}
-                        {focusForKey && railTopAction && !isSelected && (
-                          <span
-                            className="text-[10px] leading-tight truncate"
-                            style={{
-                              color:
-                                railTopAction.level === "critical" ? "#f87171" :
-                                railTopAction.level === "warning"  ? "#fbbf24" :
-                                                                      "#94a3b8",
-                            }}
-                          >
-                            {railTopAction.label}
-                          </span>
-                        )}
-                        <span
-                          className="text-[11px] leading-snug line-clamp-2"
-                          style={{ color: isSelected ? "var(--text-primary)" : "var(--text-secondary)", wordBreak: "break-word" }}
-                        >
-                          {t.summary}
-                        </span>
-                      </div>
+                            >
+                              {t.summary}
+                            </span>
+                          </div>
+                        );
+                      })()
                     ) : (
                       /* 기본 뷰: 전체 컬럼 */
                       <>
