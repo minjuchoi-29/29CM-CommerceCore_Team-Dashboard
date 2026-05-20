@@ -149,14 +149,22 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ─── 우선순위 결정 (2026-05-20 정책 변경) ───────────────────
-    // 운영 흐름:
-    //   - description = 현재 주차 working area (PM이 매주 월/화 직접 수정)
-    //   - automation comment = append-only weekly history (cascade archive 후 description reset)
-    // 따라서:
-    //   1) description에 marker 있음  → description = current SoT
-    //   2) 없으면 comment에 marker 있음 → historical fallback (transition 기간 대응)
+    // ─── 우선순위 결정 (2026-05-20 정책 확정) ───────────────────
+    //
+    // [운영 흐름]
+    //   description = LIVE operational state   — PM이 매주 월/화에 직접 수정하는 현재 주차 working area
+    //   comment     = IMMUTABLE weekly history — Jira Automation rule이 description을 archive한 과거 snapshot
+    //
+    // [선택 정책]
+    //   1) description에 weekly marker가 있으면 → 무조건 description (current SoT)
+    //   2) description에 marker가 없을 때만   → latest comment (transition 기간 fallback)
     //   3) 둘 다 없으면 null
+    //
+    // [중요 운영 약속]
+    //   - planning / review / release / launch 같은 상태 변화의 SoT는 항상 description.
+    //   - comment의 sourceWeek가 더 최신이라도 description marker가 있으면 description 우선
+    //     (PM이 이번 주 working area를 갱신 중인 상태는 가장 신뢰할 만한 정보).
+    //   - comment는 향후 stale 감지 / backtracking / 주차별 transition 분석에만 사용.
     type Pick = {
       text: string;
       source: "description" | "comment";
@@ -214,16 +222,24 @@ export async function GET(req: NextRequest) {
       parsed,
       parseSummary,
       debug: {
+        // ─── description (LIVE working area) ───
         descriptionLength: descText.length,
         descriptionHasMarker: descMarkers.length > 0,
         descriptionMarkers: descMarkers,
         descriptionPreview: descText.slice(0, 200),
         descriptionUpdated: descUpdated,
+        // ─── comment (IMMUTABLE history archive) ───
         commentCount: comments.length,
         markedCommentFound: !!markedComment,
         markedCommentMarkers: markedComment?.markers ?? [],
         markedCommentUpdated: markedComment?.updated ?? null,
         markedCommentAuthor: markedComment?.author ?? null,
+        markedCommentLength: markedComment?.text.length ?? 0,
+        markedCommentPreview: markedComment?.text.slice(0, 200) ?? null,
+        // ─── 운영 정책 명시 ───
+        policyDescription:
+          "description = LIVE SoT (PM working area), comment = IMMUTABLE archive (automation). " +
+          "description marker가 있으면 무조건 description 우선; comment는 fallback / history.",
       },
     });
   } catch (e) {
