@@ -135,6 +135,7 @@ export const TICKET_KEYS: string[] = [
   "M29CMOD-6170",
   "CMALL-796",
   "TM-3032",
+  "CMALL-889",
 ];
 
 /**
