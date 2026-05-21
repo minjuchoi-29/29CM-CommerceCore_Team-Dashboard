@@ -1,0 +1,71 @@
+{
+  "type": "doc",
+  "version": 1,
+  "content": [
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "*지난주 기획 일정 지연 및 옵션 정책 이슈로 5/15 ETA 해소완료시 green 전환 예정이었으나 해소되지 않아 yellow 유지"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "text",
+          "text": "*PTG plan : 기획 리뷰 완료 및 상세 디자인/개발 일정 산정 완료 후, 7/27 런칭 ETA 준수 가능 여부 확인될 경우 green 전환"
+        }
+      ]
+    },
+    {
+      "type": "bulletList",
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "기획 : CBP 5/21(목), 29CM 5/22(금) 기획 리뷰 예정"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "디자인 : CBP, 29CM 일정 확인 필요"
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "개발 : 상위 레벨에서 R&R 논의중, 세일프라이싱 t-sizing시 최소 60MD로 산정되어 상세 기획/디자인 리뷰 및 R&R 확정 후 재산정 필요"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

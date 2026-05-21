@@ -12,8 +12,12 @@
 import type {
   ParsedWeekly, ParsedScheduleItem, ParsedRisk, ParsedNextAction,
   ScheduleStatus, ActionCategory, NoteSeverity, Confidence, LineClassification,
-  SchedulePhase,
+  SchedulePhase, PhaseSource,
 } from "./weekly-types";
+import {
+  buildAstFromPlainText, partitionBySections, traverseAst,
+  printAstTree, type AstNode, type AstContext,
+} from "./weekly-ast";
 
 // ─── 정책 화이트리스트 / 키워드 ─────────────────────────────────
 // Phase taxonomy — 운영 단계 (PM이 관리하는 실행 일정 단위).
@@ -282,6 +286,11 @@ function buildSectionAnchor(): RegExp {
 
 const SECTION_ANCHOR = buildSectionAnchor();
 
+/**
+ * @deprecated AST 마이그레이션 이후 사용되지 않음. emergency rollback / 디버깅 reference로 보존.
+ * 신규 코드는 lib/weekly-ast의 detectSectionMarker + partitionBySections를 사용.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function extractSection(text: string, group: keyof typeof SECTION_ALIASES): { content: string; matchedAlias: string | null } {
   const aliases = SECTION_ALIASES[group];
   for (const alias of aliases) {
@@ -315,6 +324,11 @@ function trimToNextSectionAnchor(content: string): string {
   return content.slice(0, m.index).trimEnd();
 }
 
+/**
+ * @deprecated AST 마이그레이션 이후 사용되지 않음. emergency rollback / 디버깅 reference로 보존.
+ * 신규 코드는 lib/weekly-ast의 buildAstFromPlainText를 사용.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function extractBullets(section: string): string[] {
   return section
     .split("\n")
@@ -360,6 +374,26 @@ export function classifyLine(
   schedule?: ParsedScheduleItem;
   declineReason?: string;
 } {
+  // backward compat — ctx 없이 호출 시 parent context 없음
+  return classifyLineWithCtx(line, undefined, fallbackYear);
+}
+
+/**
+ * classifyLine의 context-aware 버전. AST traversal에서 호출.
+ * ctx?.parentPhase가 있으면 schedule 추출 시 parent inheritance가 동작.
+ */
+export function classifyLineWithCtx(
+  line: string,
+  ctx: { parentPhase?: SchedulePhase; parentText?: string } | undefined,
+  fallbackYear?: number,
+): {
+  type: LineClassification;
+  confidence: Confidence;
+  content: string;
+  rawText: string;
+  schedule?: ParsedScheduleItem;
+  declineReason?: string;
+} {
   const content = line.trim();
   if (!content) {
     return { type: "note", confidence: "low", content, rawText: line };
@@ -369,17 +403,14 @@ export function classifyLine(
   const lowConf = matchesAny(content, LOW_CONFIDENCE_KEYWORDS);
   const isRisk = matchesAny(content, RISK_INDICATORS);
 
-  // ── 분류 우선순위 (사용자 정책) ─────────────────────────────────
-  //   schedule 자격 미달 line은 다음 순서로 분류:
-  //     RISK_INDICATORS 매칭         → risk
-  //     LOW_CONFIDENCE_KEYWORDS 매칭 → action (실제 follow-up 의미)
-  //     그 외                        → note (UI 출력 안 함, 단순 설명/상황 line)
-  //   "PTG plan ...", "yellow 유지" 같은 NON_SCHEDULE은 위 우선순위에 따라
-  //   RISK도 LOW_CONF도 아니면 자동 ignored.
-  const classifyDeclined = (declineReason: string) => ({
+  // explainability를 위해, declined 결과에도 parseScheduleLineWithCtx로 얻은 schedule meta를
+  // (있을 때만) 첨부한다. UI/debug에서 "왜 schedule 자격이 박탈됐는지" + "추정된 phase는 무엇이었는지"를
+  // 함께 보여주기 위함. scheduleItems push 정책은 변경 없음(type === "schedule"일 때만).
+  const classifyDeclined = (declineReason: string, computedItem?: ParsedScheduleItem) => ({
     type: (isRisk ? "risk" : lowConf ? "action" : "note") as LineClassification,
     confidence: "low" as Confidence,
     content, rawText: line,
+    schedule: computedItem,
     declineReason,
   });
 
@@ -388,8 +419,8 @@ export function classifyLine(
     return classifyDeclined("non_schedule_indicator (PTG plan / 전환 조건 등)");
   }
 
-  // 2) schedule line 시도
-  const item = parseScheduleLine(content, fallbackYear);
+  // 2) schedule line 시도 — context 전달
+  const item = parseScheduleLineWithCtx(content, ctx, fallbackYear);
   if (!item) {
     return classifyDeclined("schedule line parse failed");
   }
@@ -401,12 +432,12 @@ export function classifyLine(
 
   // 3) phase 화이트리스트 위반 → schedule 금지
   if (!phaseOK) {
-    return classifyDeclined(`phase "${item.phase ?? "(none)"}" not in allowed phases`);
+    return classifyDeclined(`phase "${item.phase ?? "(none)"}" not in allowed phases`, item);
   }
 
   // 4) 날짜 없음 → schedule 금지
   if (!hasDate) {
-    return classifyDeclined("no date");
+    return classifyDeclined("no date", item);
   }
 
   // 5) low-confidence 키워드 매칭 → schedule 금지 (단, milestone phase는 예외)
@@ -415,12 +446,12 @@ export function classifyLine(
   // 케이스도 일정 검토 대상이 되어야 함.
   const isMilestonePhase = item.phase === "Release" || item.phase === "Launch" || item.phase === "Kick-Off";
   if (lowConf && !isMilestonePhase) {
-    return classifyDeclined("low_confidence keyword (follow-up 필요)");
+    return classifyDeclined("low_confidence keyword (follow-up 필요)", item);
   }
 
   // 6) 실행성 status 검증 — milestone phase는 status 비실행성이어도 허용 (조건부 일정도 candidate)
   if (!EXECUTABLE_STATUSES.has(item.status) && !isMilestonePhase) {
-    return classifyDeclined(`status "${item.status}" not executable (need 예정/진행중/완료)`);
+    return classifyDeclined(`status "${item.status}" not executable (need 예정/진행중/완료)`, item);
   }
 
   // 7) confidence 결정
@@ -435,16 +466,94 @@ export function classifyLine(
   return { type: "schedule", confidence, content, rawText: line, schedule };
 }
 
-function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleItem | null {
+// ─── Hybrid phase resolution 정책 (Option D) ──────────────────
+//
+// 운영 의도:
+//   - Release / Launch / Kick-Off 같은 milestone phase는 활동의 본질 → 자체 매칭 우선.
+//   - QA / 기획 / 디자인 / 개발은 운영 단계 컨텍스트 → 부모 inheritance 우선.
+//
+// 효과:
+//   - "잔여 개발 사항(parent=개발) → CEE 피처플래그 적용 배포(self=Release)"
+//     → milestone이므로 self 우선 → Release, phaseSource="lineBody"
+//   - "QA(parent=QA) → 5/19 파트너 어드민 작업(self=기타)"
+//     → self 매칭 실패 → parent 상속 → QA, phaseSource="parentInheritance"
+//   - "기획 : 5/21 리뷰 예정(roleRaw=기획)"
+//     → roleRaw 매칭, non-milestone, parent 없음 → 기획, phaseSource="roleRaw"
+//
+// phaseSource 메타는 ParsedScheduleItem에 옵셔널로 노출되어 UI/debug에서
+// "왜 이 phase로 분류됐는가"를 즉시 확인할 수 있게 한다.
+
+export const MILESTONE_PHASES = new Set<SchedulePhase>(["Release", "Launch", "Kick-Off"]);
+
+/**
+ * Hybrid 정책에 따라 phase / resourceTeam / phaseSource를 결정.
+ *
+ * 우선순위 chain:
+ *   1) roleRaw 매칭 — milestone이면 그대로, non-milestone + parentPhase 있으면 parent
+ *   2) lineBody 매칭 — milestone이면 그대로, non-milestone + parentPhase 있으면 parent
+ *   3) parentPhase 있으면 그대로 상속 (자체 매칭 모두 실패)
+ *   4) 그 외 — "기타"로 결정 (schedule 자격 박탈)
+ *
+ * resourceTeam은 자체 매칭(roleRaw / lineBody)일 때만 그 매칭 결과로 채워지고,
+ * parent inheritance인 경우 null (부모는 phase만 전달, resourceTeam은 자식 고유 정보가
+ * 없으면 부여하지 않음 — 향후 stable identity 단계에서 자식 raw text 기반으로 도출).
+ */
+export function resolvePhaseWithContext(
+  roleRaw: string,
+  lineFull: string,
+  parentPhase: SchedulePhase | undefined,
+): { phase: SchedulePhase; resourceTeam: string | null; phaseSource: PhaseSource; inheritedFromParentText: string | null } {
+  // 1. roleRaw
+  if (roleRaw && roleRaw.trim()) {
+    const r = extractPhaseAndResource(roleRaw);
+    if (r.phase !== "기타") {
+      if (MILESTONE_PHASES.has(r.phase)) {
+        return { phase: r.phase, resourceTeam: r.resourceTeam, phaseSource: "roleRaw", inheritedFromParentText: null };
+      }
+      if (parentPhase) {
+        return { phase: parentPhase, resourceTeam: null, phaseSource: "parentInheritance", inheritedFromParentText: null /* 호출자가 채움 */ };
+      }
+      return { phase: r.phase, resourceTeam: r.resourceTeam, phaseSource: "roleRaw", inheritedFromParentText: null };
+    }
+  }
+  // 2. lineBody
+  const b = extractPhaseAndResource(lineFull);
+  if (b.phase !== "기타") {
+    if (MILESTONE_PHASES.has(b.phase)) {
+      return { phase: b.phase, resourceTeam: b.resourceTeam, phaseSource: "lineBody", inheritedFromParentText: null };
+    }
+    if (parentPhase) {
+      return { phase: parentPhase, resourceTeam: null, phaseSource: "parentInheritance", inheritedFromParentText: null };
+    }
+    return { phase: b.phase, resourceTeam: b.resourceTeam, phaseSource: "lineBody", inheritedFromParentText: null };
+  }
+  // 3. parent fallback
+  if (parentPhase) {
+    return { phase: parentPhase, resourceTeam: null, phaseSource: "parentInheritance", inheritedFromParentText: null };
+  }
+  // 4. nothing matched
+  return { phase: "기타", resourceTeam: lineFull.trim() || null, phaseSource: "lineBody", inheritedFromParentText: null };
+}
+
+/**
+ * parseScheduleLine의 context-aware 버전. AST traversal에서 사용.
+ *
+ * ctx?.parentPhase가 주어지면 Hybrid 정책(Option D)에 따라 phase 결정.
+ * ctx가 undefined이면 기존 parseScheduleLine과 동일 동작 (parentPhase = undefined).
+ */
+export function parseScheduleLineWithCtx(
+  line: string,
+  ctx: { parentPhase?: SchedulePhase; parentText?: string } | undefined,
+  fallbackYear?: number,
+): ParsedScheduleItem | null {
   if (!line.trim()) return null;
 
   const isCancelled = CANCEL_KEYWORDS.some(kw => line.includes(kw));
 
-  // role split: 첫 ':' 위치
   let roleRaw = "";
   let rest = line.trim();
   const colon = rest.indexOf(":");
-  if (colon > 0 && colon < 40) {  // role 부분이 너무 길면 콜론은 본문에 있는 거
+  if (colon > 0 && colon < 40) {
     roleRaw = rest.slice(0, colon).trim();
     rest = rest.slice(colon + 1).trim();
   }
@@ -453,9 +562,6 @@ function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleI
   let statusRaw = "";
   let assigneeRaw = "";
 
-  // 패턴 1: 명시적 field separator는 " / " (앞뒤 공백 강제) — 날짜의 M/D를 오인하지 않도록.
-  // role: date / status / assignee
-  // role: date / status
   const SLASH_SEP = /\s+\/\s+/;
   if (SLASH_SEP.test(rest)) {
     const parts = rest.split(SLASH_SEP).map(p => p.trim());
@@ -463,8 +569,6 @@ function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleI
     statusRaw = parts[1] ?? "";
     assigneeRaw = parts[2] ?? "";
   }
-
-  // 패턴 2: 자연어 — date/range/status 키워드 추출
   if (!datePart && !statusRaw) {
     const dr = extractDateRange(rest, fallbackYear);
     if (dr) datePart = dr.raw;
@@ -472,7 +576,6 @@ function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleI
     if (sk) statusRaw = sk.kw;
   }
 
-  // start/end 계산
   let startDate: string | null = null;
   let endDate: string | null = null;
   if (datePart) {
@@ -486,35 +589,42 @@ function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleI
     }
   }
 
-  // role이 없는데 status/date도 못 찾으면 line은 schedule 아님
   if (!roleRaw && !startDate && !statusRaw) return null;
 
-  // 정책: phase + resourceTeam 분리.
-  // 1순위: 콜론 앞 role 텍스트에서 추출
-  // 2순위: role이 비었거나 "기타"로만 잡히면, line 본문 전체에서 milestone 키워드 검색
-  //         (예: "5/20 최종 론치 진행 예정" → phase=Launch, "7/1 일정 오픈" → Launch)
-  let { phase, resourceTeam } = extractPhaseAndResource(roleRaw || "기타");
-  if (phase === "기타") {
-    const fullPR = extractPhaseAndResource(line);
-    if (fullPR.phase !== "기타") {
-      phase = fullPR.phase;
-      resourceTeam = fullPR.resourceTeam;
-    }
-  }
-  const normalizedRole = deriveNormalizedRole(phase, resourceTeam);
+  const resolved = resolvePhaseWithContext(roleRaw, line, ctx?.parentPhase);
+  const inheritedFromParentText = resolved.phaseSource === "parentInheritance"
+    ? (ctx?.parentText ?? null)
+    : null;
+  const normalizedRole = deriveNormalizedRole(resolved.phase, resolved.resourceTeam);
 
   return {
     role: roleRaw,
     normalizedRole,
-    phase,
-    resourceTeam,
+    phase: resolved.phase,
+    resourceTeam: resolved.resourceTeam,
     startDate,
     endDate,
     status: normalizeStatus(statusRaw),
     assignee: assigneeRaw ? assigneeRaw.trim() : null,
     rawText: line,
     isCancelled,
+    phaseSource: resolved.phaseSource,
+    inheritedFromParentText,
   };
+}
+
+/**
+ * Backward-compat wrapper. ctx 없이 호출되면 parent context 없는 상태로 처리되어
+ * 기존 동작과 동일. AST 경로는 parseScheduleLineWithCtx를 직접 호출.
+ *
+ * 단, phase 정책은 새 Hybrid 정책(Option D)을 따른다 — 기존 코드의 fallback chain
+ * (roleRaw → lineBody)이 parent inheritance 없이 그대로 동작하므로 회귀 없음.
+ *
+ * @deprecated 외부 호출자가 없음. 향후 정리 가능.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function parseScheduleLine(line: string, fallbackYear?: number): ParsedScheduleItem | null {
+  return parseScheduleLineWithCtx(line, undefined, fallbackYear);
 }
 
 // ─── Risk severity / Action category ───────────────────────────
@@ -564,100 +674,126 @@ export function parseWeekNumber(text: string): string {
 }
 
 // ─── 메인 파서 ─────────────────────────────────────────────────
+//
+// 운영 흐름:
+//   1. 입력 text를 AST(buildAstFromPlainText)로 변환 — bullet hierarchy + indent 보존.
+//   2. partitionBySections로 section marker 기준 분할:
+//        - marker 있는 경우: 각 section의 노드만 해당 카테고리 추출
+//        - marker 없는 경우: 전체 AST를 classifyLineWithCtx로 fallback 분류
+//   3. 각 section/fallback에서 traverseAst로 item을 방문하면서
+//        parent phase context를 자식 item에 propagate (Hybrid 정책: Option D).
+//   4. ParsedWeekly schema 동일 — 기존 호출자(weekly-sync route, mergeWeeklySync) 변경 없음.
+//
+// 회귀 방지:
+//   - section marker가 있는 weekly는 기존 동작과 동일한 결과 (단, hierarchy가 있다면 더 정확).
+//   - 자유형식 weekly는 fallback path가 동일하게 classifyLineWithCtx를 사용 (ctx는 빈 값).
+//   - phase 정책 차이: Hybrid 정책 적용 — 부모 inheritance가 추가됐을 뿐 기존 매칭은 그대로 통과.
 
 export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
   const now = new Date().toISOString();
   const sourceWeek = parseWeekNumber(text);
   const fallbackYear = new Date().getFullYear();
   const warnings: string[] = [];
-  const sectionsFound: string[] = [];
-  const consumedLines = new Set<string>();
+  const sectionsFoundDebug: string[] = [];
 
-  // ── 진행상황 ──
-  const progressSec = extractSection(text, "progress");
-  if (progressSec.matchedAlias) sectionsFound.push(`progress(${progressSec.matchedAlias})`);
-  const progressItems = extractBullets(progressSec.content);
-  progressItems.forEach(l => consumedLines.add(l));
+  // ── 1. AST build ───────────────────────────────────────────
+  const ast = buildAstFromPlainText(text);
+  const { sections, unsectioned, hasAnyMarker } = partitionBySections(ast);
 
-  // ── 일정 ──
-  const scheduleSec = extractSection(text, "schedule");
-  if (scheduleSec.matchedAlias) sectionsFound.push(`schedule(${scheduleSec.matchedAlias})`);
-  const scheduleItems: ParsedScheduleItem[] = [];
-  for (const line of extractBullets(scheduleSec.content)) {
-    consumedLines.add(line);
-    try {
-      const item = parseScheduleLine(line, fallbackYear);
-      if (item) scheduleItems.push(item);
-    } catch (e) {
-      warnings.push(`schedule line parse failed: "${line.slice(0, 60)}" — ${(e as Error).message}`);
+  if (hasAnyMarker) {
+    for (const g of ["progress", "schedule", "risk", "nextAction"] as const) {
+      if (sections[g].length > 0) sectionsFoundDebug.push(g);
     }
   }
-  // schedule 섹션이 없거나 비었으면 progressItems에서 일정 후보 추출 시도
-  if (scheduleItems.length === 0) {
-    for (const line of progressItems) {
-      const item = parseScheduleLine(line, fallbackYear);
-      // 날짜 또는 status가 있어야 schedule로 인정
-      if (item && (item.startDate || item.status !== "확인필요")) {
-        scheduleItems.push(item);
+
+  // ── 2. progressItems — progress section의 item.text + para.text 모두 ──
+  const progressItems: string[] = [];
+  if (hasAnyMarker) {
+    for (const root of sections.progress) {
+      collectAllItemTexts(root).forEach(t => progressItems.push(t));
+    }
+  }
+
+  // ── 3. scheduleItems — schedule section traversal with context ──
+  const scheduleItems: ParsedScheduleItem[] = [];
+
+  function emitScheduleFromItem(node: AstNode, ctx: AstContext): SchedulePhase | undefined {
+    const item = parseScheduleLineWithCtx(
+      node.text,
+      { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+      fallbackYear,
+    );
+    if (item && item.phase && ALLOWED_PHASES.has(item.phase) && item.startDate) {
+      scheduleItems.push(item);
+    }
+    // 자식에게 propagate할 phase 결정:
+    //   - 본인이 허용 phase로 잡혔으면 그 phase
+    //   - 자식이 이미 effective ctx를 받았으면 그대로 (resolvePhaseWithContext가 처리)
+    if (item && item.phase && item.phase !== "기타") return item.phase;
+    return undefined;
+  }
+
+  if (hasAnyMarker) {
+    for (const root of sections.schedule) {
+      traverseAst(root, { itemPath: [], parentPhase: undefined, parentText: undefined }, (n, ctx) => {
+        const propagatePhase = emitScheduleFromItem(n, ctx);
+        return propagatePhase ? { propagatePhase } : undefined;
+      });
+    }
+    // 기존 운영 정책 유지: schedule section이 비었으면 progress section에서도 일정 후보 추출
+    if (scheduleItems.length === 0 && sections.progress.length > 0) {
+      for (const root of sections.progress) {
+        traverseAst(root, { itemPath: [], parentPhase: undefined, parentText: undefined }, (n, ctx) => {
+          const item = parseScheduleLineWithCtx(
+            n.text,
+            { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+            fallbackYear,
+          );
+          if (item && (item.startDate || item.status !== "확인필요")
+              && item.phase && ALLOWED_PHASES.has(item.phase)) {
+            scheduleItems.push(item);
+          }
+          return item && item.phase && item.phase !== "기타" ? { propagatePhase: item.phase } : undefined;
+        });
       }
     }
   }
 
-  // ── 이슈/리스크 ──
-  const riskSec = extractSection(text, "risk");
-  if (riskSec.matchedAlias) sectionsFound.push(`risk(${riskSec.matchedAlias})`);
+  // ── 4. risks — risk section traversal ─────────────────────
   const risks: ParsedRisk[] = [];
   let noIssues = false;
-  for (const line of extractBullets(riskSec.content)) {
-    consumedLines.add(line);
-    const sev = inferRiskSeverity(line);
-    if (sev === null) { noIssues = true; continue; }
-    risks.push({ content: line, severity: sev, rawText: line });
+  if (hasAnyMarker) {
+    for (const root of sections.risk) {
+      for (const t of collectAllItemTexts(root)) {
+        const sev = inferRiskSeverity(t);
+        if (sev === null) { noIssues = true; continue; }
+        risks.push({ content: t, severity: sev, rawText: t });
+      }
+    }
   }
 
-  // ── 다음 액션 ──
-  const actionSec = extractSection(text, "nextAction");
-  if (actionSec.matchedAlias) sectionsFound.push(`nextAction(${actionSec.matchedAlias})`);
+  // ── 5. nextActions — nextAction section traversal ─────────
   const nextActions: ParsedNextAction[] = [];
-  for (const line of extractBullets(actionSec.content)) {
-    consumedLines.add(line);
-    nextActions.push({
-      content: line,
-      actionCategory: inferActionCategory(line),
-      rawText: line,
-    });
+  if (hasAnyMarker) {
+    for (const root of sections.nextAction) {
+      for (const t of collectAllItemTexts(root)) {
+        nextActions.push({ content: t, actionCategory: inferActionCategory(t), rawText: t });
+      }
+    }
   }
 
-  // ── ignored lines: 어느 섹션에도 안 들어간 줄 (header 줄 제외) ──
-  const allBullets = extractBullets(text);
-  const ignoredLines: string[] = [];
-  for (const l of allBullets) {
-    if (consumedLines.has(l)) continue;
-    // section header 자체 또는 marker 줄은 무시
-    if (/^\s*(\[.+\]|<.+>|🧭|\d+\s*주차)/.test(l)) continue;
-    ignoredLines.push(l);
-    if (ignoredLines.length >= 5) break;
-  }
-
-  // ── Section header 없는 weekly 전체 fallback ──
-  // customfield_10625처럼 PM이 자유롭게 적은 weekly는 [진행상황]/[일정] 같은 header가 없음.
-  // 이 경우 전체 text의 모든 bullet/line을 classifyLine으로 분류:
-  //   - 허용 role + 날짜 + non-low confidence  → schedule (high/medium)
-  //   - 허용 role + 날짜 없음/low confidence  → action (low)
-  //   - 허용 role 외                          → action 또는 note
-  //   - 설명/상태성 문장 (PTG plan 등)         → note (또는 risk)
-  // schedule이 되지 못한 candidate들은 classifiedLines에 보관 → UI에서 검토.
+  // ── 6. classifiedLines + section marker 없는 경우 fallback ─
   const classifiedLines: NonNullable<ParsedWeekly["classifiedLines"]> = [];
 
-  if (sectionsFound.length === 0) {
-    const allBullets = extractBullets(text)
-      // 첫 줄 marker는 제외
-      .filter(l => !/^\s*(🧭|\d+\s*주차\s*Weekly\s*공유\s*사항)/.test(l));
-
-    for (const line of allBullets) {
-      consumedLines.add(line);
-      try {
-        const cls = classifyLine(line, fallbackYear);
+  if (!hasAnyMarker) {
+    // section marker가 전혀 없으면 전체 AST(=unsectioned)를 classifyLineWithCtx로 분류
+    for (const root of unsectioned) {
+      traverseAst(root, { itemPath: [], parentPhase: undefined, parentText: undefined }, (n, ctx) => {
+        const cls = classifyLineWithCtx(
+          n.text,
+          { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+          fallbackYear,
+        );
         classifiedLines.push({
           type: cls.type,
           confidence: cls.confidence,
@@ -677,17 +813,36 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
             rawText: cls.rawText,
           });
         }
-        // 정책: type === "note"는 ignored — Weekly Summary 원문에만 남고,
-        // 분리 영역(액션 박스) / progressItems에 push 안 함.
-        // PTG plan / yellow 유지 같은 단순 설명 line이 복제되는 문제 방지.
-      } catch (e) {
-        warnings.push(`fallback classifyLine failed: "${line.slice(0, 60)}" — ${(e as Error).message}`);
-      }
+        // schedule로 잡힌 경우 자식에게 phase propagate (운영 단계 컨텍스트 유지)
+        if (cls.type === "schedule" && cls.schedule?.phase && cls.schedule.phase !== "기타") {
+          return { propagatePhase: cls.schedule.phase };
+        }
+        // schedule이 아니어도 본인 text에서 phase가 잡히면 propagate (헤더성 line이라도)
+        const own = extractPhaseAndResource(n.text);
+        if (own.phase !== "기타") return { propagatePhase: own.phase };
+        return undefined;
+      });
     }
     warnings.push(
-      `no_section_marker — 전체 text fallback: schedule ${scheduleItems.length} / ` +
+      `no_section_marker — AST fallback: schedule ${scheduleItems.length} / ` +
       `action ${nextActions.length} / risk ${risks.length} (note ignored)`,
     );
+  }
+
+  // ── 7. ignored lines + debug (간소화 — AST 도입으로 line-level tracking 불필요) ──
+  // 운영자가 "추출 안 된 line"을 확인하고 싶을 때 AST tree에서 직접 확인 가능.
+  // 기존 ignoredLines 의미를 유지하려면 unsectioned section의 first-level item 중
+  // schedule/risk/action으로 분류되지 않은 line을 모은다.
+  const ignoredLines: string[] = [];
+  for (const c of classifiedLines) {
+    if (c.type === "note" && ignoredLines.length < 5) ignoredLines.push(c.content);
+  }
+
+  // ── 8. phaseSource breakdown (debug) ──
+  const phaseSourceCounts: Record<string, number> = {};
+  for (const s of scheduleItems) {
+    const k = s.phaseSource ?? "unknown";
+    phaseSourceCounts[k] = (phaseSourceCounts[k] ?? 0) + 1;
   }
 
   return {
@@ -701,6 +856,33 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
     nextActions,
     noIssues,
     classifiedLines,
-    debug: { sectionsFound, ignoredLines, warnings },
+    debug: {
+      sectionsFound: sectionsFoundDebug,
+      ignoredLines,
+      warnings,
+      // 확장 debug 정보 — UI/로그용. 기존 schema와 호환 (debug는 free-form).
+      ...(({
+        astTree: printAstTree(ast),
+        astTopLevelChildren: ast.children.length,
+        hasAnyMarker,
+        phaseSourceCounts,
+      } as unknown) as Record<string, unknown>),
+    },
   };
+}
+
+/**
+ * AST subtree에서 모든 item.text와 standalone para.text를 수집.
+ * progress/risk/nextAction section처럼 hierarchy를 schedule처럼 살리지 않고
+ * 단순히 텍스트를 모으는 케이스에서 사용.
+ */
+function collectAllItemTexts(node: AstNode): string[] {
+  const out: string[] = [];
+  function walk(n: AstNode): void {
+    if (n.kind === "item" && n.text) out.push(n.text);
+    if (n.kind === "para" && n.text) out.push(n.text);
+    for (const c of n.children) walk(c);
+  }
+  walk(node);
+  return out;
 }

@@ -45,6 +45,18 @@ export interface ScheduleSourceMeta {
 export type SchedulePhase =
   | "Kick-Off" | "기획" | "디자인" | "개발" | "QA" | "Release" | "Launch" | "기타";
 
+/**
+ * phase가 어떤 경로로 결정됐는지 추적하는 메타.
+ *
+ * - roleRaw          : 라인의 콜론 앞 텍스트("기획 : ...")에서 직접 매칭
+ * - lineBody         : 라인 본문 전체에서 키워드 매칭 (roleRaw가 비었거나 "기타"일 때)
+ * - parentInheritance: AST 부모 item에서 phase 상속 (자체 매칭 실패 시)
+ *
+ * 운영자가 "왜 이 candidate가 이 phase로 분류됐는가"를 확인할 수 있도록
+ * UI/debug에 노출 가능. 정책 변경 영향도 분석에도 사용.
+ */
+export type PhaseSource = "roleRaw" | "lineBody" | "parentInheritance";
+
 /** 파싱된 일정 항목 */
 export interface ParsedScheduleItem {
   role: string;
@@ -66,6 +78,10 @@ export interface ParsedScheduleItem {
   isCancelled: boolean;
   /** schedule candidate 신뢰도 — schedule row 후보화 시 사용 */
   confidence?: Confidence;
+  /** phase 결정 경로 — explainability/debug 용 (Option D 정책). 기존 schema와 호환 위해 optional. */
+  phaseSource?: PhaseSource;
+  /** parentInheritance인 경우 어느 부모 텍스트에서 받았는지 (debug) */
+  inheritedFromParentText?: string | null;
 }
 
 export interface ParsedRisk {
