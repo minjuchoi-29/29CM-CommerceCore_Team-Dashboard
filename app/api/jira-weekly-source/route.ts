@@ -1,14 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { parseWeekly } from "@/lib/weekly-parser";
+import { buildAstFromAdf, printAstTree } from "@/lib/weekly-ast";
 
 export const dynamic = "force-dynamic";
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 const FETCH_TIMEOUT_MS = 15_000;
 
-// ─── ADF → plain text ─────────────────────────────────────────
-// Atlassian Document Format은 ProseMirror-like JSON. 텍스트 노드만 합치고
-// block-level 노드는 줄바꿈으로 구분해 marker 매칭이 가능한 형태로 평탄화.
+// ─── ADF → plain text (indent-preserving) ─────────────────────
+//
+// Atlassian Document Format은 ProseMirror-like JSON. 본 모듈은 ADF tree를 평탄화한
+// text를 반환하지만, **nested bulletList의 depth는 2-space indent로 보존**한다.
+//   - bulletList / orderedList는 들어갈 때마다 listDepth++
+//   - listItem 렌더 시 (listDepth - 1) * 2 칸 indent 후 "- " prefix
+//   - text 출력은 lib/weekly-ast.buildAstFromPlainText가 이 indent를 보고 hierarchy를 복구
+//
+// 이렇게 해야 jira-weekly-source → /api/weekly-sync → parseWeekly → AST traversal 흐름에서
+// parent phase context가 실제로 자식에게 propagate됨. 이 indent가 없으면 AST 도입의 효과 0.
 
 type AdfNode = {
   type?: string;
@@ -22,17 +30,44 @@ const BLOCK_TYPES = new Set([
   "rule", "panel", "expand", "nestedExpand", "mediaSingle",
 ]);
 
-function adfToText(node: AdfNode | null | undefined, typesSeen?: Set<string>): string {
+function adfToText(node: AdfNode | null | undefined, typesSeen?: Set<string>, listDepth = 0): string {
   if (!node) return "";
   if (typesSeen && node.type) typesSeen.add(node.type);
   if (node.type === "text") return node.text ?? "";
   if (node.type === "hardBreak") return "\n";
 
+  // bulletList / orderedList: depth +1 하여 자식 listItem 처리
+  if (node.type === "bulletList" || node.type === "orderedList") {
+    return Array.isArray(node.content)
+      ? node.content.map(c => adfToText(c, typesSeen, listDepth + 1)).join("")
+      : "";
+  }
+
+  // listItem: 현재 listDepth를 기준으로 indent 적용
+  if (node.type === "listItem") {
+    // listItem 내부의 paragraph는 자체 줄바꿈을 붙이므로, 우리는 첫 줄에 prefix만 붙이고
+    // nested list (자식 bulletList)는 그 다음 줄들에 자기 indent를 입혀 출력함.
+    const inner = Array.isArray(node.content)
+      ? node.content.map(c => adfToText(c, typesSeen, listDepth)).join("")
+      : "";
+    const indent = "  ".repeat(Math.max(0, listDepth - 1));
+    const lines = inner.split("\n");
+    // 첫 비어있지 않은 line에 prefix를 붙이고, 그 뒤 line은 indent 유지 (자식 list가 이미 자기 indent를 가짐)
+    let firstNonEmpty = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i].trim()) { firstNonEmpty = i; break; }
+    }
+    if (firstNonEmpty < 0) return "";
+    lines[firstNonEmpty] = `${indent}- ${lines[firstNonEmpty].trim()}`;
+    // trailing blank lines 제거 후 줄바꿈 1개
+    while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
+    return lines.join("\n") + "\n";
+  }
+
   const inner = Array.isArray(node.content)
-    ? node.content.map(c => adfToText(c, typesSeen)).join("")
+    ? node.content.map(c => adfToText(c, typesSeen, listDepth)).join("")
     : "";
 
-  if (node.type === "listItem") return `- ${inner.trim()}\n`;
   if (node.type === "tableRow") return inner.replace(/\n+/g, " | ") + "\n";
   if (node.type && BLOCK_TYPES.has(node.type)) return inner + "\n";
   return inner;
@@ -356,6 +391,11 @@ export async function GET(req: NextRequest) {
         weeklyCustomFieldLength: cfWeeklyText.length,
         weeklyCustomFieldPreview: cfWeeklyText.slice(0, 1200),
         weeklyCustomFieldMarkers: cfWeeklyMarkers,
+        // AST tree dump — ADF 직접 빌더 결과 (운영자가 hierarchy 인식 결과를 확인 가능)
+        // dev 환경 외에는 omit해 production 응답 사이즈를 줄임
+        weeklyCustomFieldAstTree: process.env.NODE_ENV === "development" && cfWeeklyAdf
+          ? printAstTree(buildAstFromAdf(cfWeeklyAdf))
+          : undefined,
         // ─── description (legacy fallback) ───
         descriptionLength: descText.length,
         descriptionPreview: descText.slice(0, 1200),
