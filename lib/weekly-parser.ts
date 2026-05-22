@@ -27,6 +27,46 @@ export const ALLOWED_PHASES = new Set<string>([
   "Kick-Off", "기획", "디자인", "개발", "QA", "Release", "Launch",
 ]);
 
+/** Milestone phases — 날짜가 다르면 별도 row. stableTaskId에 startDate를 suffix로 사용. */
+export const MILESTONE_PHASES = new Set<SchedulePhase>(["Launch", "Release", "Kick-Off"]);
+
+/**
+ * Semantic slug — 표현 변형(공백/하이픈/대소문자)을 제거해 같은 작업을 같은 label로 normalize.
+ * "O-SKU 통합"  → "o-sku-통합"
+ * "O SKU 통합"  → "o-sku-통합"  (same ✓)
+ */
+export function semanticSlug(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/[^a-z0-9가-힣-]/g, "")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Deterministic stable row identity.
+ * - 일반 phase: `${ticketKey}::${phase}::${semanticSlug(resourceTeam)}`
+ * - Milestone phase (Launch/Release/Kick-Off): date suffix → 날짜가 다르면 별도 row.
+ *   `${ticketKey}::${phase}::${startDate}` (startDate 없으면 slug fallback)
+ *
+ * @example
+ *   buildStableTaskId("TM-2853", "QA", "O-SKU 통합", null)  → "TM-2853::QA::o-sku-통합"
+ *   buildStableTaskId("TM-2745", "Launch", null, "2026-07-01") → "TM-2745::Launch::2026-07-01"
+ */
+export function buildStableTaskId(
+  ticketKey: string,
+  phase: SchedulePhase,
+  resourceTeam: string | null,
+  startDate?: string | null,
+): string {
+  if (MILESTONE_PHASES.has(phase)) {
+    const suffix = startDate || semanticSlug(resourceTeam || "");
+    return `${ticketKey}::${phase}::${suffix}`;
+  }
+  return `${ticketKey}::${phase}::${semanticSlug(resourceTeam || "")}`;
+}
+
 // 명시적 dev resource 명칭 — 발견되면 phase="개발"로 분류하고 raw 전체를 resourceTeam에 보관.
 // "Core AI BE", "BE-PP", "FE-CFE", "메가존 개발 및 코드리뷰" 등 자유 조합 모두 처리.
 const DEV_RESOURCE_PATTERNS: RegExp[] = [
@@ -238,20 +278,22 @@ function parseDate(raw: string, fallbackYear?: number): string | null {
   return null;
 }
 
-/** 라인 안에서 날짜/범위를 첫 매치만 추출 */
-function extractDateRange(text: string, fallbackYear?: number): { start: string | null; end: string | null; raw: string } | null {
+/** 라인 안에서 날짜/범위를 첫 매치만 추출. isRange=true면 명시적 범위(~) 표기. */
+function extractDateRange(text: string, fallbackYear?: number): {
+  start: string | null; end: string | null; raw: string; isRange: boolean;
+} | null {
   // 범위: M/D(요일)? ~ M/D(요일)? 또는 YYYY-MM-DD ~ YYYY-MM-DD
   const rangeRe = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*~\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/;
   const r = text.match(rangeRe);
   if (r) {
-    return { start: parseDate(r[1], fallbackYear), end: parseDate(r[2], fallbackYear), raw: r[0] };
+    return { start: parseDate(r[1], fallbackYear), end: parseDate(r[2], fallbackYear), raw: r[0], isRange: true };
   }
   // 단일: YYYY-MM-DD 또는 M/D(요일)?
   const singleRe = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/;
   const s = text.match(singleRe);
   if (s) {
     const d = parseDate(s[1], fallbackYear);
-    return { start: d, end: d, raw: s[0] };
+    return { start: d, end: d, raw: s[0], isRange: false };
   }
   return null;
 }
@@ -472,31 +514,13 @@ export function classifyLineWithCtx(
 //   - Release / Launch / Kick-Off 같은 milestone phase는 활동의 본질 → 자체 매칭 우선.
 //   - QA / 기획 / 디자인 / 개발은 운영 단계 컨텍스트 → 부모 inheritance 우선.
 //
-// 효과:
-//   - "잔여 개발 사항(parent=개발) → CEE 피처플래그 적용 배포(self=Release)"
-//     → milestone이므로 self 우선 → Release, phaseSource="lineBody"
-//   - "QA(parent=QA) → 5/19 파트너 어드민 작업(self=기타)"
-//     → self 매칭 실패 → parent 상속 → QA, phaseSource="parentInheritance"
-//   - "기획 : 5/21 리뷰 예정(roleRaw=기획)"
-//     → roleRaw 매칭, non-milestone, parent 없음 → 기획, phaseSource="roleRaw"
-//
 // phaseSource 메타는 ParsedScheduleItem에 옵셔널로 노출되어 UI/debug에서
 // "왜 이 phase로 분류됐는가"를 즉시 확인할 수 있게 한다.
 
-export const MILESTONE_PHASES = new Set<SchedulePhase>(["Release", "Launch", "Kick-Off"]);
+// Note: MILESTONE_PHASES는 위에서 이미 export됨.
 
 /**
  * Hybrid 정책에 따라 phase / resourceTeam / phaseSource를 결정.
- *
- * 우선순위 chain:
- *   1) roleRaw 매칭 — milestone이면 그대로, non-milestone + parentPhase 있으면 parent
- *   2) lineBody 매칭 — milestone이면 그대로, non-milestone + parentPhase 있으면 parent
- *   3) parentPhase 있으면 그대로 상속 (자체 매칭 모두 실패)
- *   4) 그 외 — "기타"로 결정 (schedule 자격 박탈)
- *
- * resourceTeam은 자체 매칭(roleRaw / lineBody)일 때만 그 매칭 결과로 채워지고,
- * parent inheritance인 경우 null (부모는 phase만 전달, resourceTeam은 자식 고유 정보가
- * 없으면 부여하지 않음 — 향후 stable identity 단계에서 자식 raw text 기반으로 도출).
  */
 export function resolvePhaseWithContext(
   roleRaw: string,
@@ -511,7 +535,7 @@ export function resolvePhaseWithContext(
         return { phase: r.phase, resourceTeam: r.resourceTeam, phaseSource: "roleRaw", inheritedFromParentText: null };
       }
       if (parentPhase) {
-        return { phase: parentPhase, resourceTeam: null, phaseSource: "parentInheritance", inheritedFromParentText: null /* 호출자가 채움 */ };
+        return { phase: parentPhase, resourceTeam: null, phaseSource: "parentInheritance", inheritedFromParentText: null };
       }
       return { phase: r.phase, resourceTeam: r.resourceTeam, phaseSource: "roleRaw", inheritedFromParentText: null };
     }
@@ -537,14 +561,13 @@ export function resolvePhaseWithContext(
 
 /**
  * parseScheduleLine의 context-aware 버전. AST traversal에서 사용.
- *
- * ctx?.parentPhase가 주어지면 Hybrid 정책(Option D)에 따라 phase 결정.
- * ctx가 undefined이면 기존 parseScheduleLine과 동일 동작 (parentPhase = undefined).
+ * ticketKey가 있으면 stableTaskId를 계산해 ParsedScheduleItem에 포함.
  */
 export function parseScheduleLineWithCtx(
   line: string,
   ctx: { parentPhase?: SchedulePhase; parentText?: string } | undefined,
   fallbackYear?: number,
+  ticketKey?: string,
 ): ParsedScheduleItem | null {
   if (!line.trim()) return null;
 
@@ -561,17 +584,22 @@ export function parseScheduleLineWithCtx(
   let datePart = "";
   let statusRaw = "";
   let assigneeRaw = "";
+  let isRangeDate = false;
 
   const SLASH_SEP = /\s+\/\s+/;
   if (SLASH_SEP.test(rest)) {
     const parts = rest.split(SLASH_SEP).map(p => p.trim());
     datePart = parts[0] ?? "";
+    isRangeDate = datePart.includes("~");
     statusRaw = parts[1] ?? "";
     assigneeRaw = parts[2] ?? "";
   }
   if (!datePart && !statusRaw) {
     const dr = extractDateRange(rest, fallbackYear);
-    if (dr) datePart = dr.raw;
+    if (dr) {
+      datePart = dr.raw;
+      isRangeDate = dr.isRange;
+    }
     const sk = findStatusKeyword(rest);
     if (sk) statusRaw = sk.kw;
   }
@@ -596,6 +624,19 @@ export function parseScheduleLineWithCtx(
     ? (ctx?.parentText ?? null)
     : null;
   const normalizedRole = deriveNormalizedRole(resolved.phase, resolved.resourceTeam);
+  const status = normalizeStatus(statusRaw);
+
+  const dateMentioned = {
+    start: !!datePart && (isRangeDate || status !== "완료"),
+    end: !!datePart,
+  };
+
+  const stableTaskId = (ticketKey && resolved.phase !== "기타")
+    ? buildStableTaskId(
+        ticketKey, resolved.phase, resolved.resourceTeam ?? null,
+        MILESTONE_PHASES.has(resolved.phase) ? startDate : null,
+      )
+    : undefined;
 
   return {
     role: roleRaw,
@@ -604,12 +645,14 @@ export function parseScheduleLineWithCtx(
     resourceTeam: resolved.resourceTeam,
     startDate,
     endDate,
-    status: normalizeStatus(statusRaw),
+    status,
     assignee: assigneeRaw ? assigneeRaw.trim() : null,
     rawText: line,
     isCancelled,
     phaseSource: resolved.phaseSource,
     inheritedFromParentText,
+    dateMentioned,
+    stableTaskId,
   };
 }
 
@@ -722,39 +765,73 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
       node.text,
       { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
       fallbackYear,
+      ticketKey,
     );
     if (item && item.phase && ALLOWED_PHASES.has(item.phase) && item.startDate) {
       scheduleItems.push(item);
     }
-    // 자식에게 propagate할 phase 결정:
-    //   - 본인이 허용 phase로 잡혔으면 그 phase
-    //   - 자식이 이미 effective ctx를 받았으면 그대로 (resolvePhaseWithContext가 처리)
     if (item && item.phase && item.phase !== "기타") return item.phase;
     return undefined;
   }
 
+  // para 노드는 traverseAst가 방문하지 않으므로 직접 처리하는 헬퍼.
+  function emitScheduleFromParaOrItem(
+    root: AstNode,
+    ctx: AstContext,
+    requireStartDate: boolean,
+  ): void {
+    if (root.kind === "para" && root.text) {
+      const item = parseScheduleLineWithCtx(
+        root.text,
+        { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+        fallbackYear,
+        ticketKey,
+      );
+      if (item && item.phase && ALLOWED_PHASES.has(item.phase)) {
+        if (!requireStartDate || item.startDate) scheduleItems.push(item);
+      }
+      return;
+    }
+    traverseAst(root, ctx, (n, nodeCtx) => {
+      const propagatePhase = emitScheduleFromItem(n, nodeCtx);
+      return propagatePhase ? { propagatePhase } : undefined;
+    });
+  }
+
   if (hasAnyMarker) {
+    const baseCtx: AstContext = { itemPath: [], parentPhase: undefined, parentText: undefined };
     for (const root of sections.schedule) {
-      traverseAst(root, { itemPath: [], parentPhase: undefined, parentText: undefined }, (n, ctx) => {
-        const propagatePhase = emitScheduleFromItem(n, ctx);
-        return propagatePhase ? { propagatePhase } : undefined;
-      });
+      emitScheduleFromParaOrItem(root, baseCtx, true);
     }
     // 기존 운영 정책 유지: schedule section이 비었으면 progress section에서도 일정 후보 추출
     if (scheduleItems.length === 0 && sections.progress.length > 0) {
       for (const root of sections.progress) {
-        traverseAst(root, { itemPath: [], parentPhase: undefined, parentText: undefined }, (n, ctx) => {
+        if (root.kind === "para" && root.text) {
           const item = parseScheduleLineWithCtx(
-            n.text,
-            { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+            root.text,
+            { parentPhase: undefined, parentText: undefined },
             fallbackYear,
+            ticketKey,
           );
           if (item && (item.startDate || item.status !== "확인필요")
               && item.phase && ALLOWED_PHASES.has(item.phase)) {
             scheduleItems.push(item);
           }
-          return item && item.phase && item.phase !== "기타" ? { propagatePhase: item.phase } : undefined;
-        });
+        } else {
+          traverseAst(root, baseCtx, (n, ctx) => {
+            const item = parseScheduleLineWithCtx(
+              n.text,
+              { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+              fallbackYear,
+              ticketKey,
+            );
+            if (item && (item.startDate || item.status !== "확인필요")
+                && item.phase && ALLOWED_PHASES.has(item.phase)) {
+              scheduleItems.push(item);
+            }
+            return item && item.phase && item.phase !== "기타" ? { propagatePhase: item.phase } : undefined;
+          });
+        }
       }
     }
   }
@@ -803,7 +880,15 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
           declineReason: cls.declineReason,
         });
         if (cls.type === "schedule" && cls.schedule) {
-          scheduleItems.push(cls.schedule);
+          // classifyLine은 ticketKey를 모르므로 여기서 stableTaskId를 패치.
+          const s = cls.schedule;
+          if (s.phase && s.phase !== "기타" && !s.stableTaskId) {
+            s.stableTaskId = buildStableTaskId(
+              ticketKey, s.phase, s.resourceTeam ?? null,
+              MILESTONE_PHASES.has(s.phase) ? s.startDate : null,
+            );
+          }
+          scheduleItems.push(s);
         } else if (cls.type === "risk") {
           risks.push({ content: cls.content, severity: "medium", rawText: cls.rawText });
         } else if (cls.type === "action") {

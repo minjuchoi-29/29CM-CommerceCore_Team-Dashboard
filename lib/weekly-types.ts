@@ -4,6 +4,13 @@
  */
 
 export type ScheduleStatus = "완료" | "진행중" | "예정" | "미정" | "확인필요" | "지연" | "보류";
+
+export interface StatusTransition {
+  from: ScheduleStatus;
+  to: ScheduleStatus;
+  sourceWeek: string;
+  changedAt: string;
+}
 export type ScheduleSource = "jira_weekly" | "manual" | "imported" | "confirmed" | "legacy";
 export type ActionCategory =
   | "schedule_confirmation"
@@ -30,7 +37,11 @@ export interface ScheduleSourceMeta {
   firstSeenAt?: string;
   manualLocked?: boolean;
   cancelledCandidate?: boolean;
-  mergeKey?: string;  // `${ticketKey}::${normalizedRole}`
+  mergeKey?: string;  // `${ticketKey}::${normalizedRole}` — legacy lookup key
+  /** Stable deterministic identity: `${ticketKey}::${phase}::${semanticSlug}` */
+  stableTaskId?: string;
+  /** Status change log — appended on each status transition, never replaced. */
+  statusHistory?: StatusTransition[];
   /** Phase taxonomy (Kick-Off/기획/디자인/개발/QA/Release/Launch/기타). UI lane 분리용. */
   phase?: SchedulePhase;
   /** 자유 text resource team (예: "Core AI BE", "BE-PP"). UI sublabel용. */
@@ -82,6 +93,10 @@ export interface ParsedScheduleItem {
   phaseSource?: PhaseSource;
   /** parentInheritance인 경우 어느 부모 텍스트에서 받았는지 (debug) */
   inheritedFromParentText?: string | null;
+  /** Deterministic row identity computed by parser: `${ticketKey}::${phase}::${semanticSlug}` */
+  stableTaskId?: string;
+  /** Which date fields were explicitly present in the source text (vs inferred/defaulted). */
+  dateMentioned?: { start: boolean; end: boolean };
 }
 
 export interface ParsedRisk {

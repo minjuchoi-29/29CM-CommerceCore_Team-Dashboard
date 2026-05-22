@@ -1,12 +1,18 @@
 /**
  * Weekly Delta Merge 로직
  * append-only, missing != removed, idempotent
+ *
+ * v2: stableTaskId 기반 row lookup + partial update + statusHistory
  */
 import type {
   ParsedWeekly, WeeklyNote, UpdateCandidate,
-  ScheduleSourceMeta,
+  ScheduleSourceMeta, ScheduleStatus, StatusTransition,
 } from "./weekly-types";
-import { buildNoteId, buildMergeKey } from "./weekly-parser";
+import {
+  buildNoteId, buildMergeKey,
+  buildStableTaskId, MILESTONE_PHASES, ALLOWED_PHASES,
+  extractPhaseAndResource,
+} from "./weekly-parser";
 
 // ─── 로컬 RoleSchedule 정의 (TicketBoard.tsx와 KV 호환) ────────
 interface RoleSchedule {
@@ -40,9 +46,41 @@ function daysBefore(isoDate: string | undefined, now: Date): number {
 // ─── Candidate ID ─────────────────────────────────────────────
 
 function buildCandidateId(
-  ticketKey: string, mergeKey: string, field: string, sourceWeek: string
+  ticketKey: string, rowKey: string, field: string, sourceWeek: string,
 ): string {
-  return `${ticketKey}::${mergeKey}::${field}::${sourceWeek}`.replace(/\s+/g, "_");
+  return `${ticketKey}::${rowKey}::${field}::${sourceWeek}`.replace(/\s+/g, "_");
+}
+
+// ─── Row key: stableTaskId 우선, 없으면 legacy mergeKey ─────────
+
+function getRowKey(ticketKey: string, row: ExtendedSchedule): string {
+  if (row.stableTaskId) return row.stableTaskId;
+
+  // phase가 없는 legacy row는 role에서 추론 (backward compat)
+  let phase = row.phase;
+  let resourceTeam = row.resourceTeam;
+  if (!phase) {
+    const inferred = extractPhaseAndResource(row.role);
+    phase = inferred.phase;
+    if (resourceTeam === undefined) resourceTeam = inferred.resourceTeam;
+  }
+
+  if (phase && phase !== "기타" && ALLOWED_PHASES.has(phase)) {
+    const isMilestone = MILESTONE_PHASES.has(phase);
+    return buildStableTaskId(
+      ticketKey, phase, resourceTeam ?? null,
+      isMilestone ? (row.start || null) : null,
+    );
+  }
+  return row.mergeKey ?? buildMergeKey(ticketKey, row.role);
+}
+
+// ─── RoleSchedule 호환 status normalize ───────────────────────
+// "지연"/"보류"는 TicketBoard RoleSchedule 타입에 없음 → "확인필요"로 저장.
+
+function toStorageStatus(status: ScheduleStatus): RoleSchedule["status"] {
+  if (status === "지연" || status === "보류") return "확인필요";
+  return status as RoleSchedule["status"];
 }
 
 // ─── 메인 merge ──────────────────────────────────────────────
@@ -61,86 +99,105 @@ export function mergeWeeklySync(
   let isIdempotent = true;
 
   // ── 1. Schedule merge ───────────────────────────────────────
-  // 기존 rows를 mergeKey로 index
-  const existingByMergeKey = new Map<string, ExtendedSchedule>();
-  for (const row of existingSchedules) {
-    const mk = row.mergeKey ?? buildMergeKey(ticketKey, row.role);
-    existingByMergeKey.set(mk, row);
-  }
-
-  // 이번 Weekly에서 처리된 mergeKey 집합
-  const processedMergeKeys = new Set<string>();
-
-  // 업데이트된 schedules (기존 rows + append)
+  // scheduleMap key: stableTaskId (when available) or legacy mergeKey.
+  // 기존 rows 로드 — stableTaskId로 사후 계산하여 중복 없이 index.
   const scheduleMap = new Map<string, ExtendedSchedule>();
   for (const row of existingSchedules) {
-    const mk = row.mergeKey ?? buildMergeKey(ticketKey, row.role);
-    scheduleMap.set(mk, row);
+    const key = getRowKey(ticketKey, row);
+    scheduleMap.set(key, row);
   }
 
-  for (const item of parsed.scheduleItems) {
-    const mk = buildMergeKey(ticketKey, item.normalizedRole);
-    processedMergeKeys.add(mk);
+  // 이번 Weekly에서 처리된 key 집합 (stale detection용)
+  const processedKeys = new Set<string>();
 
-    const existing = scheduleMap.get(mk);
+  for (const item of parsed.scheduleItems) {
+    // 우선순위: parser가 계산한 stableTaskId → legacy mergeKey fallback
+    const key = item.stableTaskId ?? buildMergeKey(ticketKey, item.normalizedRole);
+    processedKeys.add(key);
+
+    const existing = scheduleMap.get(key);
 
     if (!existing) {
-      // 신규 append
+      // ── 신규 row append ──────────────────────────────────────
       isIdempotent = false;
       const newRow: ExtendedSchedule = {
         role: item.normalizedRole,
         person: item.assignee ?? "",
         start: item.startDate ?? "",
         end: item.endDate ?? item.startDate ?? "",
-        status: (item.status === "지연" || item.status === "보류")
-          ? "확인필요"
-          : item.status as RoleSchedule["status"],
+        status: toStorageStatus(item.status),
         source: "jira_weekly",
         sourceWeek: parsed.sourceWeek,
         sourceUpdatedAt: nowIso,
-        confidence: "high",
+        confidence: item.confidence ?? "high",
         firstSeenAt: nowIso,
         lastSeenAt: nowIso,
-        mergeKey: mk,
+        mergeKey: buildMergeKey(ticketKey, item.normalizedRole),
+        stableTaskId: key,
         cancelledCandidate: item.isCancelled,
-        // phase/resourceTeam 동봉 — Gantt lane 분리 및 candidate UI에서 사용
         phase: item.phase,
         resourceTeam: item.resourceTeam ?? null,
+        statusHistory: [],
       };
-      scheduleMap.set(mk, newRow);
+      scheduleMap.set(key, newRow);
     } else {
-      // 동일 sourceWeek + 동일 내용 → idempotent (lastSeenAt만 갱신)
-      const sameWeek = existing.sourceWeek === parsed.sourceWeek;
-      const sameStart = (existing.start || "") === (item.startDate ?? "");
-      const sameEnd = (existing.end || "") === (item.endDate ?? item.startDate ?? "");
-      const sameStatus = existing.status === item.status;
-      const samePerson = (existing.person || "") === (item.assignee ?? "");
+      // ── Partial update ───────────────────────────────────────
+      // dateMentioned: 어떤 필드가 이번 weekly에 실제로 명시됐는지.
+      // 명시 안 된 필드는 기존 row 값 보존.
+      const dm = item.dateMentioned ?? { start: true, end: true };
+
+      const newStart = dm.start ? (item.startDate ?? existing.start) : existing.start;
+      const newEnd   = dm.end   ? (item.endDate   ?? existing.end)   : existing.end;
+      // status=확인필요는 파싱 실패로 간주 → 기존 status 보존
+      const newStatus: ScheduleStatus = item.status !== "확인필요" ? item.status : existing.status;
+      const newPerson = item.assignee ?? existing.person;
+
+      // idempotent 판정: 동일 주차 + 동일 값이면 lastSeenAt만 갱신
+      const sameWeek   = existing.sourceWeek === parsed.sourceWeek;
+      const sameStart  = newStart  === existing.start;
+      const sameEnd    = newEnd    === existing.end;
+      const sameStatus = newStatus === existing.status;
+      const samePerson = newPerson === existing.person;
 
       if (sameWeek && sameStart && sameEnd && sameStatus && samePerson) {
-        // idempotent — just update lastSeenAt
-        scheduleMap.set(mk, { ...existing, lastSeenAt: nowIso });
+        scheduleMap.set(key, {
+          ...existing,
+          lastSeenAt: nowIso,
+          stableTaskId: existing.stableTaskId ?? key,
+        });
         continue;
       }
 
       isIdempotent = false;
 
-      // manualLocked → candidate만, auto-apply 금지
+      // statusHistory: 변경이 있을 때만 append
+      const statusHistory: StatusTransition[] = [...(existing.statusHistory ?? [])];
+      if (!sameStatus) {
+        statusHistory.push({
+          from: existing.status,
+          to: newStatus,
+          sourceWeek: parsed.sourceWeek,
+          changedAt: nowIso,
+        });
+      }
+
+      // conflict 감지 (candidate UI용)
       const isLocked = existing.manualLocked === true;
       const conflicts: Array<{ field: UpdateCandidate["field"]; oldV: string; newV: string }> = [];
 
-      if (!sameStart) conflicts.push({ field: "start", oldV: existing.start, newV: item.startDate ?? "" });
-      if (!sameEnd) conflicts.push({ field: "end", oldV: existing.end, newV: item.endDate ?? "" });
-      if (!sameStatus && item.status !== "확인필요") conflicts.push({ field: "status", oldV: existing.status, newV: item.status });
-      if (!samePerson && item.assignee) conflicts.push({ field: "person", oldV: existing.person, newV: item.assignee });
+      if (!sameStart && dm.start) conflicts.push({ field: "start",  oldV: existing.start,  newV: newStart });
+      if (!sameEnd   && dm.end)   conflicts.push({ field: "end",    oldV: existing.end,    newV: newEnd });
+      if (!sameStatus && item.status !== "확인필요") conflicts.push({ field: "status", oldV: existing.status, newV: toStorageStatus(newStatus) });
+      if (!samePerson && item.assignee) conflicts.push({ field: "person", oldV: existing.person, newV: newPerson });
 
       const autoApply = !isLocked && conflicts.length <= 1;
 
       for (const c of conflicts) {
-        const cid = buildCandidateId(ticketKey, mk, c.field, parsed.sourceWeek);
+        const cid = buildCandidateId(ticketKey, key, c.field, parsed.sourceWeek);
         updateCandidates.push({
           id: cid,
           ticketKey,
-          mergeKey: mk,
+          mergeKey: key,
           sourceWeek: parsed.sourceWeek,
           field: c.field,
           oldValue: c.oldV,
@@ -152,35 +209,43 @@ export function mergeWeeklySync(
       }
 
       if (autoApply) {
-        // 자동 적용
-        const updated: ExtendedSchedule = { ...existing };
-        for (const c of conflicts) {
-          (updated as unknown as Record<string, unknown>)[c.field] = c.newV;
-        }
-        updated.sourceWeek = parsed.sourceWeek;
-        updated.sourceUpdatedAt = nowIso;
-        updated.lastSeenAt = nowIso;
+        const updated: ExtendedSchedule = {
+          ...existing,
+          start:  newStart,
+          end:    newEnd,
+          status: toStorageStatus(newStatus),
+          person: newPerson,
+          sourceWeek: parsed.sourceWeek,
+          sourceUpdatedAt: nowIso,
+          lastSeenAt: nowIso,
+          statusHistory,
+          stableTaskId: existing.stableTaskId ?? key,
+          mergeKey: existing.mergeKey ?? buildMergeKey(ticketKey, existing.role),
+        };
         if (existing.source === "legacy" || existing.source === undefined) {
           updated.source = "jira_weekly";
         }
-        scheduleMap.set(mk, updated);
+        scheduleMap.set(key, updated);
       } else {
-        // lastSeenAt + sourceWeek만 갱신 (값은 유지)
-        scheduleMap.set(mk, { ...existing, lastSeenAt: nowIso });
+        // manualLocked 또는 다중 충돌 → 값 유지, lastSeenAt + statusHistory만 갱신
+        scheduleMap.set(key, {
+          ...existing,
+          lastSeenAt: nowIso,
+          statusHistory,
+          stableTaskId: existing.stableTaskId ?? key,
+        });
       }
     }
   }
 
   // ── 2. Stale detection ──────────────────────────────────────
-  for (const [mk, row] of scheduleMap.entries()) {
-    if (processedMergeKeys.has(mk)) continue;  // 이번 Weekly에 있었음
-    // 진행중 + lastSeenAt > 14일
+  for (const [key, row] of scheduleMap.entries()) {
+    if (processedKeys.has(key)) continue;
     if (row.status === "진행중" && daysBefore(row.lastSeenAt, now) > 14) {
-      staleCandidates.push(mk);
+      staleCandidates.push(key);
     }
-    // 예정 + endDate 지남
     if (row.status === "예정" && row.end && new Date(row.end) < now) {
-      staleCandidates.push(mk);
+      staleCandidates.push(key);
     }
   }
 
@@ -188,25 +253,16 @@ export function mergeWeeklySync(
   const existingNoteIds = new Set(existingNotes.map(n => n.id));
   const mergedNotes: WeeklyNote[] = [...existingNotes];
 
-  // progress
   for (const content of parsed.progressItems) {
     const id = buildNoteId(ticketKey, parsed.sourceWeek, "progress", content);
     if (existingNoteIds.has(id)) {
-      // idempotent — update lastSeenAt
       const idx = mergedNotes.findIndex(n => n.id === id);
       if (idx >= 0) mergedNotes[idx] = { ...mergedNotes[idx], lastSeenAt: nowIso };
     } else {
       const note: WeeklyNote = {
-        id,
-        ticketKey,
-        source: "jira_weekly",
-        sourceWeek: parsed.sourceWeek,
-        type: "progress",
-        content,
-        status: "open",
-        createdAt: nowIso,
-        sourceUpdatedAt: nowIso,
-        lastSeenAt: nowIso,
+        id, ticketKey, source: "jira_weekly", sourceWeek: parsed.sourceWeek,
+        type: "progress", content, status: "open",
+        createdAt: nowIso, sourceUpdatedAt: nowIso, lastSeenAt: nowIso,
       };
       mergedNotes.push(note);
       newNotes.push(note);
@@ -214,7 +270,6 @@ export function mergeWeeklySync(
     }
   }
 
-  // risks
   for (const risk of parsed.risks) {
     const id = buildNoteId(ticketKey, parsed.sourceWeek, "risk", risk.content);
     if (existingNoteIds.has(id)) {
@@ -222,17 +277,9 @@ export function mergeWeeklySync(
       if (idx >= 0) mergedNotes[idx] = { ...mergedNotes[idx], lastSeenAt: nowIso };
     } else {
       const note: WeeklyNote = {
-        id,
-        ticketKey,
-        source: "jira_weekly",
-        sourceWeek: parsed.sourceWeek,
-        type: "risk",
-        content: risk.content,
-        severity: risk.severity,
-        status: "open",
-        createdAt: nowIso,
-        sourceUpdatedAt: nowIso,
-        lastSeenAt: nowIso,
+        id, ticketKey, source: "jira_weekly", sourceWeek: parsed.sourceWeek,
+        type: "risk", content: risk.content, severity: risk.severity,
+        status: "open", createdAt: nowIso, sourceUpdatedAt: nowIso, lastSeenAt: nowIso,
       };
       mergedNotes.push(note);
       newNotes.push(note);
@@ -240,7 +287,6 @@ export function mergeWeeklySync(
     }
   }
 
-  // next actions
   for (const action of parsed.nextActions) {
     const id = buildNoteId(ticketKey, parsed.sourceWeek, "next_action", action.content);
     if (existingNoteIds.has(id)) {
@@ -248,17 +294,9 @@ export function mergeWeeklySync(
       if (idx >= 0) mergedNotes[idx] = { ...mergedNotes[idx], lastSeenAt: nowIso };
     } else {
       const note: WeeklyNote = {
-        id,
-        ticketKey,
-        source: "jira_weekly",
-        sourceWeek: parsed.sourceWeek,
-        type: "next_action",
-        content: action.content,
-        actionCategory: action.actionCategory,
-        status: "open",
-        createdAt: nowIso,
-        sourceUpdatedAt: nowIso,
-        lastSeenAt: nowIso,
+        id, ticketKey, source: "jira_weekly", sourceWeek: parsed.sourceWeek,
+        type: "next_action", content: action.content, actionCategory: action.actionCategory,
+        status: "open", createdAt: nowIso, sourceUpdatedAt: nowIso, lastSeenAt: nowIso,
       };
       mergedNotes.push(note);
       newNotes.push(note);
@@ -269,7 +307,7 @@ export function mergeWeeklySync(
   return {
     updatedSchedules: Array.from(scheduleMap.values()),
     updateCandidates,
-    newNotes: mergedNotes,  // 전체 merged notes (newNotes만 따로도 있음)
+    newNotes: mergedNotes,
     staleCandidates,
     isIdempotent,
   };
