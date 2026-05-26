@@ -347,7 +347,11 @@ group("G. Backward compat: phase 없는 legacy row", () => {
     end: "2026-04-15",
     status: "진행중",
     mergeKey: "TM-9999::QA",
-    source: "manual",
+    // 원래 이 fixture는 "phase 없는 legacy row" 의도 — source는 'legacy'가 의미적으로 정확.
+    // (이전 PR에서 'manual'로 작성됐으나 weekly-sync auto-update 흐름을 검증하므로 legacy가 맞음.
+    //  새로 추가된 manual-guard 정책상 source='manual'은 자동 update 차단 대상이라
+    //  legacy auto-update 시나리오와는 별도 case로 분리.)
+    source: "legacy",
     sourceWeek: "14주차",
     lastSeenAt: "2026-04-01T00:00:00Z",
     firstSeenAt: "2026-04-01T00:00:00Z",

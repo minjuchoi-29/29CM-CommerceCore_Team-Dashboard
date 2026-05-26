@@ -28,12 +28,39 @@ interface RoleSchedule {
 
 export type ExtendedSchedule = RoleSchedule & ScheduleSourceMeta;
 
+/**
+ * Merge 처리 trace — 운영자가 "왜 이 row가 update/append/manual_guard됐는지" 확인.
+ * UI에 노출하지 않아도 server log/admin에서 활용 가능.
+ */
+export interface MergeTraceEntry {
+  itemRawText: string;
+  itemStableTaskId?: string;
+  rowKey: string;          // lookup에 사용된 key
+  /**
+   * outcome:
+   *   - appended         : 매칭 없음 → 신규 row 생성
+   *   - updated          : 매칭 + autoApply → 값 갱신
+   *   - candidates_only  : 매칭 + 다중 conflict 또는 manualLocked → candidate만 생성
+   *   - idempotent       : 동일 주차 + 동일 값 → 변경 없음
+   *   - manual_guard     : 매칭 대상이 manual row → 자동 적용 차단, candidate만 생성
+   */
+  outcome: "appended" | "updated" | "candidates_only" | "idempotent" | "manual_guard";
+  /** 발생 conflict 수 */
+  conflictCount?: number;
+  /** statusHistory에 transition entry 추가됐는지 */
+  statusTransitionAdded?: boolean;
+  /** 흡수된 row의 source (manual_guard 판단에 사용) */
+  matchedRowSource?: ScheduleSourceMeta["source"];
+}
+
 export interface MergeResult {
   updatedSchedules: ExtendedSchedule[];
   updateCandidates: UpdateCandidate[];
   newNotes: WeeklyNote[];
   staleCandidates: string[];
   isIdempotent: boolean;
+  /** debug — 각 parsed item이 어떻게 처리됐는지 trace (UI 미노출, 운영 분석용) */
+  mergeTrace?: MergeTraceEntry[];
 }
 
 // ─── 날짜 비교 헬퍼 ────────────────────────────────────────────
@@ -53,7 +80,7 @@ function buildCandidateId(
 
 // ─── Row key: stableTaskId 우선, 없으면 legacy mergeKey ─────────
 
-function getRowKey(ticketKey: string, row: ExtendedSchedule): string {
+export function getRowKey(ticketKey: string, row: ExtendedSchedule): string {
   if (row.stableTaskId) return row.stableTaskId;
 
   // phase가 없는 legacy row는 role에서 추론 (backward compat)
@@ -73,6 +100,41 @@ function getRowKey(ticketKey: string, row: ExtendedSchedule): string {
     );
   }
   return row.mergeKey ?? buildMergeKey(ticketKey, row.role);
+}
+
+/**
+ * row가 매칭될 수 있는 모든 식별 키 후보.
+ * PUT handler에서 candidate.mergeKey로 row를 찾을 때 multi-key fallback에 사용.
+ *
+ * 새 candidate(post-stable-identity)는 candidate.mergeKey = stableTaskId 또는 legacy key.
+ * 기존 candidate(pre-stable-identity)는 candidate.mergeKey = `${ticketKey}::${normalizedRole}` 포맷.
+ * row 측에서도 mergeKey 필드가 있을 수도/없을 수도 있어 모든 후보를 함께 시도해야 silent loss를 막는다.
+ */
+export function getRowAllKeys(ticketKey: string, row: ExtendedSchedule): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (k: string | undefined | null) => {
+    if (!k) return;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push(k);
+  };
+  push(getRowKey(ticketKey, row));
+  push(row.stableTaskId);
+  push(row.mergeKey);
+  if (row.role) push(buildMergeKey(ticketKey, row.role));
+  return out;
+}
+
+/**
+ * row를 weekly-sync가 자동으로 덮어쓸 수 있는지 여부.
+ * 정책: source가 'manual'/'imported'/'confirmed'면 사용자 의도 보존 → 자동 적용 금지.
+ * jira_weekly / legacy / undefined는 자동 적용 허용.
+ */
+export function canAutoApplyToRow(row: ExtendedSchedule): boolean {
+  const src = row.source;
+  if (src === "manual" || src === "imported" || src === "confirmed") return false;
+  return true;
 }
 
 // ─── RoleSchedule 호환 status normalize ───────────────────────
@@ -96,6 +158,7 @@ export function mergeWeeklySync(
   const updateCandidates: UpdateCandidate[] = [];
   const newNotes: WeeklyNote[] = [];
   const staleCandidates: string[] = [];
+  const mergeTrace: MergeTraceEntry[] = [];
   let isIdempotent = true;
 
   // ── 1. Schedule merge ───────────────────────────────────────
@@ -116,6 +179,13 @@ export function mergeWeeklySync(
     processedKeys.add(key);
 
     const existing = scheduleMap.get(key);
+    const traceEntry: MergeTraceEntry = {
+      itemRawText: item.rawText,
+      itemStableTaskId: item.stableTaskId,
+      rowKey: key,
+      outcome: "appended",
+      matchedRowSource: existing?.source,
+    };
 
     if (!existing) {
       // ── 신규 row append ──────────────────────────────────────
@@ -140,6 +210,8 @@ export function mergeWeeklySync(
         statusHistory: [],
       };
       scheduleMap.set(key, newRow);
+      traceEntry.outcome = "appended";
+      mergeTrace.push(traceEntry);
     } else {
       // ── Partial update ───────────────────────────────────────
       // dateMentioned: 어떤 필드가 이번 weekly에 실제로 명시됐는지.
@@ -165,6 +237,8 @@ export function mergeWeeklySync(
           lastSeenAt: nowIso,
           stableTaskId: existing.stableTaskId ?? key,
         });
+        traceEntry.outcome = "idempotent";
+        mergeTrace.push(traceEntry);
         continue;
       }
 
@@ -183,6 +257,9 @@ export function mergeWeeklySync(
 
       // conflict 감지 (candidate UI용)
       const isLocked = existing.manualLocked === true;
+      // ★ Manual row guard: source가 manual/imported/confirmed면 자동 적용 금지.
+      // PM이 직접 입력한 row를 weekly sync가 덮어쓰지 않도록 보호.
+      const isManualProtected = !canAutoApplyToRow(existing);
       const conflicts: Array<{ field: UpdateCandidate["field"]; oldV: string; newV: string }> = [];
 
       if (!sameStart && dm.start) conflicts.push({ field: "start",  oldV: existing.start,  newV: newStart });
@@ -190,7 +267,8 @@ export function mergeWeeklySync(
       if (!sameStatus && item.status !== "확인필요") conflicts.push({ field: "status", oldV: existing.status, newV: toStorageStatus(newStatus) });
       if (!samePerson && item.assignee) conflicts.push({ field: "person", oldV: existing.person, newV: newPerson });
 
-      const autoApply = !isLocked && conflicts.length <= 1;
+      const autoApply = !isLocked && !isManualProtected && conflicts.length <= 1;
+      traceEntry.conflictCount = conflicts.length;
 
       for (const c of conflicts) {
         const cid = buildCandidateId(ticketKey, key, c.field, parsed.sourceWeek);
@@ -222,19 +300,25 @@ export function mergeWeeklySync(
           stableTaskId: existing.stableTaskId ?? key,
           mergeKey: existing.mergeKey ?? buildMergeKey(ticketKey, existing.role),
         };
-        if (existing.source === "legacy" || existing.source === undefined) {
+        // manual row의 source는 절대 jira_weekly로 변환하지 않음 (위에서 autoApply=false라 이 분기 진입 자체 안 함, 방어 코드)
+        if ((existing.source === "legacy" || existing.source === undefined) && canAutoApplyToRow(existing)) {
           updated.source = "jira_weekly";
         }
         scheduleMap.set(key, updated);
+        traceEntry.outcome = "updated";
+        traceEntry.statusTransitionAdded = !sameStatus;
       } else {
-        // manualLocked 또는 다중 충돌 → 값 유지, lastSeenAt + statusHistory만 갱신
+        // manualLocked / 다중 충돌 / manual_guard → 값 유지, lastSeenAt + statusHistory만 갱신.
+        // statusHistory도 manual row에는 추가 안 함 (PM이 직접 입력한 row의 history를 sync가 만들면 안 됨).
         scheduleMap.set(key, {
           ...existing,
           lastSeenAt: nowIso,
-          statusHistory,
+          statusHistory: isManualProtected ? (existing.statusHistory ?? []) : statusHistory,
           stableTaskId: existing.stableTaskId ?? key,
         });
+        traceEntry.outcome = isManualProtected ? "manual_guard" : "candidates_only";
       }
+      mergeTrace.push(traceEntry);
     }
   }
 
@@ -310,5 +394,6 @@ export function mergeWeeklySync(
     newNotes: mergedNotes,
     staleCandidates,
     isIdempotent,
+    mergeTrace,
   };
 }
