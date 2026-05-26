@@ -296,24 +296,32 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ─── 우선순위 결정 (2026-05-20 정책 재확정 v3) ───────────────
+    // ─── 우선순위 결정 (2026-05-26 정책 재확정 v4) ───────────────
     //
-    // [운영 흐름]
-    //   customfield_10625 ("Weekly 공유사항") = LIVE SoT (PM이 매주 직접 갱신하는 dedicated field).
-    //   description "Weekly 공유사항" 섹션   = legacy fallback (혹시 PM이 description에 적은 경우).
-    //   automation comment                  = IMMUTABLE weekly history (archive).
+    // [운영 흐름 — v4 변경]
+    //   description "Weekly 공유사항" 섹션  = LIVE operational truth (1순위)
+    //                                       PM이 description 안에 직접 적는 경우, 항상 latest operational state.
+    //   customfield_10625 ("Weekly 공유사항") = dedicated field fallback (2순위)
+    //                                          description 섹션이 없을 때만 사용.
+    //   automation comment                   = IMMUTABLE archive / history (3순위)
+    //                                          description / customfield 모두 없을 때만 fallback.
     //
-    // [선택 정책 — 우선순위]
-    //   1) customfield_10625 값 있음 → customfield-first
-    //   2) description "Weekly 공유사항" 섹션 있음 → description-first
+    // [선택 정책 — 우선순위 (descCandidate ?? cfCandidate ?? commentCandidate)]
+    //   1) description "Weekly 공유사항" 섹션 있음 → description-first
+    //   2) customfield_10625 값 있음 → customfield-first
     //   3) latest automation comment 있음 → comment-fallback
     //   4) 모두 없음 → null
     //
+    // [v3 → v4 변경 사유]
+    //   기존 v3 정책은 customfield-first였으나, 운영 PM 측 명확화:
+    //   "description의 Weekly 공유사항이 가장 최신 live operational state".
+    //   description 섹션이 존재하면 항상 우선해야 하며, customfield는 description이 없을 때만 fallback.
+    //
     // [중요 운영 약속]
-    //   - PRD 본문은 schedule/note 추출 대상 아님.
-    //   - planning / review / release / launch 같은 상태 변화의 SoT는 customfield.
-    //   - comment의 sourceWeek가 더 최신이라도 customfield/description weekly가 있으면 그쪽 우선.
+    //   - PRD 본문은 schedule/note 추출 대상 아님 (description 안의 "Weekly 공유사항" 섹션만).
+    //   - planning / review / release / launch 같은 상태 변화의 SoT는 description 또는 customfield.
     //   - comment는 stale 감지 / backtracking / 주차별 transition 분석에만 사용.
+    //   - comment 픽된 경우 TicketBoard orchestration이 merge 자체를 skip (IMMUTABLE archive 정책).
     type Pick = {
       text: string;
       source: "customfield" | "description" | "comment";
@@ -322,7 +330,18 @@ export async function GET(req: NextRequest) {
       policyReason: "customfield-first" | "description-first" | "comment-fallback";
     };
 
-    // customfield_10625 가 진짜 SoT.
+    // 1순위: description "Weekly 공유사항" 섹션 — LIVE operational truth
+    const descCandidate: Pick | null = descWeeklySection
+      ? {
+          text: descWeeklySection,
+          source: "description",
+          sourceUpdatedAt: descUpdated,
+          markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
+          policyReason: "description-first",
+        }
+      : null;
+
+    // 2순위: customfield_10625 — dedicated field fallback
     const cfCandidate: Pick | null = cfWeeklyText
       ? {
           text: cfWeeklyText,
@@ -335,17 +354,7 @@ export async function GET(req: NextRequest) {
         }
       : null;
 
-    // description "Weekly 공유사항" 섹션 (legacy fallback)
-    const descCandidate: Pick | null = descWeeklySection
-      ? {
-          text: descWeeklySection,
-          source: "description",
-          sourceUpdatedAt: descUpdated,
-          markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
-          policyReason: "description-first",
-        }
-      : null;
-
+    // 3순위: latest automation comment — IMMUTABLE archive / history
     const commentCandidate: Pick | null = markedComment
       ? {
           text: markedComment.text,
@@ -356,8 +365,8 @@ export async function GET(req: NextRequest) {
         }
       : null;
 
-    // 최종 우선순위: customfield (LIVE SoT) → description weekly section → comment archive
-    const pick: Pick | null = cfCandidate ?? descCandidate ?? commentCandidate;
+    // 최종 우선순위 (v4): description LIVE → customfield fallback → comment archive
+    const pick: Pick | null = descCandidate ?? cfCandidate ?? commentCandidate;
 
     // ─── 파싱 결과 (선택) — text가 있으면 parseWeekly 실행 ───────
     const parsed = pick ? parseWeekly(pick.text, key) : null;

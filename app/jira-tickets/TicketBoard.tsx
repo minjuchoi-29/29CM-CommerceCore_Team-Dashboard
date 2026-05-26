@@ -1317,9 +1317,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Phase 4: Update Candidate Review 모달 / 진행 중인 candidateId set
   const [candidatePanelOpen, setCandidatePanelOpen] = useState(false);
   const [candidatesInFlight, setCandidatesInFlight] = useState<Set<string>>(new Set());
-  // Phase C: checkbox 선택 / kind 필터
+  // Phase C: checkbox 선택 / kind 필터 (note는 별도 참고 섹션으로 분리되어 filter 옵션에서 제외)
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
-  const [candidateKindFilter, setCandidateKindFilter] = useState<"all" | "schedule" | "action" | "risk" | "note">("all");
+  const [candidateKindFilter, setCandidateKindFilter] = useState<"all" | "schedule" | "action" | "risk">("all");
+  // 참고 메모 영역 펼침 (기본 collapsed — note/low/autoApply 비추천 등은 일정 반영 후보 아님)
+  const [referenceExpanded, setReferenceExpanded] = useState(false);
   // Phase D: Cleanup 패널 (자격 미달 jira_weekly row 정리)
   const [cleanupPanelOpen, setCleanupPanelOpen] = useState(false);
   const [selectedCleanupIds, setSelectedCleanupIds] = useState<Set<string>>(new Set());
@@ -2067,9 +2069,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </span>
           </div>
           <div className="px-3 py-2.5">
+            {/*
+              Hierarchy fidelity 보장 (2026-05-26):
+              - whiteSpace: pre-wrap → leading space + 줄바꿈 그대로 보존
+              - tabSize: 2 → ADF에서 tab이 들어와도 일관된 indent
+              - wordBreak: break-word → 긴 line 줄바꿈 시에도 indent 유지
+              - margin 0 → <pre> 기본 마진 제거 (디자인 정합성)
+              - font-sans 유지 → 한글 가독성 (monospace는 일부 한글 폭 비대칭)
+              cc-weekly-source-text가 있는 경우 hierarchy는 100% 원문 그대로 표시됨.
+            */}
             <pre
               className="text-[11.5px] leading-relaxed font-sans"
-              style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}
+              style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, tabSize: 2 }}
             >{preview}{isLong && !expanded ? " …" : ""}</pre>
             {isLong && (
               <button
@@ -2087,44 +2098,57 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
 
     // legacy: 원문 KV 없음 → notes 기반 합성
+    // 설계 노트 (2026-05-26):
+    //   weeklyNotes의 content는 parser가 줄 단위로 push해 저장한 평탄 text.
+    //   ADF의 nested hierarchy 정보는 cc-weekly-source-text에만 보존되며 weeklyNotes에는 없음.
+    //   따라서 legacy fallback은 hierarchy 정보가 본래 없는 데이터 — 표시 가능한 최대치는 줄별 list.
+    //   "ul list-disc" flatten 제거 정책에 따라 <pre>로 통일하여 줄바꿈/indent를 안전하게 보존
+    //   (만약 content가 multi-line이라면 pre가 줄바꿈도 보존).
+    //   카테고리 헤더는 유지 (legacy 정보 구조).
     const weeks = [...new Set(notes.map(n => n.sourceWeek))];
     const latestWeek = weeks.sort((a, b) => (parseInt(a) || 0) - (parseInt(b) || 0)).at(-1)!;
     const latestNotes = notes.filter(n => n.sourceWeek === latestWeek);
     const progress = latestNotes.filter(n => n.type === "progress");
     const risks    = latestNotes.filter(n => n.type === "risk");
     const actions  = latestNotes.filter(n => n.type === "next_action" && n.status === "open");
+
+    // 각 카테고리를 "- text\n" 형식 pre 텍스트로 렌더 (ul list-disc 제거).
+    // content 내부에 줄바꿈이 있으면 그대로 표시. tabSize 명시로 indent 정합성 보장.
+    const preStyle: React.CSSProperties = {
+      color: "var(--text-secondary)",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+      margin: 0,
+      tabSize: 2,
+    };
+    const renderCategory = (title: string, color: string, items: { content: string }[]) =>
+      items.length > 0 && (
+        <div className="text-[11px]">
+          <div className="font-medium mb-0.5" style={{ color }}>{title}</div>
+          <pre
+            className="text-[11px] leading-relaxed font-sans pl-2"
+            style={preStyle}
+          >{items.map(n => `- ${n.content}`).join("\n")}</pre>
+        </div>
+      );
+
     return (
       <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
         <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
           <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
           <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>{latestWeek}</span>
-          <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>legacy</span>
+          <span
+            className="text-[10px] px-1.5 py-0.5 rounded"
+            style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}
+            title="cc-weekly-source-text가 없어 weeklyNotes로 합성된 표시 — 원본 hierarchy 정보 없음"
+          >
+            legacy
+          </span>
         </div>
         <div className="px-3 py-2 space-y-1.5">
-          {progress.length > 0 && (
-            <div className="text-[11px]">
-              <div className="font-medium mb-0.5" style={{ color: "var(--text-muted)" }}>진행</div>
-              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
-                {progress.map((n, i) => <li key={i}>{n.content}</li>)}
-              </ul>
-            </div>
-          )}
-          {risks.length > 0 && (
-            <div className="text-[11px]">
-              <div className="font-medium mb-0.5" style={{ color: "#ef4444" }}>리스크</div>
-              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
-                {risks.map((n, i) => <li key={i}>{n.content}</li>)}
-              </ul>
-            </div>
-          )}
-          {actions.length > 0 && (
-            <div className="text-[11px]">
-              <div className="font-medium mb-0.5" style={{ color: "#fbbf24" }}>다음 액션</div>
-              <ul className="list-disc pl-4 space-y-0.5" style={{ color: "var(--text-secondary)" }}>
-                {actions.map((n, i) => <li key={i}>{n.content}</li>)}
-              </ul>
-            </div>
-          )}
+          {renderCategory("진행", "var(--text-muted)", progress)}
+          {renderCategory("리스크", "#ef4444", risks)}
+          {renderCategory("다음 액션", "#fbbf24", actions)}
         </div>
       </div>
     );
@@ -4027,23 +4051,50 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 start: "시작일", end: "종료일", status: "상태", person: "담당자",
               };
               const all = sortDisplayCandidates(buildDisplayCandidates());
-              const filtered = candidateKindFilter === "all"
-                ? all
-                : all.filter(c => c.kind === candidateKindFilter);
-              const counts = {
-                total:    all.length,
-                schedule: all.filter(c => c.kind === "schedule").length,
-                action:   all.filter(c => c.kind === "action").length,
-                risk:     all.filter(c => c.kind === "risk").length,
-                note:     all.filter(c => c.kind === "note").length,
-                high:     all.filter(c => c.confidence === "high").length,
-                low:      all.filter(c => c.confidence === "low").length,
+
+              // ─── Partition: actionable (일정 반영 후보) vs reference (참고 메모) ───
+              // 정책 (사용자 요구):
+              //   actionable:
+              //     - kind === "schedule" && autoApply === true && confidence !== "low"
+              //     - 또는 kind === "action" / "risk" && confidence !== "low"
+              //   reference (참고 메모 — 일정 반영 후보 아님):
+              //     - kind === "note" (모두)
+              //     - autoApply === false (schedule 중 manual review 필요한 것)
+              //     - confidence === "low" (자동 반영 비추천)
+              //     - reason에 "자동 반영 비추천" 포함
+              // 운영 의도: 134건의 진행상황 메모/low candidate가 승인/기각 UX에 섞이지 않도록 분리.
+              const isReference = (c: DisplayCandidate): boolean => {
+                if (c.kind === "note") return true;
+                if (c.confidence === "low") return true;
+                if (c.kind === "schedule" && c.autoApply === false) return true;
+                if (c.reason && c.reason.includes("자동 반영 비추천")) return true;
+                return false;
               };
+              const actionableAll = all.filter(c => !isReference(c));
+              const referenceAll  = all.filter(c =>  isReference(c));
+
+              // 본문 표시 대상은 actionable만 + 사용자가 선택한 kind filter
+              const filtered = candidateKindFilter === "all"
+                ? actionableAll
+                : actionableAll.filter(c => c.kind === candidateKindFilter);
+
+              const counts = {
+                actionable: actionableAll.length,
+                schedule:   actionableAll.filter(c => c.kind === "schedule").length,
+                action:     actionableAll.filter(c => c.kind === "action").length,
+                risk:       actionableAll.filter(c => c.kind === "risk").length,
+                reference:  referenceAll.length,
+                // 기존 호환 (총합/high/low — 단 UI 노출은 actionable 위주)
+                total: all.length,
+                high:  all.filter(c => c.confidence === "high").length,
+                low:   all.filter(c => c.confidence === "low").length,
+              };
+              // bulk action 대상 = 본문(actionable + 현재 filter)만. 참고는 영원히 bulk 대상 외.
               const visibleIds = filtered.map(c => c.id);
               const allVisibleSelected = visibleIds.length > 0 && visibleIds.every(id => selectedCandidateIds.has(id));
               const someVisibleSelected = visibleIds.some(id => selectedCandidateIds.has(id));
 
-              // 일괄 액션 — 현재 filter 적용된 목록만 대상
+              // 일괄 액션 — 현재 filter 적용된 목록(actionable)만 대상. 참고 항목은 제외.
               const doBulk = async (action: "apply" | "dismiss", onlySelected: boolean) => {
                 const targets = onlySelected
                   ? filtered.filter(c => selectedCandidateIds.has(c.id))
@@ -4054,7 +4105,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   if (c.kind === "schedule") {
                     await resolveCandidate(c.id, action);
                   } else {
-                    // action/risk/note는 "기각"만 의미 있음 (resolved 처리). "승인"도 같은 의미로 취급.
+                    // action/risk: resolved 처리. "승인"이든 "기각"이든 같은 의미.
                     await resolveNote(c.ticketKey, c.id);
                   }
                 }
@@ -4090,14 +4141,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           ×
                         </button>
                       </div>
-                      {/* Summary 카운트 */}
+                      {/* Summary 카운트 — 일정/액션/리스크는 actionable, 참고는 별도 영역 안내 */}
                       <div className="flex items-center flex-wrap gap-1.5 mb-2">
                         {([
-                          { key: "all" as const,      label: `전체 ${counts.total}`,    color: "var(--text-secondary)" },
-                          { key: "schedule" as const, label: `일정 ${counts.schedule}`, color: KIND_STYLE.schedule.color },
-                          { key: "action" as const,   label: `액션 ${counts.action}`,   color: KIND_STYLE.action.color },
-                          { key: "risk" as const,     label: `리스크 ${counts.risk}`,   color: KIND_STYLE.risk.color },
-                          { key: "note" as const,     label: `참고 ${counts.note}`,     color: KIND_STYLE.note.color },
+                          { key: "all" as const,      label: `전체 ${counts.actionable}`, color: "var(--text-secondary)" },
+                          { key: "schedule" as const, label: `일정 ${counts.schedule}`,   color: KIND_STYLE.schedule.color },
+                          { key: "action" as const,   label: `액션 ${counts.action}`,     color: KIND_STYLE.action.color },
+                          { key: "risk" as const,     label: `리스크 ${counts.risk}`,     color: KIND_STYLE.risk.color },
                         ]).map(t => {
                           const active = candidateKindFilter === t.key;
                           return (
@@ -4116,8 +4166,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             </button>
                           );
                         })}
-                        <span className="ml-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
-                          ⚡high {counts.high} · low {counts.low}
+                        {/* 참고는 별도 chip — filter가 아니라 본문 아래 collapsed section으로 가는 가이드 */}
+                        <span
+                          className="px-2 py-0.5 rounded text-[10px] font-medium"
+                          style={{
+                            background: "transparent",
+                            color: KIND_STYLE.note.color,
+                            border: `1px solid ${KIND_STYLE.note.color}55`,
+                          }}
+                          title="참고 메모는 일정에 자동 반영되지 않음. 본문 아래 '참고 메모' 섹션에서 확인."
+                        >
+                          참고 {counts.reference}
                         </span>
                       </div>
                       {/* 일괄/선택 액션 */}
@@ -4190,12 +4249,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </div>
                     </div>
 
-                    {/* 본문 */}
+                    {/* 본문 — actionable만 (참고는 collapsed section으로 분리) */}
                     <div className="p-5 space-y-2.5">
                       {filtered.length === 0 && (
-                        <p className="text-xs text-center py-8" style={{ color: "var(--text-muted)" }}>
-                          {counts.total === 0 ? "검토할 후보가 없습니다." : "현재 필터에 해당하는 후보가 없습니다."}
-                        </p>
+                        <div className="text-center py-8 space-y-1">
+                          <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+                            {counts.actionable === 0
+                              ? "자동 반영할 일정 후보가 없습니다."
+                              : "현재 필터에 해당하는 후보가 없습니다."}
+                          </p>
+                          {counts.actionable === 0 && counts.reference > 0 && (
+                            <p className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                              참고 메모 {counts.reference}건은 아래에서 확인할 수 있습니다.
+                            </p>
+                          )}
+                        </div>
                       )}
                       {filtered.map(c => {
                         const inFlight = candidatesInFlight.has(c.id);
@@ -4366,6 +4434,112 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           </div>
                         );
                       })}
+
+                      {/* ─── 참고 메모 섹션 — collapsed, 일정 반영 후보 아님 ─── */}
+                      {counts.reference > 0 && (
+                        <div
+                          className="mt-3 rounded-lg overflow-hidden"
+                          style={{ border: "1px solid var(--border-2)", background: "var(--bg-item)" }}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => setReferenceExpanded(v => !v)}
+                            className="w-full flex items-center justify-between px-3 py-2.5 hover:brightness-110 transition"
+                            style={{ background: "var(--bg-item)" }}
+                          >
+                            <div className="flex items-center gap-2 text-left">
+                              <span className="text-xs font-medium" style={{ color: "var(--text-secondary)" }}>
+                                참고 메모 {counts.reference}건
+                              </span>
+                              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+                                일정에 자동 반영되지 않는 Weekly 메모입니다.
+                              </span>
+                            </div>
+                            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                              {referenceExpanded ? "▴ 접기" : "▾ 펼치기"}
+                            </span>
+                          </button>
+                          {referenceExpanded && (
+                            <div className="px-3 pb-3 pt-1 space-y-2">
+                              {referenceAll.map(c => {
+                                const inFlight = candidatesInFlight.has(c.id);
+                                const kindStyle = KIND_STYLE[c.kind];
+                                const confStyle = CONF_STYLE[c.confidence];
+                                // 참고는 schedule/action/risk/note 모두 가능 — note 외에는 resolveNote 못 씀 (id가 candidate id이므로 resolveCandidate dismiss)
+                                const onConfirm = () => {
+                                  if (c.kind === "schedule") {
+                                    // schedule이지만 autoApply=false라 참고로 분류된 경우: dismiss 처리 (KV에선 resolved=true)
+                                    return resolveCandidate(c.id, "dismiss");
+                                  }
+                                  return resolveNote(c.ticketKey, c.id);
+                                };
+                                return (
+                                  <div
+                                    key={c.id}
+                                    className="rounded p-2.5"
+                                    style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+                                  >
+                                    <div className="flex items-start gap-2">
+                                      <div className="flex-1 min-w-0">
+                                        <div className="flex items-center gap-1.5 mb-1 flex-wrap">
+                                          <a
+                                            href={`https://jira.team.musinsa.com/browse/${c.ticketKey}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="font-mono text-[11px] font-semibold hover:underline"
+                                            style={{ color: "#818cf8" }}
+                                          >
+                                            {c.ticketKey}
+                                          </a>
+                                          <span
+                                            className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                            style={{ background: kindStyle.bg, color: kindStyle.color, border: `1px solid ${kindStyle.border}` }}
+                                          >
+                                            {KIND_LABEL[c.kind]}
+                                          </span>
+                                          <span
+                                            className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                                            style={{ background: confStyle.bg, color: confStyle.color }}
+                                          >
+                                            {confStyle.label}
+                                          </span>
+                                          {c.sourceWeek && (
+                                            <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
+                                              {c.sourceWeek}
+                                            </span>
+                                          )}
+                                        </div>
+                                        {/* 참고 row 내용: schedule이면 변경 diff, 그 외에는 content */}
+                                        {c.kind === "schedule" ? (
+                                          <p className="text-[11px]" style={{ color: "var(--text-secondary)" }}>
+                                            {c.role ?? "—"} · {FIELD_LABEL[c.field ?? ""] ?? c.field}: <span className="line-through">{c.oldValue || "(빈 값)"}</span> → <span style={{ color: "#10b981" }}>{c.newValue || "(빈 값)"}</span>
+                                          </p>
+                                        ) : c.content ? (
+                                          <p className="text-[11px]" style={{ color: "var(--text-secondary)" }}>{c.content}</p>
+                                        ) : null}
+                                        {c.reason && (
+                                          <p className="text-[10px] mt-1" style={{ color: "var(--text-muted)" }}>{c.reason}</p>
+                                        )}
+                                      </div>
+                                      {/* 참고 row 액션: "확인"만 (승인/기각 버튼 미노출). bulk 대상 아님. */}
+                                      <button
+                                        type="button"
+                                        disabled={inFlight}
+                                        onClick={onConfirm}
+                                        className="px-2 py-1 text-[10px] rounded font-medium shrink-0 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                        style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+                                        title="이 메모는 일정에 반영되지 않습니다. 확인하면 목록에서 숨겨집니다."
+                                      >
+                                        {inFlight ? "…" : "확인"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
