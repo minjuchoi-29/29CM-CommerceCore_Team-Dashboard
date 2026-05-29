@@ -17,60 +17,9 @@ import type {
   TicketSourcesStore,
 } from "@/lib/filter-types";
 import { TICKET_KEYS } from "@/app/jira-tickets/tickets-data";
+import { fetchFilterIssueKeys } from "@/lib/filter-sync";
 
 export const dynamic = "force-dynamic";
-
-const JIRA_BASE = "https://musinsa-oneteam.atlassian.net";
-const PAGE_SIZE = 100;
-
-function jiraAuthHeader() {
-  const email = process.env.JIRA_EMAIL ?? "";
-  const token = process.env.JIRA_API_TOKEN ?? "";
-  return "Basic " + Buffer.from(`${email}:${token}`).toString("base64");
-}
-
-interface JiraIssue {
-  key: string;
-}
-
-/** Jira filter JQL로 전체 이슈 키 목록 페이지네이션 조회 */
-async function fetchAllIssueKeys(jql: string): Promise<string[]> {
-  const keys: string[] = [];
-  let startAt = 0;
-  let total = Infinity;
-
-  while (startAt < total) {
-    const url =
-      `${JIRA_BASE}/rest/api/3/search/jql` +
-      `?jql=${encodeURIComponent(jql)}` +
-      `&fields=key` +
-      `&maxResults=${PAGE_SIZE}` +
-      `&startAt=${startAt}`;
-
-    const res = await fetch(url, {
-      headers: { Authorization: jiraAuthHeader(), Accept: "application/json" },
-    });
-
-    if (!res.ok) {
-      throw new Error(`Jira search 오류 (${res.status}): ${await res.text()}`);
-    }
-
-    const data = (await res.json()) as {
-      issues: JiraIssue[];
-      total: number;
-      startAt: number;
-    };
-
-    total = data.total;
-    for (const issue of data.issues) keys.push(issue.key);
-    startAt += data.issues.length;
-
-    // 빈 페이지 → 무한루프 방지
-    if (data.issues.length === 0) break;
-  }
-
-  return keys;
-}
 
 export async function POST(
   _req: NextRequest,
@@ -94,7 +43,7 @@ export async function POST(
 
   let ticketKeys: string[];
   try {
-    ticketKeys = await fetchAllIssueKeys(`filter = ${filter.jiraFilterId}`);
+    ticketKeys = await fetchFilterIssueKeys(filter.jiraFilterId);
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     console.error(`[jira-filters sync] filterId=${id}`, errMsg);
