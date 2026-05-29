@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { TICKET_KEYS, TICKET_OVERRIDES } from "@/app/jira-tickets/tickets-data";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
+import { redis } from "@/lib/redis";
+import { mergeTicketKeyLists, buildSourceFiltersMap } from "@/lib/ticket-sources";
+import type { FilterTicketsStore, JiraFiltersStore } from "@/lib/filter-types";
 
 export const dynamic = "force-dynamic";
 
@@ -126,9 +129,29 @@ export async function GET() {
     "customfield_14402", // Main Subject
   ].join(",");
 
+  // ── cc-filter-tickets + cc-jira-filters KV 로드 (실패해도 graceful fallback) ──
+  let filterTickets: FilterTicketsStore = {};
+  let filtersStore: JiraFiltersStore = {};
+  try {
+    const [ft, fs] = await Promise.all([
+      redis.get<FilterTicketsStore>("cc-filter-tickets"),
+      redis.get<JiraFiltersStore>("cc-jira-filters"),
+    ]);
+    filterTickets = ft ?? {};
+    filtersStore = fs ?? {};
+  } catch (e) {
+    console.error("[jira-tickets GET] KV 로드 실패 (filter-tickets), TICKET_KEYS만 사용:", e);
+  }
+
+  // TICKET_KEYS + 필터 전용 키 병합 (key 기준 dedupe)
+  const { allKeys, filterOnlyKeys } = mergeTicketKeyLists(TICKET_KEYS, filterTickets);
+  // 어떤 티켓이 어떤 필터에 속하는지 맵 빌드
+  const sourceFiltersMap = buildSourceFiltersMap(filterTickets, filtersStore);
+  const manualKeySet = new Set<string>(TICKET_KEYS);
+
   // JIRA key in (...) 제한 회피를 위해 50개씩 청크로 나눠 병렬 조회
   const CHUNK_SIZE = 50;
-  const chunks = chunkArray(TICKET_KEYS, CHUNK_SIZE);
+  const chunks = chunkArray(allKeys, CHUNK_SIZE);
 
   let tickets: Ticket[] = [];
   try {
@@ -141,17 +164,43 @@ export async function GET() {
     return NextResponse.json({ error: `요청 실패: ${message}` }, { status: 504 });
   }
 
-  // TICKET_KEYS 순서 유지
-  // JIRA에서 못 가져온 키는 TICKET_OVERRIDES에 summary가 있으면 fallback으로 표시
+  // sourceFilters 부착 (필터에 속한 티켓만 — 수동 전용은 undefined 유지)
+  for (const t of tickets) {
+    const sf = sourceFiltersMap[t.key];
+    if (sf && sf.length > 0) (t as Ticket).sourceFilters = sf;
+  }
+
+  // ── 정렬: TICKET_KEYS 순서 우선 → 필터 전용 키 후미 ──
   const byKey = Object.fromEntries(tickets.map((t) => [t.key, t]));
-  const sorted = TICKET_KEYS.map((k) => {
+
+  // 1) 수동 등록 티켓 (TICKET_KEYS 순서 유지)
+  const manualSorted = TICKET_KEYS.map((k) => {
     if (byKey[k]) return byKey[k];
+    // JIRA에서 못 가져온 키: TICKET_OVERRIDES fallback
     const ov = TICKET_OVERRIDES[k];
     if (ov && "summary" in ov && ov.summary) {
-      return { key: k, assignee: "-", eta: "-", type: "-", project: k.split("-")[0], ...ov } as Ticket;
+      const fallback: Ticket = { key: k, assignee: "-", eta: "-", type: "-", project: k.split("-")[0], summary: "", status: "-", ...ov };
+      const sf = sourceFiltersMap[k];
+      if (sf && sf.length > 0) fallback.sourceFilters = sf;
+      return fallback;
     }
     return null;
   }).filter((t): t is Ticket => t != null);
 
-  return NextResponse.json({ tickets: sorted, fetchedAt: new Date().toISOString() });
+  // 2) 필터 전용 티켓 (TICKET_KEYS에 없는 것)
+  const filterOnlySorted = filterOnlyKeys
+    .map((k) => byKey[k])
+    .filter((t): t is Ticket => t != null);
+
+  const sorted = [...manualSorted, ...filterOnlySorted];
+
+  // 중복 방어 (race condition 등)
+  const seen = new Set<string>();
+  const deduped = sorted.filter(t => {
+    if (seen.has(t.key)) return false;
+    seen.add(t.key);
+    return true;
+  });
+
+  return NextResponse.json({ tickets: deduped, fetchedAt: new Date().toISOString() });
 }
