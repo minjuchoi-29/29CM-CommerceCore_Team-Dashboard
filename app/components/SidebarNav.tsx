@@ -387,6 +387,16 @@ export default function SidebarNav({ user, logoutAction }: Props) {
                   </svg>
                 }
               />
+              <NavLink
+                href="/data-sources"
+                label="데이터 소스"
+                admin
+                icon={
+                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                    <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
+                  </svg>
+                }
+              />
             </nav>
           </div>
         </>
