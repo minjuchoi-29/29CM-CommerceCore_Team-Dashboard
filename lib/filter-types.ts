@@ -34,6 +34,8 @@ export interface JiraFilter {
   lastSyncCount: number | null;
   /** 마지막 sync 오류 메시지 (성공이면 null) */
   lastSyncError: string | null;
+  /** 이전 sync의 티켓 수 (delta 계산용) */
+  prevSyncCount?: number | null;
 }
 
 /** cc-jira-filters KV 값 */

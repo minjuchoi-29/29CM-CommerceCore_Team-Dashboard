@@ -1,7 +1,49 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import type { JiraFilter, FilterPreview } from "@/lib/filter-types";
+import type {
+  JiraFilter,
+  FilterPreview,
+  FilterTicketsStore,
+  TicketSourcesStore,
+} from "@/lib/filter-types";
+
+// ── 운영 지표 계산 ─────────────────────────────────────────────────────────────
+
+interface FilterStats {
+  ticketCount: number;
+  hiddenCount: number;
+  removedCount: number;
+  delta: number | null;
+  removedKeys: string[];
+}
+
+function computeFilterStats(
+  filter: JiraFilter,
+  filterTickets: FilterTicketsStore,
+  hiddenKeys: Set<string>,
+  ticketSources: TicketSourcesStore,
+): FilterStats {
+  const currentKeys = new Set(filterTickets[filter.id] ?? []);
+  const ticketCount = currentKeys.size;
+  const hiddenCount = [...currentKeys].filter(k => hiddenKeys.has(k)).length;
+
+  // 제거된 티켓: cc-ticket-sources에 이 filterId 엔트리가 있는데 현재 filter에 없는 것
+  const removedKeys: string[] = [];
+  for (const [key, entries] of Object.entries(ticketSources)) {
+    const inSource = entries.some(e => e.filterId === filter.id);
+    if (inSource && !currentKeys.has(key)) {
+      removedKeys.push(key);
+    }
+  }
+
+  const delta =
+    filter.prevSyncCount != null && filter.lastSyncCount != null
+      ? filter.lastSyncCount - filter.prevSyncCount
+      : null;
+
+  return { ticketCount, hiddenCount, removedCount: removedKeys.length, delta, removedKeys };
+}
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
 
@@ -67,13 +109,16 @@ function FilterCard({
   onSync,
   onDelete,
   syncing,
+  stats,
 }: {
   filter: JiraFilter;
   onSync: (id: string) => void;
   onDelete: (id: string) => void;
   syncing: boolean;
+  stats: FilterStats | null;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [showRemoved, setShowRemoved] = useState(false);
   const displayName = filter.label ?? filter.name;
 
   return (
@@ -193,6 +238,95 @@ function FilterCard({
           )}
         </div>
       </div>
+
+      {/* 운영 지표 stats row */}
+      {stats !== null && (
+        <div
+          className="flex items-center gap-3 pt-2 text-[11px] flex-wrap"
+          style={{ borderTop: "1px solid var(--border-2)", color: "var(--text-subtle)" }}
+        >
+          <span>
+            티켓{" "}
+            <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
+              {stats.ticketCount.toLocaleString()}
+            </span>
+            개
+          </span>
+          {stats.hiddenCount > 0 && (
+            <>
+              <span style={{ color: "var(--border-2)" }}>·</span>
+              <span>
+                숨김{" "}
+                <span className="font-semibold" style={{ color: "var(--text-muted)" }}>
+                  {stats.hiddenCount}
+                </span>
+              </span>
+            </>
+          )}
+          {stats.removedCount > 0 && (
+            <>
+              <span style={{ color: "var(--border-2)" }}>·</span>
+              <button
+                onClick={() => setShowRemoved(prev => !prev)}
+                className="flex items-center gap-1 font-semibold transition-all"
+                style={{ color: "#fb923c" }}
+              >
+                제거 후보{" "}
+                <span
+                  className="px-1 py-0.5 rounded text-[10px]"
+                  style={{ background: "rgba(251,146,60,0.12)", border: "1px solid rgba(251,146,60,0.2)" }}
+                >
+                  {stats.removedCount}
+                </span>
+                <svg
+                  className={`w-3 h-3 transition-transform ${showRemoved ? "rotate-180" : ""}`}
+                  viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"
+                >
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+            </>
+          )}
+          {stats.delta !== null && (
+            <>
+              <span style={{ color: "var(--border-2)" }}>·</span>
+              <span
+                className="font-semibold"
+                style={{ color: stats.delta > 0 ? "#34d399" : stats.delta < 0 ? "#f87171" : "var(--text-subtle)" }}
+              >
+                {stats.delta > 0 ? `+${stats.delta}` : stats.delta}
+              </span>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* 제거 후보 패널 */}
+      {showRemoved && stats !== null && stats.removedKeys.length > 0 && (
+        <div
+          className="rounded-lg px-3 py-2.5 flex flex-col gap-1.5"
+          style={{ background: "rgba(251,146,60,0.06)", border: "1px solid rgba(251,146,60,0.18)" }}
+        >
+          <p className="text-[10px] font-semibold uppercase tracking-wide mb-1" style={{ color: "#fb923c" }}>
+            제거 후보 — 현재 필터 결과에 없는 티켓
+          </p>
+          <div className="flex flex-col gap-1">
+            {stats.removedKeys.map(key => (
+              <div key={key} className="flex items-center gap-2">
+                <a
+                  href={`https://musinsa-oneteam.atlassian.net/browse/${key}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[11px] font-mono hover:underline"
+                  style={{ color: "#fb923c" }}
+                >
+                  {key} ↗
+                </a>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* JQL */}
       <div
@@ -413,6 +547,12 @@ export default function DataSourcesPage() {
   const [showAddForm, setShowAddForm] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
+  // 운영 지표용 추가 KV 상태
+  const [filterTickets, setFilterTickets] = useState<FilterTicketsStore>({});
+  const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
+  const [ticketSources, setTicketSources] = useState<TicketSourcesStore>({});
+  const [statsLoaded, setStatsLoaded] = useState(false);
+
   function showToast(msg: string, type: "success" | "error" = "success") {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
@@ -433,7 +573,29 @@ export default function DataSourcesPage() {
     }
   }, []);
 
-  useEffect(() => { loadFilters(); }, [loadFilters]);
+  const loadStats = useCallback(async () => {
+    try {
+      const res = await fetch("/api/kv?keys=cc-filter-tickets,cc-hidden-keys,cc-ticket-sources");
+      if (!res.ok) return;
+      const data = await res.json() as Record<string, unknown>;
+
+      if (data["cc-filter-tickets"] && typeof data["cc-filter-tickets"] === "object" && !Array.isArray(data["cc-filter-tickets"]))
+        setFilterTickets(data["cc-filter-tickets"] as FilterTicketsStore);
+      if (Array.isArray(data["cc-hidden-keys"]))
+        setHiddenKeys(new Set(data["cc-hidden-keys"] as string[]));
+      if (data["cc-ticket-sources"] && typeof data["cc-ticket-sources"] === "object" && !Array.isArray(data["cc-ticket-sources"]))
+        setTicketSources(data["cc-ticket-sources"] as TicketSourcesStore);
+    } catch {
+      // stats 로드 실패는 UI에 영향 없음
+    } finally {
+      setStatsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadFilters();
+    loadStats();
+  }, [loadFilters, loadStats]);
 
   async function handleSync(id: string) {
     setSyncingId(id);
@@ -444,7 +606,7 @@ export default function DataSourcesPage() {
         showToast(data.error ?? "동기화 실패", "error");
       } else {
         showToast(`동기화 완료 — 티켓 ${(data.ticketKeys as string[]).length.toLocaleString()}개`);
-        await loadFilters();
+        await Promise.all([loadFilters(), loadStats()]);
       }
     } catch {
       showToast("네트워크 오류", "error");
@@ -604,6 +766,7 @@ export default function DataSourcesPage() {
                 onSync={handleSync}
                 onDelete={handleDelete}
                 syncing={syncingId === filter.id}
+                stats={statsLoaded ? computeFilterStats(filter, filterTickets, hiddenKeys, ticketSources) : null}
               />
             ))}
           </div>
@@ -617,7 +780,7 @@ export default function DataSourcesPage() {
           >
             <p>
               <span className="font-semibold" style={{ color: "var(--text-muted)" }}>동기화</span>란 Jira에서 해당 필터의 최신 이슈 목록을 가져와 KV에 저장하는 작업입니다.
-              동기화한 티켓은 현재 <span className="font-semibold">대시보드 티켓 보드에 자동 표시되지 않습니다</span> — Phase 2에서 통합 예정입니다.
+              동기화한 티켓은 <span className="font-semibold">대시보드 티켓 보드에 자동 표시</span>됩니다.
             </p>
           </div>
         )}

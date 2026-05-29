@@ -19,6 +19,7 @@ import {
 } from "@/lib/transitions";
 import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
+import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -221,6 +222,8 @@ export type Ticket = {
    * 필터로 들어온 티켓은 ["ETR 신규 과제", ...] 형태.
    */
   sourceFilters?: string[];
+  /** TICKET_KEYS에 직접 등록된 수동 관리 티켓이면 true */
+  isManual?: boolean;
 };
 
 // 오늘 자정 기준 ms
@@ -1346,6 +1349,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [duplicateKeys, setDuplicateKeys] = useState<Set<string>>(new Set());
   // customKeys: 모든 티켓이 TICKET_KEYS(코드)로 관리되므로 더 이상 사용 안 함
   const [hiddenKeys, setHiddenKeys]       = useState<Set<string>>(new Set());
+  // Source 메타데이터 (secondary fetch — 메인 렌더 비블로킹)
+  const [ticketSources, setTicketSources] = useState<TicketSourcesStore>({});
+  const [jiraFiltersKV, setJiraFiltersKV]   = useState<JiraFiltersStore>({});
+  const [filterTicketsKV, setFilterTicketsKV] = useState<FilterTicketsStore>({});
   // hidden key hydrate 완료 여부 — render gate (flicker 방지)
   // localStorage cache hit이면 cache에 동봉된 hiddenKeys로 즉시 true,
   // cache miss면 mainFetch가 KV에서 cc-hidden-keys 도착시 true.
@@ -2949,6 +2956,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // 모든 티켓이 TICKET_KEYS(코드)로 관리되므로 cc-custom-tickets KV 로드 불필요
     // mainFetch 완료 후 kvLoaded = true
     mainFetch.then(() => setKvLoaded(true)).catch(() => setKvLoaded(true));
+
+    // Source 메타데이터: 메인 렌더를 블로킹하지 않도록 별도 fetch
+    fetch("/api/kv?keys=cc-ticket-sources,cc-jira-filters,cc-filter-tickets")
+      .then(r => r.json())
+      .then((d: Record<string, unknown>) => {
+        if (d["cc-ticket-sources"] && typeof d["cc-ticket-sources"] === "object" && !Array.isArray(d["cc-ticket-sources"]))
+          setTicketSources(d["cc-ticket-sources"] as TicketSourcesStore);
+        if (d["cc-jira-filters"] && typeof d["cc-jira-filters"] === "object" && !Array.isArray(d["cc-jira-filters"]))
+          setJiraFiltersKV(d["cc-jira-filters"] as JiraFiltersStore);
+        if (d["cc-filter-tickets"] && typeof d["cc-filter-tickets"] === "object" && !Array.isArray(d["cc-filter-tickets"]))
+          setFilterTicketsKV(d["cc-filter-tickets"] as FilterTicketsStore);
+      })
+      .catch(() => {});
   }, []);
 
   // ── 브라우저 히스토리 관리 ─────────────────────────────────────
@@ -6935,6 +6955,91 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
 
             </>) /* ─ Overview: 핵심 메타 + 보조 정보 끝 ─ */}
+
+            {/* ══════════════════════════════════════════
+                Overview 계속: 데이터 소스 패널
+                ══════════════════════════════════════════ */}
+            {detailTab === "overview" && (() => {
+              const sourceEntries = ticketSources[selected.key] ?? [];
+              const hasSource = selected.isManual || sourceEntries.length > 0;
+              if (!hasSource) return null;
+
+              return (
+                <div
+                  className="rounded-lg px-3 py-2.5 mb-3"
+                  style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+                >
+                  <p className="text-[11px] font-semibold uppercase tracking-wide mb-2.5" style={{ color: "var(--text-muted)" }}>
+                    데이터 소스
+                  </p>
+                  <div className="flex flex-col gap-1.5">
+
+                    {/* 수동 추가 배지 */}
+                    {selected.isManual && (
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
+                            style={{ background: "rgba(52,211,153,0.10)", color: "#34d399", border: "1px solid rgba(52,211,153,0.2)" }}
+                          >
+                            수동
+                          </span>
+                          <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>직접 등록</span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 필터 소스 항목 */}
+                    {sourceEntries.map(entry => {
+                      const filter = jiraFiltersKV[entry.filterId];
+                      const label  = filter?.label ?? filter?.name ?? entry.filterLabel;
+                      const currentFilterKeys = filterTicketsKV[entry.filterId] ?? [];
+                      const isActive = currentFilterKeys.includes(selected.key);
+                      const syncedAt = filter?.lastSyncAt;
+
+                      return (
+                        <div key={entry.filterId} className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span
+                              className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
+                              style={{ background: "rgba(99,102,241,0.10)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.18)" }}
+                            >
+                              필터
+                            </span>
+                            <span className="text-[12px] truncate" style={{ color: "var(--text-muted)" }} title={label}>{label}</span>
+                            {!isActive && (
+                              <span
+                                className="text-[9px] px-1 py-0.5 rounded shrink-0 font-medium"
+                                style={{ background: "rgba(239,68,68,0.10)", color: "#f87171", border: "1px solid rgba(239,68,68,0.2)" }}
+                              >
+                                제거됨
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex flex-col items-end shrink-0 gap-0.5">
+                            <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                              추가 {new Date(entry.addedAt).toLocaleDateString("ko-KR", { month: "short", day: "numeric" })}
+                            </span>
+                            {syncedAt && (
+                              <span className="text-[9.5px]" style={{ color: "var(--text-subtle)" }}>
+                                sync {(() => {
+                                  const diff = Date.now() - new Date(syncedAt).getTime();
+                                  const h = Math.floor(diff / 3_600_000);
+                                  if (h < 1) return "방금";
+                                  if (h < 24) return `${h}시간 전`;
+                                  return `${Math.floor(h / 24)}일 전`;
+                                })()}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* ══════════════════════════════════════════
                 Overview 계속: 요구사항 출처 + 관련 문서

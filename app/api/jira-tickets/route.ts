@@ -168,6 +168,7 @@ export async function GET() {
   for (const t of tickets) {
     const sf = sourceFiltersMap[t.key];
     if (sf && sf.length > 0) (t as Ticket).sourceFilters = sf;
+    if (manualKeySet.has(t.key)) (t as Ticket).isManual = true;
   }
 
   // ── 정렬: TICKET_KEYS 순서 우선 → 필터 전용 키 후미 ──
@@ -179,7 +180,7 @@ export async function GET() {
     // JIRA에서 못 가져온 키: TICKET_OVERRIDES fallback
     const ov = TICKET_OVERRIDES[k];
     if (ov && "summary" in ov && ov.summary) {
-      const fallback: Ticket = { key: k, assignee: "-", eta: "-", type: "-", project: k.split("-")[0], summary: "", status: "-", ...ov };
+      const fallback: Ticket = { key: k, assignee: "-", eta: "-", type: "-", project: k.split("-")[0], summary: "", status: "-", isManual: true, ...ov };
       const sf = sourceFiltersMap[k];
       if (sf && sf.length > 0) fallback.sourceFilters = sf;
       return fallback;

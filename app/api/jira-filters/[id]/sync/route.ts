@@ -141,6 +141,7 @@ export async function POST(
   // 필터 레코드 sync 결과 업데이트
   store[id] = {
     ...filter,
+    prevSyncCount: filter.lastSyncCount,
     lastSyncAt: now,
     lastSyncCount: ticketKeys.length,
     lastSyncError: null,
