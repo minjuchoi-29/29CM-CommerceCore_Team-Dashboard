@@ -230,8 +230,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // 1) description + updated + Weekly 공유사항 custom field
-    //    customfield_10625 = "Weekly 공유사항" (29CM Jira). PM이 직접 갱신하는 진짜 SoT.
+    // 1) description + updated + customfield_10625 (참고용만 — v5부터 resolution에서 제외)
+    //    customfield_10625 = "Weekly 공유사항" (29CM Jira).
+    //    실운영에서 거의 채워지지 않음 → debug 확인용으로만 fetch.
     const WEEKLY_CUSTOM_FIELD_ID = "customfield_10625";
     const WEEKLY_CUSTOM_FIELD_NAME = "Weekly 공유사항";
     const issueUrl =
@@ -296,38 +297,40 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // ─── 우선순위 결정 (2026-05-26 정책 재확정 v4) ───────────────
+    // ─── 우선순위 결정 (2026-05-29 정책 재확정 v5) ───────────────
     //
-    // [운영 흐름 — v4 변경]
-    //   description "Weekly 공유사항" 섹션  = LIVE operational truth (1순위)
-    //                                       PM이 description 안에 직접 적는 경우, 항상 latest operational state.
-    //   customfield_10625 ("Weekly 공유사항") = dedicated field fallback (2순위)
-    //                                          description 섹션이 없을 때만 사용.
-    //   automation comment                   = IMMUTABLE archive / history (3순위)
-    //                                          description / customfield 모두 없을 때만 fallback.
+    // [운영 흐름 — v5 실제 운영 기준]
+    //   description "Weekly 공유사항" 섹션          = LIVE operational truth (1순위)
+    //                                               PM이 description 안에 직접 적는 경우, 항상 latest operational state.
+    //   Automation for Jira "nn주차 Weekly 공유사항" 댓글 = 실제 운영 SoT (2순위)
+    //                                               description Weekly가 없을 때 가장 최신 주차 댓글을 선택.
+    //   customfield_10625 ("Weekly 공유사항")        = 참고용만 — source resolution에 사용 안 함
+    //                                               실운영에서 거의 사용되지 않거나 비어있는 경우가 많음.
+    //                                               debug 응답에서 확인 가능하나 pick에 포함되지 않음.
     //
-    // [선택 정책 — 우선순위 (descCandidate ?? cfCandidate ?? commentCandidate)]
+    // [선택 정책 — 우선순위 (descCandidate ?? commentCandidate)]
     //   1) description "Weekly 공유사항" 섹션 있음 → description-first
-    //   2) customfield_10625 값 있음 → customfield-first
-    //   3) latest automation comment 있음 → comment-fallback
-    //   4) 모두 없음 → null
+    //   2) latest Automation "nn주차 Weekly 공유사항" 댓글 있음 → comment-fallback
+    //   3) 모두 없음 → null
     //
-    // [v3 → v4 변경 사유]
-    //   기존 v3 정책은 customfield-first였으나, 운영 PM 측 명확화:
-    //   "description의 Weekly 공유사항이 가장 최신 live operational state".
-    //   description 섹션이 존재하면 항상 우선해야 하며, customfield는 description이 없을 때만 fallback.
+    // [v4 → v5 변경 사유]
+    //   customfield_10625는 실제 운영에서 거의 채워지지 않음 (PM 확인).
+    //   따라서 customfield를 2순위로 두면 description도 없고 comment도 있는 티켓
+    //   (예: TM-3032 — 20/21/22주차 댓글 존재, customfield=null)에서
+    //   올바른 댓글을 선택하지 못하는 문제가 발생.
+    //   v5에서는 comment가 2순위 — customfield는 resolution chain에서 완전히 제외.
     //
     // [중요 운영 약속]
     //   - PRD 본문은 schedule/note 추출 대상 아님 (description 안의 "Weekly 공유사항" 섹션만).
-    //   - planning / review / release / launch 같은 상태 변화의 SoT는 description 또는 customfield.
-    //   - comment는 stale 감지 / backtracking / 주차별 transition 분석에만 사용.
+    //   - comment는 Automation for Jira가 생성한 "nn주차 Weekly 공유사항" 형식 댓글만 대상.
+    //   - comment는 -created 정렬 → 최신 주차 자동 선택.
     //   - comment 픽된 경우 TicketBoard orchestration이 merge 자체를 skip (IMMUTABLE archive 정책).
     type Pick = {
       text: string;
-      source: "customfield" | "description" | "comment";
+      source: "description" | "comment";
       sourceUpdatedAt: string;
       markers: string[];
-      policyReason: "customfield-first" | "description-first" | "comment-fallback";
+      policyReason: "description-first" | "comment-fallback";
     };
 
     // 1순위: description "Weekly 공유사항" 섹션 — LIVE operational truth
@@ -341,20 +344,8 @@ export async function GET(req: NextRequest) {
         }
       : null;
 
-    // 2순위: customfield_10625 — dedicated field fallback
-    const cfCandidate: Pick | null = cfWeeklyText
-      ? {
-          text: cfWeeklyText,
-          source: "customfield",
-          sourceUpdatedAt: descUpdated,  // field별 timestamp 없음 — issue updated를 그대로 사용
-          markers: cfWeeklyMarkers.length > 0
-            ? cfWeeklyMarkers
-            : ["customfield_10625_weekly"],
-          policyReason: "customfield-first",
-        }
-      : null;
-
-    // 3순위: latest automation comment — IMMUTABLE archive / history
+    // 2순위: Automation for Jira "nn주차 Weekly 공유사항" 댓글 — 실제 운영 SoT
+    // (comments는 이미 -created 정렬 → 최신 주차 자동 선택)
     const commentCandidate: Pick | null = markedComment
       ? {
           text: markedComment.text,
@@ -365,8 +356,12 @@ export async function GET(req: NextRequest) {
         }
       : null;
 
-    // 최종 우선순위 (v4): description LIVE → customfield fallback → comment archive
-    const pick: Pick | null = descCandidate ?? cfCandidate ?? commentCandidate;
+    // customfield_10625 — 참고용만 (v5: resolution chain에서 제외)
+    // 실운영에서 거의 채워지지 않으므로 source pick에 포함하지 않음.
+    // debug 응답의 weeklyCustomField* 필드에서만 확인 가능.
+
+    // 최종 우선순위 (v5): description LIVE → comment (Automation 최신 주차)
+    const pick: Pick | null = descCandidate ?? commentCandidate;
 
     // ─── 파싱 결과 (선택) — text가 있으면 parseWeekly 실행 ───────
     const parsed = pick ? parseWeekly(pick.text, key) : null;
@@ -393,7 +388,8 @@ export async function GET(req: NextRequest) {
       parsed,
       parseSummary,
       debug: {
-        // ─── customfield_10625 = "Weekly 공유사항" (진짜 SoT) ───
+        // ─── customfield_10625 = "Weekly 공유사항" (참고용 — v5 resolution에서 제외) ───
+        // 실운영에서 거의 비어있음. source pick 에 사용되지 않으며 debug 확인 전용.
         weeklyCustomFieldId: WEEKLY_CUSTOM_FIELD_ID,
         weeklyCustomFieldName: WEEKLY_CUSTOM_FIELD_NAME,
         weeklyCustomFieldHasValue: !!cfWeeklyText,
@@ -438,10 +434,11 @@ export async function GET(req: NextRequest) {
             preview: t.slice(0, 150),
           };
         }),
-        // ─── 운영 정책 명시 ───
+        // ─── 운영 정책 명시 (v5) ───
         policyDescription:
-          "description = LIVE SoT (PM working area), comment = IMMUTABLE archive (automation). " +
-          "description marker가 있으면 무조건 description 우선; comment는 fallback / history.",
+          "[v5 정책] description Weekly 섹션 → 최우선. " +
+          "없으면 Automation for Jira의 최신 'nn주차 Weekly 공유사항' 댓글 사용. " +
+          "customfield_10625는 참고용만 — source resolution에 사용 안 함.",
       },
     });
   } catch (e) {
