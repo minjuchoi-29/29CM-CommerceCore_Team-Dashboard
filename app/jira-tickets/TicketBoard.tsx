@@ -2214,8 +2214,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const newTicket = data.ticket as Ticket;
         setTickets(prev => [...prev, newTicket]);
 
-        // JIRA startDate → 킥오프 자동 등록 (기존 일정 없을 때만)
-        if (newTicket.startDate && !schedules[trimmed]?.find(r => r.role === "Kick-Off")) {
+        // JIRA startDate → 시작일(Kick-Off) 등록
+        // 조건: Kick-Off 없거나, 있어도 날짜가 비어 있으면 Jira Start Date로 보정
+        // (사용자가 수동 입력한 날짜가 있으면 덮어쓰지 않음)
+        const existingKOOnAdd = schedules[trimmed]?.find(r => r.role === "Kick-Off");
+        if (newTicket.startDate && (!existingKOOnAdd || !existingKOOnAdd.start)) {
           const kickoffRow: RoleSchedule = {
             role: "Kick-Off",
             person: "-",
@@ -2351,8 +2354,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (fetched.length > 0) {
       setTickets(prev => [...prev, ...fetched]);
 
-      // JIRA startDate → 킥오프 자동 등록 (기존 일정 없을 때만)
-      const ticketsWithStart = fetched.filter(t => t.startDate && !schedules[t.key]?.find(r => r.role === "Kick-Off"));
+      // JIRA startDate → 시작일(Kick-Off) 등록
+      // 조건: Kick-Off 없거나, 있어도 날짜가 비어 있으면 Jira Start Date로 보정
+      const ticketsWithStart = fetched.filter(t => {
+        if (!t.startDate) return false;
+        const existingKO = schedules[t.key]?.find(r => r.role === "Kick-Off");
+        return !existingKO || !existingKO.start;
+      });
       if (ticketsWithStart.length > 0) {
         // subKey 방식: 각 티켓 별로 개별 업데이트 (전체 덮어쓰기 방지)
         for (const t of ticketsWithStart) {
@@ -3062,15 +3070,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // 마일스톤 3개는 항상 상단 고정 (기존 데이터 있으면 사용, 없으면 빈 기본값)
     const isTicketActive = INPROGRESS_STATUSES.includes(selected.status) ||
       ["론치완료", "완료", "배포완료"].includes(selected.status);
-    const milestoneRows: RoleSchedule[] = MILESTONE_ROLES.map(role =>
-      existingMap[role] ?? {
+    const milestoneRows: RoleSchedule[] = MILESTONE_ROLES.map(role => {
+      if (existingMap[role]) return existingMap[role];
+      // Kick-Off: Jira Start Date로 pre-fill (날짜가 있을 때만)
+      if (role === "Kick-Off" && selected.startDate) {
+        return { role, person: "-", start: selected.startDate, end: selected.startDate, status: "예정" as const };
+      }
+      // 빈 placeholder — saveEdit에서 저장 제외됨 (날짜 없는 milestone은 KV 저장 안 됨)
+      return {
         role,
         person: "-",
         start: "",
         end: "",
-        status: (isTicketActive && role === "Kick-Off") ? "확인필요" as const : "미정" as const,
-      }
-    );
+        status: "미정" as const,
+      };
+    });
 
     // 나머지 작업 행 (마일스톤 제외), 오래된순 정렬
     const workRows = existing
@@ -3114,7 +3128,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       return;
     }
     setEditError(null);
-    saveSchedule(selected.key, editRows);
+    // 빈 milestone placeholder 저장 차단:
+    // start/end 모두 비어 있는 MILESTONE_ROLES row는 KV에 저장하지 않음 (시작일 오염 방지).
+    // 날짜가 하나라도 입력된 milestone, 일반 작업 row는 항상 보존.
+    const rowsToSave = editRows.filter(r => {
+      if (!MILESTONE_ROLES.includes(r.role)) return true; // 일반 작업 row는 무조건 보존
+      return !!(r.start || r.end); // milestone은 날짜가 있을 때만 저장
+    });
+    saveSchedule(selected.key, rowsToSave);
     setEditMode(false);
     // Activity 기록 (fire-and-forget)
     fetch("/api/activity", {
@@ -3157,6 +3178,41 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setTicketAddedDates(updated);
     fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "cc-ticket-added-dates", value: updated }) }).catch(() => {});
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kvLoaded, tickets.length]);
+
+  // KV 로드 완료 후: 기존 빈 Kick-Off placeholder → Jira Start Date로 자동 보정 (1회 실행)
+  // "빈 Kick-Off가 존재해서 Jira startDate 등록이 차단되는" 상황 해소.
+  // 사용자가 수동 입력한 날짜(start != "")는 절대 덮어쓰지 않음.
+  const startDateKickoffFixedRef = useRef(false);
+  useEffect(() => {
+    if (!kvLoaded || tickets.length === 0 || startDateKickoffFixedRef.current) return;
+    startDateKickoffFixedRef.current = true;
+
+    const toFix = tickets.filter(t => {
+      if (!t.startDate) return false;
+      const ko = schedules[t.key]?.find((r: RoleSchedule) => r.role === "Kick-Off");
+      return !ko || !ko.start; // Kick-Off 없거나 날짜 없으면 보정 대상
+    });
+    if (toFix.length === 0) return;
+
+    const newSchedules = { ...schedules };
+    for (const t of toFix) {
+      const kickoffRow: RoleSchedule = {
+        role: "Kick-Off", person: "-",
+        start: t.startDate!, end: t.startDate!, status: "예정",
+      };
+      newSchedules[t.key] = [
+        kickoffRow,
+        ...(schedules[t.key] ?? []).filter((r: RoleSchedule) => r.role !== "Kick-Off"),
+      ];
+      fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-schedules", subKey: t.key, value: newSchedules[t.key] }),
+      }).catch(() => {});
+    }
+    setSchedules(newSchedules);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kvLoaded, tickets.length]);
 
