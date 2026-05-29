@@ -603,6 +603,9 @@ export function parseScheduleLineWithCtx(
     const sk = findStatusKeyword(rest);
     if (sk) statusRaw = sk.kw;
   }
+  // 날짜가 있고 status keyword가 없을 때 → "예정" 기본값 적용
+  // "5/21~5/22 개발", "5/26~5/27 QA" 같이 status 표기 없는 자연어 일정 라인 지원 (Bug 1, 2)
+  if (datePart && !statusRaw) statusRaw = "예정";
 
   let startDate: string | null = null;
   let endDate: string | null = null;
@@ -619,7 +622,10 @@ export function parseScheduleLineWithCtx(
 
   if (!roleRaw && !startDate && !statusRaw) return null;
 
-  const resolved = resolvePhaseWithContext(roleRaw, line, ctx?.parentPhase);
+  // datePart를 제거한 line으로 phase 추론 — 날짜 문자열이 resourceTeam에 섞이지 않도록 (Bug 1, 2)
+  // "5/21~5/22 개발" → lineForPhase = "개발" → extractPhaseAndResource("개발") → { phase: "개발", resourceTeam: null }
+  const lineForPhase = datePart ? line.replace(datePart, "").replace(/\s+/g, " ").trim() : line;
+  const resolved = resolvePhaseWithContext(roleRaw, lineForPhase, ctx?.parentPhase);
   const inheritedFromParentText = resolved.phaseSource === "parentInheritance"
     ? (ctx?.parentText ?? null)
     : null;
@@ -930,13 +936,18 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
     phaseSourceCounts[k] = (phaseSourceCounts[k] ?? 0) + 1;
   }
 
+  // 시작일(Kick-Off)은 Jira Start Date에서만 생성 (Bug 3)
+  // Weekly 텍스트에서 "킥오프 5/21" 같은 표기가 있더라도 schedule row로 올리지 않음.
+  // TicketBoard의 Jira startDate → Kick-Off 자동 등록 로직이 담당.
+  const scheduleItemsFiltered = scheduleItems.filter(s => s.phase !== "Kick-Off");
+
   return {
     ticketKey,
     sourceWeek,
     sourceText: text,
     parsedAt: now,
     progressItems,
-    scheduleItems,
+    scheduleItems: scheduleItemsFiltered,
     risks,
     nextActions,
     noIssues,

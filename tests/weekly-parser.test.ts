@@ -290,16 +290,14 @@ describe("classifyLineWithCtx", () => {
       "2026-05-19 파트너 어드민 QA",
       { parentPhase: "QA", parentText: "QA" },
     );
-    // status keyword 없으니 EXECUTABLE_STATUSES 검증에서 declined가 정상 동작.
-    // 단, 신규 explainability 정책상 declined 결과에도 schedule meta가 채워져 있어야 함.
-    assert.equal(cls.type, "note", "no status → declined as note (existing policy)");
-    assert.ok(cls.declineReason);
-    // explainability: 추정된 schedule meta는 보존됨
-    assert.ok(cls.schedule, "declined 결과에도 schedule meta가 explainability를 위해 채워짐");
+    // 신규 정책: 날짜가 있고 status keyword가 없으면 status="예정" 기본값 적용 → schedule 분류 (Bug 1,2 fix)
+    assert.equal(cls.type, "schedule", "날짜 있는 라인은 status 없어도 schedule로 분류");
+    assert.ok(cls.schedule, "schedule meta 존재");
     assert.equal(cls.schedule!.phase, "QA");
     assert.equal(cls.schedule!.phaseSource, "parentInheritance");
     assert.equal(cls.schedule!.inheritedFromParentText, "QA");
     assert.equal(cls.schedule!.startDate, "2026-05-19");
+    assert.equal(cls.schedule!.status, "예정", "status 기본값 예정");
   });
 
   test("nonSchedule indicator → no schedule meta (PTG plan case)", () => {

@@ -112,15 +112,15 @@ function inferResourceTeam(role: string): string | null {
   return s;
 }
 
-// Phase 표시 라벨 (한국어 통일)
+// Phase 표시 라벨 — 운영 용어 통일 (시작일/배포일/오픈일)
 const PHASE_LABEL: Record<NonNullable<RoleSchedule["phase"]>, string> = {
-  "Kick-Off": "Kick-Off",
+  "Kick-Off": "시작일",
   "기획":     "기획",
   "디자인":   "디자인",
   "개발":     "개발",
   "QA":       "QA",
-  "Release":  "Release",
-  "Launch":   "Launch",
+  "Release":  "배포일",
+  "Launch":   "오픈일",
   "기타":     "기타",
 };
 
@@ -464,15 +464,16 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   const pastDoneRoles  = sortedRoles.filter(isPastDone);
   const rawVisible     = sortedRoles.filter(r => !isPastDone(r));
 
-  // Kick-Off / Release / Launch 가 없으면 기본 행 추가
-  // 진행중·완료 티켓(ticketActive): Kick-Off 미입력 → "확인필요", Release/Launch 미입력 → "미정"
-  const milestoneDefaults: RoleSchedule[] = MILESTONE_ROLES
-    .filter(role => !rawVisible.some(r => r.role === role))
-    .map(role => ({
-      role, person: "-", start: "", end: "",
-      status: (ticketActive && role === "Kick-Off") ? "확인필요" as const : "미정" as const,
-    }));
-  const visibleRoles = [...rawVisible, ...milestoneDefaults];
+  // 데이터가 있는 row만 표시 — 빈 placeholder 행 추가 없음 (Bug 4, 6)
+  // 배포일(Release)과 오픈일(Launch)이 같은 날이면 오픈일 숨김
+  const visibleRoles = (() => {
+    const releaseRow = rawVisible.find(r => (r.phase ?? inferPhase(r.role)) === "Release");
+    const launchRow  = rawVisible.find(r => (r.phase ?? inferPhase(r.role)) === "Launch");
+    if (releaseRow?.end && launchRow?.end && releaseRow.end === launchRow.end) {
+      return rawVisible.filter(r => (r.phase ?? inferPhase(r.role)) !== "Launch");
+    }
+    return rawVisible;
+  })();
 
   // Placeholder 분리 — 미정 / 확인필요 / 날짜 없음 row는 secondary로 다운그레이드.
   // 사용자 정책: 확정 일정 signal을 placeholder가 덮지 않게.
@@ -803,9 +804,9 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
 
 const MILESTONE_ROLES = ["Kick-Off", "Release", "Launch"];
 const MILESTONE_KO: Record<string, string> = {
-  "Kick-Off": "킥오프",
-  "Release":  "배포",
-  "Launch":   "론치",
+  "Kick-Off": "시작일",
+  "Release":  "배포일",
+  "Launch":   "오픈일",
 };
 const MILESTONE_CHIP: Record<string, string> = {
   "Kick-Off": "bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-700/40",
@@ -5960,13 +5961,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     // → 그 외는 항상 표시 (대기중/대기중인 2756도 포함)
                     if (!isTicketActive && !hasAnyMilestoneData && planningAllResolved) return null;
 
-                    const milestones: (RoleSchedule & { isMissing?: boolean })[] = MILESTONE_ROLES.map(role => {
-                      if (existingMap[role]) return existingMap[role];
-                      const defaultStatus = (isTicketActive && role === "Kick-Off")
-                        ? "확인필요" as const
-                        : "미정" as const;
-                      return { role, person: "-", start: "", end: "", status: defaultStatus, isMissing: true };
-                    });
+                    // 실제 데이터가 있는 milestone만 표시 — placeholder 행 생성 없음 (Bug 4, 6)
+                    // 배포일(Release)과 오픈일(Launch)이 같은 날이면 오픈일 숨김
+                    const milestones: RoleSchedule[] = (() => {
+                      const present = MILESTONE_ROLES
+                        .map(role => existingMap[role])
+                        .filter((r): r is RoleSchedule => !!r);
+                      const releaseRow = present.find(r => r.role === "Release");
+                      const launchRow  = present.find(r => r.role === "Launch");
+                      if (releaseRow?.end && launchRow?.end && releaseRow.end === launchRow.end) {
+                        return present.filter(r => r.role !== "Launch");
+                      }
+                      return present;
+                    })();
                     return (
                       // 서브행: px-4(16) + w-6(24) + w-8(32) + w-32(128) = 200px → 타이틀 컬럼 시작에 정렬
                       <div className="flex items-center flex-wrap gap-x-3 gap-y-1 pb-2.5 pr-4" style={{ paddingLeft: "200px" }}>
