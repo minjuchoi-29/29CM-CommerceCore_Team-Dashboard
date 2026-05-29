@@ -74,6 +74,18 @@ export function canAccessReports(email: string | null | undefined): boolean {
 }
 
 /**
+ * 데이터 소스 관리 접근 권한.
+ * Jira Filter 등록/sync 등 데이터 파이프라인 운영 기능.
+ * 현재는 관리자 권한과 동일. 추후 별도 DATA_SOURCES_ALLOWED_EMAILS 로 분리 가능.
+ */
+export function canAccessDataSources(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const specific = parseEmails(process.env.DATA_SOURCES_ALLOWED_EMAILS);
+  if (specific.length > 0) return specific.includes(email.toLowerCase());
+  return isAdminUser(email);
+}
+
+/**
  * 모든 관리자 전용 기능 (roadmap, resources, reports 포함) 접근 여부.
  * 사이드바에서 PM 운영 섹션 노출 여부 판단에 사용.
  */
