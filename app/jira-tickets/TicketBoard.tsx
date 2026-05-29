@@ -215,6 +215,12 @@ export type Ticket = {
   healthCheck?: string;
   storyPoints?: number;
   bodyRequestDept?: string;
+  /**
+   * 이 티켓이 속한 Jira Filter 레이블 목록.
+   * 수동 등록(TICKET_KEYS 전용)은 undefined.
+   * 필터로 들어온 티켓은 ["ETR 신규 과제", ...] 형태.
+   */
+  sourceFilters?: string[];
 };
 
 // 오늘 자정 기준 ms
@@ -5619,6 +5625,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
                                   · {t.project}
                                 </span>
+                                {/* Source filter chip — 필터로 들어온 티켓에만 표시 */}
+                                {t.sourceFilters && t.sourceFilters.length > 0 && (
+                                  <span
+                                    className="shrink-0 px-1.5 py-0.5 rounded text-[9.5px] font-medium leading-none"
+                                    style={{
+                                      background: "rgba(99,102,241,0.10)",
+                                      color: "#818cf8",
+                                      border: "1px solid rgba(99,102,241,0.18)",
+                                    }}
+                                    title={`Jira Filter: ${t.sourceFilters.join(", ")}`}
+                                  >
+                                    {t.sourceFilters.length === 1
+                                      ? (t.sourceFilters[0].length > 16
+                                          ? t.sourceFilters[0].slice(0, 14) + "…"
+                                          : t.sourceFilters[0])
+                                      : `필터 ${t.sourceFilters.length}개`}
+                                  </span>
+                                )}
                               </div>
 
                               {/* Row 2: indicators + transition badges (있을 때만) */}
