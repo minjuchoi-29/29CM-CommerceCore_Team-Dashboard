@@ -381,14 +381,14 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   ticketActive?: boolean;        // 진행중·완료 티켓: Kick-Off 미입력 시 "확인필요", Release/Launch 미입력 시 "미정"
   onEditRow?: (r: RoleSchedule) => void;
 }) {
-  // 완료 일정 토글 — 기본 숨김 (진행 중 일정에 집중).
-  //   ticketDone(이미 완료된 티켓) 또는 forceShowPastDone(외부 강제)이면 항상 노출.
-  const [showCompleted, setShowCompleted] = useState(false);
-  const effectiveShowCompleted = forceShowPastDone || ticketDone || showCompleted;
   // 미확정 일정 섹션 펼치기 — 기본 접힘.
   const [showPlaceholders, setShowPlaceholders] = useState(false);
   // 담당자 hover 강조 — 같은 person의 다른 row에 subtle highlight.
   const [hoveredPerson, setHoveredPerson] = useState<string | null>(null);
+  // (구) showCompleted state는 2차 보정에서 제거.
+  //   사유: 완료 일정 숨김이 기본일 때 진행중 티켓(TM-1241 등)이 "확정 일정 없음"으로
+  //   잘못 보이는 issue. 완료 일정은 항상 표시하되 시각적으로 톤다운(opacity)으로 처리.
+  //   forceShowPastDone / ticketDone prop은 호환을 위해 시그니처 유지 (현재 no-op).
 
   // 뷰 시작
   const viewStart = (() => {
@@ -476,19 +476,18 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
     return aE - bE;
   });
 
-  // 완료 일정 토글 적용 — 기본 숨김.
-  const completedFiltered = effectiveShowCompleted
-    ? sortedRoles
-    : sortedRoles.filter(r => r.status !== "완료");
+  // 완료 row를 포함한 전체 sortedRoles 그대로 사용 (2차 보정: 기본 표시 + 톤다운).
+  //   PM은 "이 티켓이 지금까지 무엇을 했는가"를 봐야 하므로 history를 숨기지 않는다.
+  //   톤다운은 row wrapper opacity로 처리 (아래 렌더 부분).
 
   // 배포일(Release)과 오픈일(Launch)이 같은 날이면 오픈일 숨김 (dedup).
   const dedupedRoles = (() => {
-    const releaseRow = completedFiltered.find(r => (r.phase ?? inferPhase(r.role)) === "Release");
-    const launchRow  = completedFiltered.find(r => (r.phase ?? inferPhase(r.role)) === "Launch");
+    const releaseRow = sortedRoles.find(r => (r.phase ?? inferPhase(r.role)) === "Release");
+    const launchRow  = sortedRoles.find(r => (r.phase ?? inferPhase(r.role)) === "Launch");
     if (releaseRow?.end && launchRow?.end && releaseRow.end === launchRow.end) {
-      return completedFiltered.filter(r => (r.phase ?? inferPhase(r.role)) !== "Launch");
+      return sortedRoles.filter(r => (r.phase ?? inferPhase(r.role)) !== "Launch");
     }
-    return completedFiltered;
+    return sortedRoles;
   })();
 
   // Placeholder 분리 — 미정 / 확인필요 / 날짜 없음 row.
@@ -500,8 +499,16 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   const confirmedRoles   = dedupedRoles.filter(r => !isPlaceholderRow(r));
   const placeholderRoles = dedupedRoles.filter(isPlaceholderRow);
 
-  // 완료 row 개수 (토글 라벨용)
-  const completedCount = sortedRoles.filter(r => r.status === "완료").length;
+  // Today 표시 정책 (2차 보정):
+  //   strong = 활성 일정 존재 (진행중/예정/확인필요 등 비-완료 confirmed가 있음).
+  //   weak   = 모든 confirmed row가 완료 (history view — 잡음 방지).
+  //   none   = 일정 자체 없음.
+  const todayMode: "strong" | "weak" | "none" = (() => {
+    if (sortedRoles.length === 0) return "none";
+    const hasActive = confirmedRoles.some(r => r.status !== "완료");
+    if (hasActive) return "strong";
+    return "weak";
+  })();
 
   // 미확정 사유 자동 분류
   const placeholderReason = (r: RoleSchedule): string => {
@@ -548,8 +555,11 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
         </div>
       </div>
 
-      {/* 오늘 라벨 — 강화: 빨강 채움 + 그림자 + "오늘 M/D(요일)" */}
-      {roles && roles.length > 0 && (
+      {/* 오늘 라벨 — todayMode 기반 강도 조절 (2차 보정).
+          strong: 활성 일정 있음 → 빨강 채움 chip. 사용자에게 "현재 위치" 강하게 알림.
+          weak:   모든 일정 완료 → 작은 회색 텍스트만. history view에서 잡음 방지.
+          none:   일정 없음 → 라벨 표시 안 함. */}
+      {todayMode === "strong" && (
         <div className="flex mb-2">
           <div className="w-48 shrink-0" />
           <div className="flex-1 relative h-7">
@@ -571,32 +581,50 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
           </div>
         </div>
       )}
+      {todayMode === "weak" && (
+        <div className="flex mb-2">
+          <div className="w-48 shrink-0" />
+          <div className="flex-1 relative h-5">
+            <span
+              className="absolute -translate-x-1/2 text-[10px] whitespace-nowrap"
+              style={{ left: `${todayPct}%`, color: "var(--text-subtle)" }}
+            >
+              {todayLabel}
+            </span>
+          </div>
+        </div>
+      )}
 
-      {/* 롤 바 목록 — 시간순. Today full-height overlay가 바 영역 전체를 가로지름. */}
+      {/* 롤 바 목록 — 시간순. Today overlay는 todayMode 기반으로 강도 조절. */}
       <div className="relative">
-        {/* Today full-height overlay — 2px line + 8% red 음영 (z-1, pointer-events-none) */}
-        {roles && roles.length > 0 && confirmedRoles.length > 0 && (
+        {/* Today overlay — 2차 보정:
+            strong: 2px 선 + 4px 8% 음영 band (full-height).
+            weak:   1px 옅은 선만. label 없이 위치만 약하게 표시.
+            none:   overlay 없음. */}
+        {todayMode !== "none" && confirmedRoles.length > 0 && (
           <div className="absolute inset-0 pointer-events-none z-[1]">
             <div className="flex h-full">
               <div className="w-48 shrink-0" />
               <div className="flex-1 relative">
+                {todayMode === "strong" && (
+                  <div
+                    className="absolute top-0 bottom-0"
+                    style={{
+                      left: `${todayPct}%`,
+                      width: "4px",
+                      transform: "translateX(-2px)",
+                      background: "rgba(239,68,68,0.08)",
+                    }}
+                  />
+                )}
                 <div
                   className="absolute top-0 bottom-0"
                   style={{
                     left: `${todayPct}%`,
-                    width: "4px",
-                    transform: "translateX(-2px)",
-                    background: "rgba(239,68,68,0.08)",
-                  }}
-                />
-                <div
-                  className="absolute top-0 bottom-0"
-                  style={{
-                    left: `${todayPct}%`,
-                    width: "2px",
-                    transform: "translateX(-1px)",
+                    width: todayMode === "strong" ? "2px" : "1px",
+                    transform: todayMode === "strong" ? "translateX(-1px)" : "translateX(-0.5px)",
                     background: "#ef4444",
-                    opacity: 0.82,
+                    opacity: todayMode === "strong" ? 0.82 : 0.3,
                   }}
                 />
               </div>
@@ -622,6 +650,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
           const milestoneIso = r.end || r.start || null;
           const hl = personHighlight(r.person);
 
+          const isCompleted = r.status === "완료";
           return (
           <div
             key={`${r.role}-${r.person}-${i}`}
@@ -633,32 +662,37 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
               marginBottom: "4px",
               marginLeft: "-4px",
               marginRight: "-4px",
+              // 2차 보정: 완료 row는 row-level opacity로 톤다운. label/bar/date 모두 함께 흐려짐.
+              opacity: isCompleted ? 0.55 : 1,
               ...(hl ?? {}),
             }}
           >
             <div className="flex items-start">
               {/* 좌측 — 3행 구조: (1) marker+phase / (2) person·resource / (3) detail */}
               <div className="w-48 shrink-0 pt-0.5">
-                {/* Line 1: marker + phase label */}
-                <div className="flex items-center gap-1.5">
-                  {isMilestone ? (
-                    <span
-                      className="inline-block shrink-0"
-                      style={{
-                        width: 9,
-                        height: 9,
-                        background: phaseColorHex,
-                        transform: "rotate(45deg)",
-                        borderRadius: 1,
-                      }}
-                      aria-label="milestone marker"
-                    />
-                  ) : (
-                    <span
-                      className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`}
-                      aria-label="work marker"
-                    />
-                  )}
+                {/* Line 1: marker + phase label — 2차 보정: marker gap 10px (1.5 → 2.5) */}
+                <div className="flex items-center gap-2.5">
+                  {/* marker는 12px 너비 column에 center 정렬 — milestone(◆)과 work(●)이 같은 시작점 */}
+                  <span className="inline-flex items-center justify-center shrink-0" style={{ width: 12 }}>
+                    {isMilestone ? (
+                      <span
+                        className="inline-block"
+                        style={{
+                          width: 9,
+                          height: 9,
+                          background: phaseColorHex,
+                          transform: "rotate(45deg)",
+                          borderRadius: 1,
+                        }}
+                        aria-label="milestone marker"
+                      />
+                    ) : (
+                      <span
+                        className={`inline-block w-2 h-2 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`}
+                        aria-label="work marker"
+                      />
+                    )}
+                  </span>
                   <span
                     className={`text-sm whitespace-nowrap ${isMilestone ? "font-semibold" : "font-medium"}`}
                     style={{ color: isMilestone ? phaseColorHex : "var(--text-secondary)" }}
@@ -677,14 +711,14 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                   )}
                 </div>
 
-                {/* Line 2: person · resource (담당자 강조 — font-semibold + 본문 색) */}
+                {/* Line 2: person · resource — 2차 보정: 담당자 font-bold + 12px로 한 단계 상승 */}
                 {((r.person && r.person !== "-") || showSubResource) && (
-                  <p className="text-[11px] pl-3.5 mt-0.5 leading-tight">
+                  <p className="pl-[22px] mt-0.5 leading-tight">
                     {r.person && r.person !== "-" && (
-                      <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{r.person}</span>
+                      <span className="font-bold" style={{ color: "var(--text-primary)", fontSize: "12px" }}>{r.person}</span>
                     )}
                     {showSubResource && (
-                      <span className="ml-1" style={{ color: "var(--text-subtle)" }}>
+                      <span className="ml-1" style={{ color: "var(--text-subtle)", fontSize: "10.5px" }}>
                         {r.person && r.person !== "-" ? "· " : ""}{resourceTeam}
                       </span>
                     )}
@@ -694,7 +728,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                 {/* Line 3: detail */}
                 {r.detail && (
                   <p
-                    className="text-[10.5px] pl-3.5 mt-0.5 leading-tight"
+                    className="text-[10.5px] pl-[22px] mt-0.5 leading-tight"
                     style={{ color: "var(--text-muted)" }}
                     title={`${r.detail}${r.detailPerson ? ` · ${r.detailPerson}` : ""}`}
                   >
@@ -709,7 +743,8 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                 <div className="flex items-center">
                   <div className="flex-1 relative h-5 rounded-sm overflow-hidden" style={{ background: "var(--bg-item)" }}>
                     {isMilestone && milestoneIso ? (
-                      /* Milestone: bar 대신 다이아몬드 한 점 */
+                      /* Milestone: bar 대신 다이아몬드 한 점.
+                         2차 보정: 완료 milestone opacity는 row wrapper로 처리 (다이아몬드는 1.0). */
                       <span
                         className="absolute"
                         style={{
@@ -726,7 +761,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                             background: phaseColorHex,
                             transform: "rotate(45deg)",
                             borderRadius: 2,
-                            opacity: r.status === "완료" ? 0.45 : 1,
+                            filter: r.status === "완료" ? "saturate(0.4)" : undefined,
                             boxShadow: r.status === "진행중" ? `0 0 6px ${phaseColorHex}` : undefined,
                           }}
                         />
@@ -742,18 +777,20 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                         <span className="text-xs font-medium" style={{ color: "#a78bfa" }}>PM 확인 필요</span>
                       </div>
                     ) : barWidth(r.start, r.end) > 0 && (
-                      /* Work bar — status별 시각 강화 (phase 색 유지, status는 opacity/border/glow로) */
+                      /* Work bar — status별 시각 강화 (phase 색 유지, status는 opacity/border/glow로).
+                         2차 보정: 완료 row opacity는 row wrapper로 옮김. bar는 saturate만 적용.
+                         row 0.55 × bar 0.7 ≈ 0.39 (= spec 범위 안). */
                       <div
                         className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`}
                         style={{
                           left: `${barLeft(r.start)}%`,
                           width: `${barWidth(r.start, r.end)}%`,
                           opacity:
-                            r.status === "완료"     ? 0.35 :
+                            r.status === "완료"     ? 0.7  :
                             r.status === "예정"     ? 0.6  :
                             r.status === "확인필요" ? 0.5  :
                             1,
-                          filter: r.status === "완료" ? "saturate(0.5)" : undefined,
+                          filter: r.status === "완료" ? "saturate(0.4)" : undefined,
                           border: r.status === "확인필요" ? "1px dashed #a78bfa" : undefined,
                           boxShadow: r.status === "진행중" ? "0 0 4px rgba(59,130,246,0.4)" : undefined,
                         }}
@@ -828,9 +865,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
             <p className="text-xs text-gray-500 py-2">
               {placeholderRoles.length > 0
                 ? "확정 일정 없음 — 아래 미확정 일정을 검토하거나 새 일정을 입력해주세요"
-                : completedCount > 0
-                  ? "확정 일정 없음 — 모두 완료 (아래 토글로 확인)"
-                  : "일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다"}
+                : "일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다"}
             </p>
           </div>
         )}
@@ -935,31 +970,10 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
         </div>
       )}
 
-      {/* ── 완료 일정 토글 — 기본 숨김. ticketDone/forceShowPastDone이면 토글 숨김. ── */}
-      {completedCount > 0 && !ticketDone && !forceShowPastDone && (
-        <div className="mt-3" style={{ borderTop: "1px dashed var(--border)", paddingTop: "8px" }}>
-          <button
-            onClick={() => setShowCompleted(v => !v)}
-            className="flex items-center gap-1.5 text-xs font-medium transition-colors px-2 py-1 rounded-md"
-            style={{
-              color: showCompleted ? "var(--text-secondary)" : "var(--text-subtle)",
-              background: showCompleted ? "var(--bg-overlay)" : "transparent",
-            }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-item)"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = showCompleted ? "var(--bg-overlay)" : "transparent"; }}
-          >
-            <span style={{ display: "inline-block", transform: showCompleted ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▸</span>
-            <span>{showCompleted ? "완료 일정 숨기기" : "완료 일정 표시"}</span>
-            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
-              style={{ background: "var(--bg-overlay)", color: "var(--text-muted)", border: "1px solid var(--border)" }}>
-              {completedCount}
-            </span>
-            <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
-              {showCompleted ? "본문에 시간순 인라인 표시 중" : "기본 숨김 — 진행 중 일정에 집중"}
-            </span>
-          </button>
-        </div>
-      )}
+      {/* 2차 보정 (2026-06-01): 완료 일정 토글 제거.
+          완료 row는 항상 인라인 시간순 노출 + row-level opacity 0.55로 톤다운.
+          이전 PR에서 토글로 숨겼더니 진행중 ticket(TM-1241 등)이 "확정 일정 없음"으로
+          보이는 issue 발생. 히스토리는 보여주되 시선은 뺏지 않는다. */}
     </div>
   );
 }
