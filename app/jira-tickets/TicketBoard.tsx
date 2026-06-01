@@ -374,35 +374,36 @@ function calcWorkingDays(start: string, end: string): number {
 
 function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, ticketActive, onEditRow }: {
   roles?: RoleSchedule[];
-  forceShowPastDone?: boolean;
-  extendedView?: boolean;   // 펼치기: 과거 6개월 + 미래 2개월
-  fitToContent?: boolean;   // 론치완료 요약: viewStart = 최초 role 시작일, pastDone 없이 표시
-  ticketDone?: boolean;     // 완료 티켓: 확인필요 항목도 이전 완료 일정으로 분류
-  ticketActive?: boolean;   // 진행중·완료 티켓: Kick-Off 미입력 시 "확인필요", Release/Launch 미입력 시 "미정"
-  onEditRow?: (r: RoleSchedule) => void; // 행 수정 버튼 클릭 콜백
+  forceShowPastDone?: boolean;   // 외부 강제 노출: showCompleted=true와 동일 동작 (api 호환)
+  extendedView?: boolean;        // 펼치기: 과거 6개월 + 미래 2개월
+  fitToContent?: boolean;        // 론치완료 요약: viewStart = 최초 role 시작일
+  ticketDone?: boolean;          // 완료 티켓: 완료 일정 토글 없이 항상 노출
+  ticketActive?: boolean;        // 진행중·완료 티켓: Kick-Off 미입력 시 "확인필요", Release/Launch 미입력 시 "미정"
+  onEditRow?: (r: RoleSchedule) => void;
 }) {
-  const [showPastDone, setShowPastDone] = useState(false);
-  const effectiveShowPastDone = forceShowPastDone || showPastDone;
-  // Placeholder section 펼치기 — 기본 접힘 (확정 일정 signal 우선)
+  // 완료 일정 토글 — 기본 숨김 (진행 중 일정에 집중).
+  //   ticketDone(이미 완료된 티켓) 또는 forceShowPastDone(외부 강제)이면 항상 노출.
+  const [showCompleted, setShowCompleted] = useState(false);
+  const effectiveShowCompleted = forceShowPastDone || ticketDone || showCompleted;
+  // 미확정 일정 섹션 펼치기 — 기본 접힘.
   const [showPlaceholders, setShowPlaceholders] = useState(false);
+  // 담당자 hover 강조 — 같은 person의 다른 row에 subtle highlight.
+  const [hoveredPerson, setHoveredPerson] = useState<string | null>(null);
 
   // 뷰 시작
   const viewStart = (() => {
     if (extendedView) {
-      // 과거 6개월 전 1일
       const d = new Date();
       d.setMonth(d.getMonth() - 6);
       d.setDate(1); d.setHours(0, 0, 0, 0);
       return d.getTime();
     }
     if (fitToContent && (roles ?? []).some(r => r.start)) {
-      // 가장 이른 role 시작월 1일
       const earliest = Math.min(...(roles ?? []).filter(r => r.start).map(r => new Date(r.start + "T00:00:00").getTime()));
       const d = new Date(earliest);
       d.setDate(1); d.setHours(0, 0, 0, 0);
       return d.getTime();
     }
-    // 기본: 이번 달 1일
     const d = new Date();
     d.setDate(1); d.setHours(0, 0, 0, 0);
     return d.getTime();
@@ -410,7 +411,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
 
   // 뷰 종료
   const viewEnd = (() => {
-    const monthsForward = extendedView ? 2 : 3; // 펼치기: 미래 2개월, 기본: 현재월 포함 3개월
+    const monthsForward = extendedView ? 2 : 3;
     const minEnd = new Date();
     minEnd.setMonth(minEnd.getMonth() + monthsForward);
     minEnd.setDate(0);
@@ -446,18 +447,27 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   const { pct, barLeft, barWidth } = makeViewFns(viewStart, viewEnd);
   const todayPct = pct(TODAY_MS);
 
-  // Gantt 본문은 cleanup 자격 미달 row 제외 (Cleanup panel에서만 표시).
-  // 정렬: phase order → 시작일 → resourceTeam → 종료일
+  // Today 라벨 — "오늘 M/D(요일)" 강화 표기
+  const todayLabel = (() => {
+    const d = new Date();
+    const dow = ["일","월","화","수","목","금","토"][d.getDay()];
+    return `오늘 ${d.getMonth() + 1}/${d.getDate()}(${dow})`;
+  })();
+
+  // Gantt 본문 = cleanup 자격 미달 row 제외.
   const qualifiedRoles = (roles ?? []).filter(r => !isCleanupCandidate(r).isCleanup);
+
+  // 정렬 정책 (2026-06-01): 시작일 asc → PHASE_ORDER → resourceTeam → end asc.
+  //   시간 흐름을 1차 키로. 같은 날짜의 milestone(Kick-Off)과 work(기획) 안정 정렬은 PHASE_ORDER로 처리.
   const sortedRoles = [...qualifiedRoles].sort((a, b) => {
+    const aS = a.start ? new Date(a.start).getTime() : Infinity;
+    const bS = b.start ? new Date(b.start).getTime() : Infinity;
+    if (aS !== bS) return aS - bS;
     const ap = a.phase ?? inferPhase(a.role) ?? "기타";
     const bp = b.phase ?? inferPhase(b.role) ?? "기타";
     const pa = PHASE_ORDER[ap] ?? 99;
     const pb = PHASE_ORDER[bp] ?? 99;
     if (pa !== pb) return pa - pb;
-    const aS = a.start ? new Date(a.start).getTime() : Infinity;
-    const bS = b.start ? new Date(b.start).getTime() : Infinity;
-    if (aS !== bS) return aS - bS;
     const ar = a.resourceTeam ?? inferResourceTeam(a.role) ?? "";
     const br = b.resourceTeam ?? inferResourceTeam(b.role) ?? "";
     if (ar !== br) return ar.localeCompare(br);
@@ -466,40 +476,65 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
     return aE - bE;
   });
 
-  // 현재 뷰에서 안 보이는 과거 완료 항목 분리 (fitToContent면 항상 visible로)
-  // 완료 티켓(ticketDone)은 이전 완료 일정 섹션 없이 전체 플랫하게 표시
-  const isPastDone = (fitToContent || ticketDone)
-    ? () => false
-    : (r: RoleSchedule) => r.status === "완료" && !!r.end && new Date(r.end).getTime() < viewStart;
-  const pastDoneRoles  = sortedRoles.filter(isPastDone);
-  const rawVisible     = sortedRoles.filter(r => !isPastDone(r));
+  // 완료 일정 토글 적용 — 기본 숨김.
+  const completedFiltered = effectiveShowCompleted
+    ? sortedRoles
+    : sortedRoles.filter(r => r.status !== "완료");
 
-  // 데이터가 있는 row만 표시 — 빈 placeholder 행 추가 없음 (Bug 4, 6)
-  // 배포일(Release)과 오픈일(Launch)이 같은 날이면 오픈일 숨김
-  const visibleRoles = (() => {
-    const releaseRow = rawVisible.find(r => (r.phase ?? inferPhase(r.role)) === "Release");
-    const launchRow  = rawVisible.find(r => (r.phase ?? inferPhase(r.role)) === "Launch");
+  // 배포일(Release)과 오픈일(Launch)이 같은 날이면 오픈일 숨김 (dedup).
+  const dedupedRoles = (() => {
+    const releaseRow = completedFiltered.find(r => (r.phase ?? inferPhase(r.role)) === "Release");
+    const launchRow  = completedFiltered.find(r => (r.phase ?? inferPhase(r.role)) === "Launch");
     if (releaseRow?.end && launchRow?.end && releaseRow.end === launchRow.end) {
-      return rawVisible.filter(r => (r.phase ?? inferPhase(r.role)) !== "Launch");
+      return completedFiltered.filter(r => (r.phase ?? inferPhase(r.role)) !== "Launch");
     }
-    return rawVisible;
+    return completedFiltered;
   })();
 
-  // Placeholder 분리 — 미정 / 확인필요 / 날짜 없음 row는 secondary로 다운그레이드.
-  // 사용자 정책: 확정 일정 signal을 placeholder가 덮지 않게.
+  // Placeholder 분리 — 미정 / 확인필요 / 날짜 없음 row.
   const isPlaceholderRow = (r: RoleSchedule): boolean => {
     const noDate = !r.start && !r.end;
     const softStatus = r.status === "미정" || r.status === "확인필요";
     return softStatus || noDate;
   };
-  const confirmedRoles   = visibleRoles.filter(r => !isPlaceholderRow(r));
-  const placeholderRoles = visibleRoles.filter(isPlaceholderRow);
+  const confirmedRoles   = dedupedRoles.filter(r => !isPlaceholderRow(r));
+  const placeholderRoles = dedupedRoles.filter(isPlaceholderRow);
+
+  // 완료 row 개수 (토글 라벨용)
+  const completedCount = sortedRoles.filter(r => r.status === "완료").length;
+
+  // 미확정 사유 자동 분류
+  const placeholderReason = (r: RoleSchedule): string => {
+    if (r.status === "미정") {
+      if (!r.start && !r.end) return "기간/일정 산정 중";
+      return "기간 산정 중";
+    }
+    if (r.status === "확인필요") {
+      if (!r.start && !r.end) return "PM 확인 필요 — 일정 미입력";
+      return "PM 확인 필요 — 진행 현황 업데이트 대기";
+    }
+    if (!r.start && !r.end) {
+      const phase = r.phase ?? inferPhase(r.role);
+      if (phase === "Release" || phase === "Launch") return "론치 일정 미정 — 개발/QA 완료 후 확정";
+      return "날짜 미입력";
+    }
+    return "사유 미상";
+  };
+
+  // 담당자 hover 강조 스타일 — 같은 person의 다른 row 강조용
+  const personHighlight = (person: string) => {
+    if (!hoveredPerson || !person || person === "-" || person !== hoveredPerson) return null;
+    return {
+      background: "rgba(99,102,241,0.07)",
+      boxShadow: "inset 2px 0 0 rgba(99,102,241,0.55)",
+    } as const;
+  };
 
   return (
     <div className="mt-3">
       {/* 월 헤더 */}
       <div className="flex mb-0.5">
-        <div className="w-52 shrink-0" />
+        <div className="w-48 shrink-0" />
         <div className="flex-1 relative h-5">
           {monthDates.map((m) => (
             <span
@@ -513,101 +548,215 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
         </div>
       </div>
 
-      {/* 오늘 날짜 레이블 — 일정이 있을 때만 표시 */}
+      {/* 오늘 라벨 — 강화: 빨강 채움 + 그림자 + "오늘 M/D(요일)" */}
       {roles && roles.length > 0 && (
         <div className="flex mb-2">
-          <div className="w-52 shrink-0" />
-          <div className="flex-1 relative h-6">
+          <div className="w-48 shrink-0" />
+          <div className="flex-1 relative h-7">
             <span
               className="absolute -translate-x-1/2"
               style={{ left: `${todayPct}%` }}
             >
-              <span className="text-xs font-semibold text-red-500 whitespace-nowrap bg-red-50 border border-red-100 px-1.5 py-0.5 rounded">
-                📍 {TODAY_LABEL}
+              <span
+                className="text-xs font-bold whitespace-nowrap px-2 py-1 rounded"
+                style={{
+                  color: "#ffffff",
+                  background: "#ef4444",
+                  boxShadow: "0 1px 3px rgba(239,68,68,0.45), 0 0 0 2px rgba(239,68,68,0.18)",
+                }}
+              >
+                📍 {todayLabel}
               </span>
             </span>
           </div>
         </div>
       )}
 
-      {/* 롤 바 목록 — 확정 일정 우선 (Weekly 반영 / 진행중 / 완료) */}
+      {/* 롤 바 목록 — 시간순. Today full-height overlay가 바 영역 전체를 가로지름. */}
       <div className="relative">
+        {/* Today full-height overlay — 2px line + 8% red 음영 (z-1, pointer-events-none) */}
+        {roles && roles.length > 0 && confirmedRoles.length > 0 && (
+          <div className="absolute inset-0 pointer-events-none z-[1]">
+            <div className="flex h-full">
+              <div className="w-48 shrink-0" />
+              <div className="flex-1 relative">
+                <div
+                  className="absolute top-0 bottom-0"
+                  style={{
+                    left: `${todayPct}%`,
+                    width: "4px",
+                    transform: "translateX(-2px)",
+                    background: "rgba(239,68,68,0.08)",
+                  }}
+                />
+                <div
+                  className="absolute top-0 bottom-0"
+                  style={{
+                    left: `${todayPct}%`,
+                    width: "2px",
+                    transform: "translateX(-1px)",
+                    background: "#ef4444",
+                    opacity: 0.82,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        )}
+
         {confirmedRoles.length > 0 ? confirmedRoles.map((r, i) => {
           const endMs   = r.end   ? new Date(r.end).getTime()   : null;
           const startMs = r.start ? new Date(r.start).getTime() : null;
           const overdue   = endMs   !== null && endMs   < TODAY_MS && r.status !== "완료";
           const notStarted = startMs !== null && startMs < TODAY_MS && r.status === "예정";
+          const phase = r.phase ?? inferPhase(r.role);
+          const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
+          const primary = phase ? PHASE_LABEL[phase] : r.role;
+          const showSubResource = !!resourceTeam && resourceTeam !== primary;
+          const isMilestone = MILESTONE_ROLES.includes(r.role)
+            || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
+          const phaseColorHex = isMilestone
+            ? (phase && MILESTONE_DOT_HEX[phase]) || "#818cf8"
+            : (PHASE_QUEUE_STYLE[phase ?? "기타"]?.color ?? "var(--text-secondary)");
+          // milestone marker 위치 — end 우선, 없으면 start
+          const milestoneIso = r.end || r.start || null;
+          const hl = personHighlight(r.person);
+
           return (
-          <div key={`${r.role}-${r.person}-${i}`} className="mb-2.5 group/ganttrow">
+          <div
+            key={`${r.role}-${r.person}-${i}`}
+            className="group/ganttrow rounded transition-colors relative z-[2]"
+            onMouseEnter={() => r.person && r.person !== "-" && setHoveredPerson(r.person)}
+            onMouseLeave={() => setHoveredPerson(null)}
+            style={{
+              padding: "3px 4px",
+              marginBottom: "4px",
+              marginLeft: "-4px",
+              marginRight: "-4px",
+              ...(hl ?? {}),
+            }}
+          >
             <div className="flex items-start">
-              {/* 좌측: phase (primary) + resourceTeam (sublabel) + person, 세부작업 */}
+              {/* 좌측 — 3행 구조: (1) marker+phase / (2) person·resource / (3) detail */}
               <div className="w-48 shrink-0 pt-0.5">
-                {(() => {
-                  // phase가 있으면 phase를 라벨로, 없으면 role에서 inferPhase
-                  // resourceTeam이 있고 phase와 다르면 sublabel로
-                  const phase = r.phase ?? inferPhase(r.role);
-                  const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
-                  const primary = phase ? PHASE_LABEL[phase] : r.role;
-                  const showSubResource = !!resourceTeam && resourceTeam !== primary;
-                  const isMilestone = MILESTONE_ROLES.includes(r.role)
-                    || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
-                  return (
-                    <>
-                      <div className="flex items-center gap-1.5">
-                        <span className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`} />
-                        <span
-                          className={`text-sm font-medium shrink-0 whitespace-nowrap ${showSubResource ? "" : "w-20"} ${isMilestone ? "font-semibold" : ""}`}
-                          style={{ color: isMilestone ? "#818cf8" : "var(--text-muted)" }}
-                          title={resourceTeam ? `${primary} · ${resourceTeam}` : primary}
-                        >
-                          {primary}
-                        </span>
-                        <span className="text-sm whitespace-nowrap" style={{ color: "#9ca3af" }} title={r.person}>{r.person}</span>
-                        {/* Weekly-derived 강조 배지 — source=jira_weekly + sourceWeek 있을 때 */}
-                        {r.source === "jira_weekly" && r.sourceWeek && (
-                          <span
-                            className="text-[9px] font-semibold px-1 py-0.5 rounded shrink-0 ml-1"
-                            style={{ background: "rgba(129,140,248,0.18)", color: "#a5b4fc", border: "1px solid rgba(129,140,248,0.35)" }}
-                            title={`Weekly에서 반영 — ${r.sourceWeek}${r.lastSeenAt ? ` · 최근 갱신 ${new Date(r.lastSeenAt).toLocaleDateString("ko-KR")}` : ""}`}
-                          >
-                            🟣 {r.sourceWeek}
-                          </span>
-                        )}
-                      </div>
-                      {showSubResource && (
-                        <p className="text-[10.5px] mt-0.5 pl-3.5 leading-tight" style={{ color: "var(--text-muted)" }} title={resourceTeam ?? undefined}>
-                          {resourceTeam}
-                        </p>
-                      )}
-                    </>
-                  );
-                })()}
+                {/* Line 1: marker + phase label */}
+                <div className="flex items-center gap-1.5">
+                  {isMilestone ? (
+                    <span
+                      className="inline-block shrink-0"
+                      style={{
+                        width: 9,
+                        height: 9,
+                        background: phaseColorHex,
+                        transform: "rotate(45deg)",
+                        borderRadius: 1,
+                      }}
+                      aria-label="milestone marker"
+                    />
+                  ) : (
+                    <span
+                      className={`inline-block w-2 h-2 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`}
+                      aria-label="work marker"
+                    />
+                  )}
+                  <span
+                    className={`text-sm whitespace-nowrap ${isMilestone ? "font-semibold" : "font-medium"}`}
+                    style={{ color: isMilestone ? phaseColorHex : "var(--text-secondary)" }}
+                    title={resourceTeam ? `${primary} · ${resourceTeam}` : primary}
+                  >
+                    {primary}
+                  </span>
+                  {r.source === "jira_weekly" && r.sourceWeek && (
+                    <span
+                      className="text-[9px] font-semibold px-1 py-0.5 rounded shrink-0"
+                      style={{ background: "rgba(129,140,248,0.18)", color: "#a5b4fc", border: "1px solid rgba(129,140,248,0.35)" }}
+                      title={`Weekly에서 반영 — ${r.sourceWeek}${r.lastSeenAt ? ` · 최근 갱신 ${new Date(r.lastSeenAt).toLocaleDateString("ko-KR")}` : ""}`}
+                    >
+                      🟣 {r.sourceWeek}
+                    </span>
+                  )}
+                </div>
+
+                {/* Line 2: person · resource (담당자 강조 — font-semibold + 본문 색) */}
+                {((r.person && r.person !== "-") || showSubResource) && (
+                  <p className="text-[11px] pl-3.5 mt-0.5 leading-tight">
+                    {r.person && r.person !== "-" && (
+                      <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{r.person}</span>
+                    )}
+                    {showSubResource && (
+                      <span className="ml-1" style={{ color: "var(--text-subtle)" }}>
+                        {r.person && r.person !== "-" ? "· " : ""}{resourceTeam}
+                      </span>
+                    )}
+                  </p>
+                )}
+
+                {/* Line 3: detail */}
                 {r.detail && (
-                  <p className="text-xs text-gray-400 mt-0.5 pl-3.5 leading-snug" title={`${r.detail}${r.detailPerson ? ` · ${r.detailPerson}` : ""}`}>
+                  <p
+                    className="text-[10.5px] pl-3.5 mt-0.5 leading-tight"
+                    style={{ color: "var(--text-muted)" }}
+                    title={`${r.detail}${r.detailPerson ? ` · ${r.detailPerson}` : ""}`}
+                  >
                     {r.detail}
-                    {r.detailPerson && <span className="ml-1 text-gray-300">· {r.detailPerson}</span>}
+                    {r.detailPerson && <span className="ml-1" style={{ color: "var(--text-subtle)" }}>· {r.detailPerson}</span>}
                   </p>
                 )}
               </div>
-              {/* 우측: 바 + 날짜 */}
+
+              {/* 우측 — bar 또는 milestone diamond */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center">
                   <div className="flex-1 relative h-5 rounded-sm overflow-hidden" style={{ background: "var(--bg-item)" }}>
-                    <div className="absolute top-0 bottom-0 w-px bg-red-400 z-10" style={{ left: `${todayPct}%` }} />
-                    {r.status === "미정" ? (
-                      <div className="absolute inset-0 flex items-center justify-center gap-1.5" style={{ background: "rgba(245,158,11,0.06)" }}>
+                    {isMilestone && milestoneIso ? (
+                      /* Milestone: bar 대신 다이아몬드 한 점 */
+                      <span
+                        className="absolute"
+                        style={{
+                          left: `${barLeft(milestoneIso)}%`,
+                          top: "50%",
+                          transform: "translate(-50%, -50%)",
+                        }}
+                      >
+                        <span
+                          className="inline-block"
+                          style={{
+                            width: 12,
+                            height: 12,
+                            background: phaseColorHex,
+                            transform: "rotate(45deg)",
+                            borderRadius: 2,
+                            opacity: r.status === "완료" ? 0.45 : 1,
+                            boxShadow: r.status === "진행중" ? `0 0 6px ${phaseColorHex}` : undefined,
+                          }}
+                        />
+                      </span>
+                    ) : r.status === "미정" ? (
+                      <div className="absolute inset-0 flex items-center justify-center gap-1.5" style={{ background: "rgba(245,158,11,0.06)", border: "1px dashed rgba(245,158,11,0.45)" }}>
                         <span className="text-[10px] font-bold tracking-wide" style={{ color: "#f59e0b" }}>⚠</span>
                         <span className="text-xs font-medium" style={{ color: "#f59e0b" }}>기간 산정 중</span>
                       </div>
                     ) : r.status === "확인필요" && !r.start ? (
-                      <div className="absolute inset-0 flex items-center justify-center gap-1.5" style={{ background: "rgba(167,139,250,0.06)" }}>
+                      <div className="absolute inset-0 flex items-center justify-center gap-1.5" style={{ background: "rgba(167,139,250,0.06)", border: "1px dashed rgba(167,139,250,0.5)" }}>
                         <span className="text-[10px] font-bold" style={{ color: "#a78bfa" }}>?</span>
                         <span className="text-xs font-medium" style={{ color: "#a78bfa" }}>PM 확인 필요</span>
                       </div>
                     ) : barWidth(r.start, r.end) > 0 && (
+                      /* Work bar — status별 시각 강화 (phase 색 유지, status는 opacity/border/glow로) */
                       <div
-                        className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"} ${r.status === "완료" ? "opacity-40" : r.status === "예정" ? "opacity-60" : r.status === "확인필요" ? "opacity-50 border border-purple-300" : ""}`}
-                        style={{ left: `${barLeft(r.start)}%`, width: `${barWidth(r.start, r.end)}%` }}
+                        className={`absolute top-0.5 bottom-0.5 rounded-sm ${ROLE_COLOR[r.role] ?? "bg-gray-400"}`}
+                        style={{
+                          left: `${barLeft(r.start)}%`,
+                          width: `${barWidth(r.start, r.end)}%`,
+                          opacity:
+                            r.status === "완료"     ? 0.35 :
+                            r.status === "예정"     ? 0.6  :
+                            r.status === "확인필요" ? 0.5  :
+                            1,
+                          filter: r.status === "완료" ? "saturate(0.5)" : undefined,
+                          border: r.status === "확인필요" ? "1px dashed #a78bfa" : undefined,
+                          boxShadow: r.status === "진행중" ? "0 0 4px rgba(59,130,246,0.4)" : undefined,
+                        }}
                       />
                     )}
                   </div>
@@ -632,7 +781,6 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                       </span>
                     </span>
                   )}
-                  {/* 수정 바로가기 버튼 (행 호버 시 노출) */}
                   {onEditRow && (
                     <button
                       onClick={() => onEditRow(r)}
@@ -650,6 +798,10 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                 ) : r.status === "확인필요" && !r.start ? (
                   <p className="inline-flex items-center gap-1 text-[11px] font-medium mt-0.5 px-1.5 py-0.5 rounded" style={{ background: "rgba(167,139,250,0.1)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.25)" }}>
                     담당 PM이 현황 확인 후 업데이트 필요
+                  </p>
+                ) : isMilestone && milestoneIso ? (
+                  <p className="inline-flex items-center gap-1 text-[11px] whitespace-nowrap mt-0.5 px-1.5 py-0.5 rounded" style={{ background: "var(--bg-overlay)", color: phaseColorHex, border: `1px solid ${phaseColorHex}40` }}>
+                    <span>{formatDateWithDay(milestoneIso)}</span>
                   </p>
                 ) : r.start && r.end && (
                   <p className="inline-flex items-center gap-1 text-[11px] whitespace-nowrap mt-0.5 px-1.5 py-0.5 rounded" style={{ background: "var(--bg-overlay)", color: "var(--text-muted)", border: "1px solid var(--border)" }}>
@@ -672,19 +824,19 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
           );
         }) : (
           <div className="flex items-center">
-            <div className="w-52 shrink-0" />
+            <div className="w-48 shrink-0" />
             <p className="text-xs text-gray-500 py-2">
               {placeholderRoles.length > 0
                 ? "확정 일정 없음 — 아래 미확정 일정을 검토하거나 새 일정을 입력해주세요"
-                : "일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다"}
+                : completedCount > 0
+                  ? "확정 일정 없음 — 모두 완료 (아래 토글로 확인)"
+                  : "일정 데이터 없음 — 작업별 일정 입력 시 표시됩니다"}
             </p>
           </div>
         )}
       </div>
 
-      {/* ── Placeholder section (미확정 일정) ───────────────────────── */}
-      {/* 정책: 미정/확인필요/날짜 없음 row는 secondary로 다운그레이드.
-              기본 접힘 — 확정 일정 signal이 우선. */}
+      {/* ── 미확정 일정 — 5열 grid: phase / person·resource / 기간 / 상태 / 사유 ── */}
       {placeholderRoles.length > 0 && (
         <div className="mt-3" style={{ borderTop: "1px dashed var(--border)", paddingTop: "8px" }}>
           <button
@@ -697,39 +849,83 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
             onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-item)"; }}
             onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
           >
-            <span style={{ display: "inline-block", width: 0, transform: showPlaceholders ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▸</span>
+            <span style={{ display: "inline-block", transform: showPlaceholders ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▸</span>
             <span>미확정 일정</span>
             <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold" style={{ background: "rgba(148,163,184,0.15)", color: "#94a3b8" }}>
               {placeholderRoles.length}
             </span>
             <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
-              미정 / 확인필요 / 날짜 미입력
+              사유 자동 분류
             </span>
           </button>
           {showPlaceholders && (
-            <div className="mt-2 grid gap-y-1 px-2" style={{ gridTemplateColumns: "auto auto 1fr auto", opacity: 0.65 }}>
+            <div className="mt-2 grid gap-y-1 gap-x-3 px-2" style={{ gridTemplateColumns: "auto auto auto auto 1fr" }}>
               {placeholderRoles.map((r, i) => {
                 const phase = r.phase ?? inferPhase(r.role);
                 const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
                 const primary = phase ? PHASE_LABEL[phase] : r.role;
-                const showSub = !!resourceTeam && resourceTeam !== primary;
+                const isMilestone = MILESTONE_ROLES.includes(r.role)
+                  || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
+                const phaseColorHex = isMilestone
+                  ? (phase && MILESTONE_DOT_HEX[phase]) || "#94a3b8"
+                  : "#94a3b8";
+                const reason = placeholderReason(r);
                 return (
                   <Fragment key={`ph-${r.role}-${r.person}-${i}`}>
-                    <div className="flex items-center gap-1.5 pr-3 py-0.5">
-                      <span className={`inline-block w-1.5 h-1.5 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-500"}`} style={{ opacity: 0.6 }} />
-                      <span className="text-[11px] font-medium whitespace-nowrap" style={{ color: "var(--text-muted)" }} title={showSub ? `${primary} · ${resourceTeam}` : primary}>
+                    {/* Col 1: marker + phase */}
+                    <div className="flex items-center gap-1.5 py-0.5">
+                      {isMilestone ? (
+                        <span
+                          className="inline-block shrink-0"
+                          style={{
+                            width: 7,
+                            height: 7,
+                            background: phaseColorHex,
+                            transform: "rotate(45deg)",
+                            borderRadius: 1,
+                            opacity: 0.7,
+                          }}
+                        />
+                      ) : (
+                        <span className={`inline-block w-1.5 h-1.5 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-500"}`} style={{ opacity: 0.6 }} />
+                      )}
+                      <span className="text-[11px] font-medium whitespace-nowrap" style={{ color: "var(--text-muted)" }}>
                         {primary}
-                        {showSub && <span className="ml-1 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {resourceTeam}</span>}
                       </span>
                     </div>
-                    <span className="text-[11px] whitespace-nowrap pr-3 py-0.5" style={{ color: "var(--text-subtle)" }}>
-                      {r.person && r.person !== "-" ? r.person : ""}
+                    {/* Col 2: person · resource */}
+                    <span className="text-[11px] whitespace-nowrap py-0.5">
+                      {r.person && r.person !== "-" ? (
+                        <>
+                          <span className="font-medium" style={{ color: "var(--text-secondary)" }}>{r.person}</span>
+                          {resourceTeam && resourceTeam !== primary && (
+                            <span className="ml-1" style={{ color: "var(--text-subtle)" }}>· {resourceTeam}</span>
+                          )}
+                        </>
+                      ) : resourceTeam && resourceTeam !== primary ? (
+                        <span style={{ color: "var(--text-subtle)" }}>{resourceTeam}</span>
+                      ) : (
+                        <span style={{ color: "var(--text-subtle)" }}>—</span>
+                      )}
                     </span>
-                    <span className="text-[11px] py-0.5" style={{ color: "var(--text-subtle)" }}>
-                      {r.start && r.end ? `${r.start} ~ ${r.end}` : r.start || r.end || "날짜 미입력"}
+                    {/* Col 3: 기간 */}
+                    <span className="text-[11px] whitespace-nowrap py-0.5" style={{ color: "var(--text-subtle)" }}>
+                      {r.start && r.end ? `${r.start} ~ ${r.end}` : r.start || r.end || "—"}
                     </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 ml-2" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
+                    {/* Col 4: status badge */}
+                    <span
+                      className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                      style={{
+                        background: "var(--bg-canvas)",
+                        color: r.status === "미정" ? "#f59e0b" : r.status === "확인필요" ? "#a78bfa" : "var(--text-muted)",
+                        border: `1px solid ${r.status === "미정" ? "rgba(245,158,11,0.4)" : r.status === "확인필요" ? "rgba(167,139,250,0.4)" : "var(--border-2)"}`,
+                      }}
+                    >
                       {r.status}
+                    </span>
+                    {/* Col 5: 사유 — 자동 분류 */}
+                    <span className="text-[10.5px] py-0.5 self-center" style={{ color: "var(--text-secondary)" }} title={reason}>
+                      {reason}
                     </span>
                   </Fragment>
                 );
@@ -739,73 +935,29 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
         </div>
       )}
 
-      {pastDoneRoles.length > 0 && (
-        <div className="mt-4" style={{ borderTop: "1px dashed var(--border)", paddingTop: "10px" }}>
+      {/* ── 완료 일정 토글 — 기본 숨김. ticketDone/forceShowPastDone이면 토글 숨김. ── */}
+      {completedCount > 0 && !ticketDone && !forceShowPastDone && (
+        <div className="mt-3" style={{ borderTop: "1px dashed var(--border)", paddingTop: "8px" }}>
           <button
-            onClick={() => setShowPastDone(v => !v)}
+            onClick={() => setShowCompleted(v => !v)}
             className="flex items-center gap-1.5 text-xs font-medium transition-colors px-2 py-1 rounded-md"
             style={{
-              color: "var(--text-subtle)",
-              background: effectiveShowPastDone ? "var(--bg-overlay)" : "transparent",
+              color: showCompleted ? "var(--text-secondary)" : "var(--text-subtle)",
+              background: showCompleted ? "var(--bg-overlay)" : "transparent",
             }}
+            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-item)"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = showCompleted ? "var(--bg-overlay)" : "transparent"; }}
           >
-            <span style={{ fontSize: 10 }}>{effectiveShowPastDone ? "▾" : "▸"}</span>
-            <span>지난 완료 일정</span>
-            <span className="ml-1 px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
+            <span style={{ display: "inline-block", transform: showCompleted ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▸</span>
+            <span>{showCompleted ? "완료 일정 숨기기" : "완료 일정 표시"}</span>
+            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-semibold"
               style={{ background: "var(--bg-overlay)", color: "var(--text-muted)", border: "1px solid var(--border)" }}>
-              {pastDoneRoles.length}
+              {completedCount}
+            </span>
+            <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+              {showCompleted ? "본문에 시간순 인라인 표시 중" : "기본 숨김 — 진행 중 일정에 집중"}
             </span>
           </button>
-          {effectiveShowPastDone && (
-            <div className="mt-2 rounded-lg p-2.5 opacity-60" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-              <div className="grid gap-y-1" style={{ gridTemplateColumns: "auto auto auto 1fr" }}>
-                {pastDoneRoles.map((r, i) => (
-                  <Fragment key={`past-${r.role}-${r.person}-${i}`}>
-                    {/* role: phase + (resourceTeam) */}
-                    <div className="flex items-center gap-1.5 pr-3 py-0.5">
-                      <span className={`inline-block w-1.5 h-1.5 rounded-sm shrink-0 ${ROLE_COLOR[r.role] ?? "bg-gray-500"}`} />
-                      {(() => {
-                        const phase = r.phase ?? inferPhase(r.role);
-                        const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
-                        const primary = phase ? PHASE_LABEL[phase] : r.role;
-                        const showSub = !!resourceTeam && resourceTeam !== primary;
-                        return (
-                          <span className="text-xs font-medium whitespace-nowrap" style={{ color: "var(--text-muted)" }} title={showSub ? `${primary} · ${resourceTeam}` : primary}>
-                            {primary}
-                            {showSub && (
-                              <span className="ml-1 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {resourceTeam}</span>
-                            )}
-                          </span>
-                        );
-                      })()}
-                    </div>
-                    {/* person */}
-                    <span className="text-xs whitespace-nowrap pr-3 py-0.5" style={{ color: "var(--text-muted)" }} title={r.person}>{r.person}</span>
-                    {/* date */}
-                    <span className="text-xs whitespace-nowrap pr-3 py-0.5" style={{ color: "var(--text-subtle)" }}>
-                      {r.start && r.end ? (
-                        <>
-                          {formatDateWithDay(r.start)} ~ {formatDateWithDay(r.end)}
-                          {(() => {
-                            const total = calcWorkingDays(r.start, r.end);
-                            const vac = r.vacationDays ?? 0;
-                            const net = Math.max(0, total - vac);
-                            return vac > 0
-                              ? <><span className="ml-1.5" style={{ color: "var(--text-subtle)" }}>{net}영업일</span><span className="ml-1 text-orange-400 text-[10px]">(-{vac}휴가)</span></>
-                              : <span className="ml-1.5" style={{ color: "var(--text-subtle)" }}>{total}영업일</span>;
-                          })()}
-                        </>
-                      ) : ""}
-                    </span>
-                    {/* detail */}
-                    <span className="text-xs py-0.5 min-w-0 truncate" style={{ color: "var(--text-subtle)" }} title={r.detail ?? ""}>
-                      {r.detail ? `· ${r.detail}` : ""}
-                    </span>
-                  </Fragment>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
       )}
     </div>
