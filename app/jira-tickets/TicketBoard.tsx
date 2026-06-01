@@ -1604,6 +1604,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [summaryLoading, setSummaryLoading] = useState<Set<string>>(new Set());
 
   // 우측 사이드바 너비 (드래그 리사이즈)
+  // Split View 우측 panel 폭 — 4차 PR(2026-06-05): max raise + viewport-based initial.
+  //   기존: max 700px 고정 → wide screen(1680+)에서 우측이 36% 이하로 좁아짐.
+  //   변경: max 1000px + 마운트 시점 viewport*0.45로 초기화 (55:45 좌우 비율 목표).
+  //   SSR 안전: 초기값 700 fallback 유지, useEffect로 viewport 반영.
+  const SIDEBAR_MIN = 280;
+  const SIDEBAR_MAX = 1000;
   const [sidebarWidth, setSidebarWidth] = useState(700);
   const [isDetailExpanded, setIsDetailExpanded] = useState(false);
   const [showFullDoneSchedule, setShowFullDoneSchedule] = useState(false);
@@ -1631,6 +1637,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [sectionHighlight, setSectionHighlight] = useState<string | null>(null);
   // PlaceholderSummary → Gantt placeholder row 강조 연결 (3차 PR, 2026-06-02)
   const [highlightedScheduleRow, setHighlightedScheduleRow] = useState<string | null>(null);
+  // Split View Overview 탭의 ▼ 참조 정보 그룹 펼침 상태 (4차 PR, 2026-06-05) — 기본 접힘.
+  // 기존 referenceExpanded(Weekly 참고 메모 토글)와 다른 state — 이름 충돌 방지.
+  const [overviewRefExpanded, setOverviewRefExpanded] = useState(false);
   const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const planningMigratedRef         = useRef(false);
@@ -1741,7 +1750,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const startW = sidebarWidth;
     const onMove = (ev: MouseEvent) => {
       const delta = startX - ev.clientX;
-      setSidebarWidth(Math.min(700, Math.max(280, startW + delta)));
+      setSidebarWidth(Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, startW + delta)));
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
@@ -1750,6 +1759,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
   }, [sidebarWidth]);
+
+  // 마운트 시점에 viewport*0.45로 초기 너비 설정 (좌:우 ≈ 55:45)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const targetWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(window.innerWidth * 0.45)));
+    setSidebarWidth(targetWidth);
+  // 의도: 마운트 1회만 — viewport 동적 변화는 사용자가 드래그로 재조정.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // localStorage 클라이언트 캐시 키 / 최대 보존 시간
   const TICKET_CACHE_KEY = "cc-tickets-v2";
@@ -7452,6 +7470,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               }}
             />
 
+            {/* ── Health 카드 (4차 PR): 메타에서 분리 — "위험한가?"를 우선 노출 ── */}
+            {selected.healthCheck && (
+              <div
+                className="rounded-lg px-3 py-2.5 mb-3 flex items-center gap-3"
+                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+              >
+                <p className="text-[11px] font-semibold uppercase tracking-wide shrink-0" style={{ color: "var(--text-muted)" }}>
+                  Health
+                </p>
+                <HealthBadge value={selected.healthCheck} />
+              </div>
+            )}
+
             {/* ── 핵심 메타 정보 ── */}
             <div className="rounded-lg px-3 py-3 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
               <div className="grid grid-cols-2 gap-x-3 gap-y-3">
@@ -7502,142 +7533,371 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
                 )}
               </div>
-              {/* Health Check */}
-              {selected.healthCheck && (
-                <div className="mt-3 pt-2.5" style={{ borderTop: "1px solid var(--border)" }}>
-                  <p className="text-[12px] mb-1" style={{ color: "var(--text-muted)" }}>Health Check</p>
-                  <HealthBadge value={selected.healthCheck} />
-                </div>
-              )}
+              {/* Health Check는 메타 카드에서 분리되어 미확정 일정 Summary 직후에 별도 카드로 노출됨 (4차 PR). */}
             </div>
 
-            {/* ── 보조 정보 ── */}
-            {(selected.requestDept || selected.bodyRequestDept || selected.parent || selected.twoPagerUrl || selected.prdUrl) && (
-              <div className="rounded-lg px-3 py-2.5 mb-3 space-y-2" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-                {[
-                  { label: "Main Subject", value: selected.requestDept },
-                  { label: "요청부문",     value: selected.bodyRequestDept },
-                ].filter(r => r.value).map(({ label, value }) => (
-                  <div key={label} className="flex items-center gap-2 text-[12px]">
-                    <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>{label}</span>
-                    <span style={{ color: "var(--text-secondary)" }}>{value}</span>
-                  </div>
-                ))}
-                {selected.parent && (
-                  <div className="flex items-center gap-2 text-[12px]">
-                    <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>상위 항목</span>
-                    <a href={`${JIRA_BASE}${selected.parent}`} target="_blank" rel="noopener noreferrer"
-                      className="font-mono text-blue-500 hover:underline">{selected.parent}</a>
-                  </div>
-                )}
-                {selected.twoPagerUrl && (
-                  <div className="flex items-center gap-2 text-[12px]">
-                    <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>2-Pager</span>
-                    <a href={selected.twoPagerUrl} target="_blank" rel="noopener noreferrer"
-                      className="text-blue-500 hover:underline">링크 열기 ↗</a>
-                  </div>
-                )}
-                {selected.prdUrl && (
-                  <div className="flex items-center gap-2 text-[12px]">
-                    <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>PRD Link</span>
-                    <a href={selected.prdUrl} target="_blank" rel="noopener noreferrer"
-                      className="text-blue-500 hover:underline">링크 열기 ↗</a>
-                  </div>
-                )}
-              </div>
-            )}
+            {/* 보조 정보(Main Subject/요청부문/상위 항목/2-Pager/PRD)는 4차 PR에서 ▼ 참조 정보 그룹으로 이동. */}
 
-            </>) /* ─ Overview: 핵심 메타 + 보조 정보 끝 ─ */}
+            </>) /* ─ Overview: Tier 1 (Action + Summary + Health + 메타) 끝 ─ */}
 
             {/* ══════════════════════════════════════════
-                Overview 계속: 데이터 소스 패널
+                Overview Tier 4: 참조 정보 (collapsible, 기본 접힘) — 4차 PR 2026-06-05
+                Tier 2-3(Weekly+주요내용+메모)를 위로 올리기 위해 Block B(데이터 소스)/Block C
+                (ETR+Wiki)/보조 정보(Main Subject 등)를 모두 ▼ 참조 정보 토글 안으로 묶음.
+                ※ 시각 위치는 collapsed로 가장 하단처럼 보이지만 JSX는 그대로(Block D 이전).
+                  대신 Block D를 이 토글 위로 cut-paste해 "Tier 2-3 → Tier 4" 순서를 만든다.
                 ══════════════════════════════════════════ */}
-            {detailTab === "overview" && (() => {
-              const sourceEntries = ticketSources[selected.key] ?? [];
-              const hasSource = selected.isManual || sourceEntries.length > 0;
-              if (!hasSource) return null;
 
-              return (
-                <div
-                  className="rounded-lg px-3 py-2.5 mb-3"
-                  style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
-                >
-                  <p className="text-[11px] font-semibold uppercase tracking-wide mb-2.5" style={{ color: "var(--text-muted)" }}>
-                    데이터 소스
-                  </p>
-                  <div className="flex flex-col gap-1.5">
+            {/* ─── Tier 2-3: Weekly + 주요내용 + 메모 (Block D 이동) ─── */}
+            {detailTab === "overview" && (<>
+            <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
 
-                    {/* 수동 추가 배지 */}
-                    {selected.isManual && (
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
-                            style={{ background: "rgba(52,211,153,0.10)", color: "#34d399", border: "1px solid rgba(52,211,153,0.2)" }}
-                          >
-                            수동
-                          </span>
-                          <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>직접 등록</span>
-                        </div>
+              {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
+              {renderWeeklySummary(selected.key)}
+              {/* ── Weekly에서 분리된 노트 (리스크 / 액션 / 참고) ────── */}
+              {renderActionRiskBox(selected.key)}
+
+              {/* 주요 내용 요약 */}
+              <div className="mb-4">
+                {/* 헤더 */}
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>주요 내용 요약</p>
+                  <div className="flex items-center gap-2">
+                    {/* AI 재생성 버튼 */}
+                    {!memoEditMode && (
+                      <button
+                        onClick={() => regenerateSummary(selected.key)}
+                        disabled={summaryLoading.has(selected.key)}
+                        className="flex items-center gap-1 text-[12px] hover:text-indigo-400 disabled:opacity-40 transition-colors" style={{ color: "var(--text-muted)" }}
+                        title="AI로 요약 재생성"
+                      >
+                        <svg className={`w-3 h-3 ${summaryLoading.has(selected.key) ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                          <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+                        </svg>
+                        AI 재생성
+                      </button>
+                    )}
+                    {/* 편집 / 저장·취소 */}
+                    {!memoEditMode ? (
+                      <button
+                        onClick={() => { setMemoText(getCurrentMemo(selected.key)?.text ?? ""); setMemoEditMode(true); }}
+                        className="text-[12px] text-indigo-500 hover:text-indigo-700 font-medium"
+                      >{getCurrentMemo(selected.key) ? "편집" : "입력"}</button>
+                    ) : (
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => { saveMemo(selected.key, memoText); setMemoEditMode(false); }}
+                          className="text-[12px] bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium"
+                        >저장</button>
+                        <button onClick={() => setMemoEditMode(false)}
+                          className="text-[12px] px-2 py-1 hover:opacity-80" style={{ color: "var(--text-muted)" }}>취소</button>
                       </div>
                     )}
+                  </div>
+                </div>
 
-                    {/* 필터 소스 항목 */}
-                    {sourceEntries.map(entry => {
-                      const filter = jiraFiltersKV[entry.filterId];
-                      const label  = filter?.label ?? filter?.name ?? entry.filterLabel;
-                      const currentFilterKeys = filterTicketsKV[entry.filterId] ?? [];
-                      const isActive = currentFilterKeys.includes(selected.key);
-                      const syncedAt = filter?.lastSyncAt;
+                {/* AI 에러 메시지 */}
+                {regenError && !memoEditMode && !summaryLoading.has(selected.key) && (
+                  <div className="mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600">
+                    {regenError}
+                  </div>
+                )}
 
+                {/* 본문 */}
+                {memoEditMode ? (
+                  <textarea
+                    value={memoText}
+                    onChange={(e) => setMemoText(e.target.value)}
+                    placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
+                    rows={6}
+                    className="w-full text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                  />
+                ) : summaryLoading.has(selected.key) ? (
+                  <div className="flex items-center gap-2 text-[12px] text-indigo-400 bg-indigo-50 rounded-lg px-3 py-2">
+                    <svg className="animate-spin h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                    </svg>
+                    AI가 티켓 내용을 분석하고 있습니다… (최대 30초 소요)
+                  </div>
+                ) : getCurrentMemo(selected.key) ? (
+                  <>
+                    {/* 현재 버전 */}
+                    {(() => {
+                      const cur = getCurrentMemo(selected.key)!;
+                      const lines = cur.text.split("\n");
+                      const needsCollapse = lines.length > 3;
+                      const displayText = needsCollapse && memoCollapsed
+                        ? lines.slice(0, 3).join("\n")
+                        : cur.text;
                       return (
-                        <div key={entry.filterId} className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2 min-w-0">
-                            <span
-                              className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
-                              style={{ background: "rgba(99,102,241,0.10)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.18)" }}
-                            >
-                              필터
-                            </span>
-                            <span className="text-[12px] truncate" style={{ color: "var(--text-muted)" }} title={label}>{label}</span>
-                            {!isActive && (
-                              <span
-                                className="text-[9px] px-1 py-0.5 rounded shrink-0 font-medium"
-                                style={{ background: "rgba(239,68,68,0.10)", color: "#f87171", border: "1px solid rgba(239,68,68,0.2)" }}
-                              >
-                                제거됨
-                              </span>
-                            )}
+                        <div className="overflow-visible">
+                          <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-lg px-3 py-2.5 mb-1" style={{ color: "var(--text-primary)", background: "var(--bg-overlay)" }}>
+                            {displayText}
                           </div>
-                          <div className="flex flex-col items-end shrink-0 gap-0.5">
-                            <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
-                              추가 {new Date(entry.addedAt).toLocaleDateString("ko-KR", { month: "short", day: "numeric" })}
+                          {needsCollapse && (
+                            <button
+                              onClick={() => setMemoCollapsed(c => !c)}
+                              className="text-xs text-indigo-400 hover:text-indigo-600 mb-1.5 transition-colors"
+                            >
+                              {memoCollapsed ? "더 보기 ▾" : "접기 ▴"}
+                            </button>
+                          )}
+                          <div className="flex items-center justify-between">
+                            <span className="text-[12px] flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
+                              {cur.isAI && <span className="px-1 py-0.5 rounded border text-[11px]" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8", borderColor: "rgba(99,102,241,0.3)" }}>AI</span>}
+                              {cur.author}{cur.date ? ` · ${cur.date}` : ""}
                             </span>
-                            {syncedAt && (
-                              <span className="text-[9.5px]" style={{ color: "var(--text-subtle)" }}>
-                                sync {(() => {
-                                  const diff = Date.now() - new Date(syncedAt).getTime();
-                                  const h = Math.floor(diff / 3_600_000);
-                                  if (h < 1) return "방금";
-                                  if (h < 24) return `${h}시간 전`;
-                                  return `${Math.floor(h / 24)}일 전`;
-                                })()}
-                              </span>
+                            {(memoHistory[selected.key]?.length ?? 0) > 1 && (
+                              <button
+                                onClick={() => setMemoHistoryOpen(o => !o)}
+                                className="text-[12px] hover:opacity-80 transition-colors" style={{ color: "var(--text-muted)" }}
+                              >
+                                {memoHistoryOpen ? "히스토리 닫기" : `이전 버전 ${(memoHistory[selected.key]?.length ?? 1) - 1}개`}
+                              </button>
                             )}
                           </div>
                         </div>
                       );
-                    })}
+                    })()}
 
-                  </div>
+                    {/* 히스토리 */}
+                    {memoHistoryOpen && (memoHistory[selected.key]?.length ?? 0) > 1 && (
+                      <div className="mt-3 space-y-2 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                        <p className="text-[12px] font-medium mb-1.5" style={{ color: "var(--text-muted)" }}>이전 버전</p>
+                        {[...(memoHistory[selected.key] ?? [])].reverse().slice(1).map((v, i) => (
+                          <div key={i} className="rounded-lg overflow-visible opacity-70" style={{ border: "1px solid var(--border)" }}>
+                            <div className="flex items-center justify-between px-3 py-1.5 rounded-t-lg" style={{ background: "var(--bg-overlay)", borderBottom: "1px solid var(--border)" }}>
+                              <span className="text-[12px] flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
+                                {v.isAI && <span className="px-1 py-0.5 rounded text-[11px]" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}>AI</span>}
+                                {v.author}
+                              </span>
+                              <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>{v.date}</span>
+                            </div>
+                            <div className="text-sm whitespace-pre-wrap leading-relaxed px-3 py-2" style={{ color: "var(--text-muted)" }}>{v.text}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[12px] italic" style={{ color: "var(--text-subtle)" }}>입력된 내용이 없습니다</p>
+                )}
+              </div>
+
+              {/* 메모 */}
+              <div className="mb-4 pt-4" style={{ borderTop: "1px solid var(--border)" }}>
+                <p className="text-sm font-semibold mb-2" style={{ color: "var(--text-secondary)" }}>메모</p>
+
+                {(ticketNotes[selected.key] ?? []).length > 0 ? (() => {
+                  type Group = { author: string; date: string; items: { text: string; idx: number }[] };
+                  const groups: Group[] = [];
+                  (ticketNotes[selected.key] ?? []).forEach((note, idx) => {
+                    const day = note.date.slice(0, 10);
+                    const last = groups[groups.length - 1];
+                    if (last && last.author === note.author && last.date === day) {
+                      last.items.push({ text: note.text, idx });
+                    } else {
+                      groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
+                    }
+                  });
+                  return (
+                    <div className="space-y-2 mb-2">
+                      {groups.map((g, gi) => (
+                        <div key={gi} className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+                          <div className="flex items-center justify-between px-3 py-1.5" style={{ background: "var(--bg-overlay)", borderBottom: "1px solid var(--border)" }}>
+                            <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>{g.author}</span>
+                            <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>{g.date}</span>
+                          </div>
+                          <div className="divide-y" style={{ borderColor: "var(--border)" }}>
+                            {g.items.map(({ text, idx }) => (
+                              <div key={idx} className="group flex items-start gap-2 px-3 py-2">
+                                <p className="flex-1 text-sm whitespace-pre-wrap leading-relaxed" style={{ color: "var(--text-primary)" }}>{text}</p>
+                                <button
+                                  onClick={() => deleteTicketNote(selected.key, idx)}
+                                  className="shrink-0 hover:text-red-400 text-[12px] opacity-0 group-hover:opacity-100 transition-opacity mt-0.5" style={{ color: "var(--text-subtle)" }}
+                                >삭제</button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })() : (
+                  <p className="text-[12px] italic mb-2" style={{ color: "var(--text-subtle)" }}>등록된 메모가 없습니다</p>
+                )}
+
+                <div className="flex flex-col gap-1.5">
+                  <textarea
+                    value={ticketNoteInput}
+                    onChange={(e) => setTicketNoteInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                        addTicketNote(selected.key, ticketNoteInput);
+                        setTicketNoteInput("");
+                      }
+                    }}
+                    placeholder="메모를 입력하세요 (⌘+Enter로 등록)"
+                    rows={2}
+                    className="w-full text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                  />
+                  <button
+                    onClick={() => { addTicketNote(selected.key, ticketNoteInput); setTicketNoteInput(""); }}
+                    disabled={!ticketNoteInput.trim()}
+                    className="self-end text-[12px] bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
+                  >등록</button>
                 </div>
-              );
-            })()}
+              </div>
+            </div>
+            </>) /* ─ Overview: Tier 2-3 (Weekly + 주요내용 + 메모) 끝 ─ */}
 
-            {/* ══════════════════════════════════════════
-                Overview 계속: 요구사항 출처 + 관련 문서
-                (이전 Planning 탭에서 Overview로 이동 — context 정보로 분류)
-                ══════════════════════════════════════════ */}
+            {/* ─── Tier 4: ▼ 참조 정보 (collapsible) ─── */}
+            {detailTab === "overview" && (<>
+            <div className="pt-4 mb-3" style={{ borderTop: "1px dashed var(--border)" }}>
+              <button
+                onClick={() => setOverviewRefExpanded(v => !v)}
+                className="flex items-center gap-1.5 text-xs font-medium transition-colors px-2 py-1 rounded-md w-full justify-between"
+                style={{ color: overviewRefExpanded ? "var(--text-secondary)" : "var(--text-subtle)" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-item)"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+              >
+                <span className="flex items-center gap-1.5">
+                  <span style={{ display: "inline-block", transform: overviewRefExpanded ? "rotate(90deg)" : "rotate(0deg)", transition: "transform 0.15s" }}>▸</span>
+                  <span>참조 정보</span>
+                  <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                    Main Subject · 출처 · 문서 · 데이터 소스
+                  </span>
+                </span>
+                <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                  {overviewRefExpanded ? "접기" : "펼치기"}
+                </span>
+              </button>
+
+              {overviewRefExpanded && (
+                <div className="mt-2 space-y-3">
+
+                  {/* ── 보조 정보 (Main Subject / 요청부문 / 상위 항목 / 2-Pager / PRD) ── */}
+                  {(selected.requestDept || selected.bodyRequestDept || selected.parent || selected.twoPagerUrl || selected.prdUrl) && (
+                    <div className="rounded-lg px-3 py-2.5 space-y-2" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+                      {[
+                        { label: "Main Subject", value: selected.requestDept },
+                        { label: "요청부문",     value: selected.bodyRequestDept },
+                      ].filter(r => r.value).map(({ label, value }) => (
+                        <div key={label} className="flex items-center gap-2 text-[12px]">
+                          <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>{label}</span>
+                          <span style={{ color: "var(--text-secondary)" }}>{value}</span>
+                        </div>
+                      ))}
+                      {selected.parent && (
+                        <div className="flex items-center gap-2 text-[12px]">
+                          <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>상위 항목</span>
+                          <a href={`${JIRA_BASE}${selected.parent}`} target="_blank" rel="noopener noreferrer"
+                            className="font-mono text-blue-500 hover:underline">{selected.parent}</a>
+                        </div>
+                      )}
+                      {selected.twoPagerUrl && (
+                        <div className="flex items-center gap-2 text-[12px]">
+                          <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>2-Pager</span>
+                          <a href={selected.twoPagerUrl} target="_blank" rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline">링크 열기 ↗</a>
+                        </div>
+                      )}
+                      {selected.prdUrl && (
+                        <div className="flex items-center gap-2 text-[12px]">
+                          <span className="w-24 shrink-0" style={{ color: "var(--text-muted)" }}>PRD Link</span>
+                          <a href={selected.prdUrl} target="_blank" rel="noopener noreferrer"
+                            className="text-blue-500 hover:underline">링크 열기 ↗</a>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* ── 데이터 소스 (구 Block B) ── */}
+                  {(() => {
+                    const sourceEntries = ticketSources[selected.key] ?? [];
+                    const hasSource = selected.isManual || sourceEntries.length > 0;
+                    if (!hasSource) return null;
+
+                    return (
+                      <div
+                        className="rounded-lg px-3 py-2.5"
+                        style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+                      >
+                        <p className="text-[11px] font-semibold uppercase tracking-wide mb-2.5" style={{ color: "var(--text-muted)" }}>
+                          데이터 소스
+                        </p>
+                        <div className="flex flex-col gap-1.5">
+
+                          {/* 수동 추가 배지 */}
+                          {selected.isManual && (
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="flex items-center gap-2">
+                                <span
+                                  className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
+                                  style={{ background: "rgba(52,211,153,0.10)", color: "#34d399", border: "1px solid rgba(52,211,153,0.2)" }}
+                                >
+                                  수동
+                                </span>
+                                <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>직접 등록</span>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* 필터 소스 항목 */}
+                          {sourceEntries.map(entry => {
+                            const filter = jiraFiltersKV[entry.filterId];
+                            const label  = filter?.label ?? filter?.name ?? entry.filterLabel;
+                            const currentFilterKeys = filterTicketsKV[entry.filterId] ?? [];
+                            const isActive = currentFilterKeys.includes(selected.key);
+                            const syncedAt = filter?.lastSyncAt;
+
+                            return (
+                              <div key={entry.filterId} className="flex items-center justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                  <span
+                                    className="text-[10px] px-1.5 py-0.5 rounded font-medium shrink-0"
+                                    style={{ background: "rgba(99,102,241,0.10)", color: "#818cf8", border: "1px solid rgba(99,102,241,0.18)" }}
+                                  >
+                                    필터
+                                  </span>
+                                  <span className="text-[12px] truncate" style={{ color: "var(--text-muted)" }} title={label}>{label}</span>
+                                  {!isActive && (
+                                    <span
+                                      className="text-[9px] px-1 py-0.5 rounded shrink-0 font-medium"
+                                      style={{ background: "rgba(239,68,68,0.10)", color: "#f87171", border: "1px solid rgba(239,68,68,0.2)" }}
+                                    >
+                                      제거됨
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="flex flex-col items-end shrink-0 gap-0.5">
+                                  <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                                    추가 {new Date(entry.addedAt).toLocaleDateString("ko-KR", { month: "short", day: "numeric" })}
+                                  </span>
+                                  {syncedAt && (
+                                    <span className="text-[9.5px]" style={{ color: "var(--text-subtle)" }}>
+                                      sync {(() => {
+                                        const diff = Date.now() - new Date(syncedAt).getTime();
+                                        const h = Math.floor(diff / 3_600_000);
+                                        if (h < 1) return "방금";
+                                        if (h < 24) return `${h}시간 전`;
+                                        return `${Math.floor(h / 24)}일 전`;
+                                      })()}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── 요구사항 출처 + 관련 문서 (구 Block C) ── */}
+                  <div className="space-y-3">
             {detailTab === "overview" && (<>
 
             {/* 요구사항 출처 — data-focus-section="etr" */}
@@ -7926,213 +8186,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
             </div>
 
-            </>) /* ─ Overview: 요구사항 출처 + 관련 문서 끝 ─ */}
-
-            {/* ══════════════════════════════════════════
-                Overview 계속: 주요 내용 요약 + 메모
-                ══════════════════════════════════════════ */}
-            {detailTab === "overview" && (<>
-            <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
-
-              {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
-              {renderWeeklySummary(selected.key)}
-              {/* ── Weekly에서 분리된 노트 (리스크 / 액션 / 참고) ────── */}
-              {renderActionRiskBox(selected.key)}
-
-              {/* 주요 내용 요약 */}
-              <div className="mb-4">
-                {/* 헤더 */}
-                <div className="flex items-center justify-between mb-2">
-                  <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>주요 내용 요약</p>
-                  <div className="flex items-center gap-2">
-                    {/* AI 재생성 버튼 */}
-                    {!memoEditMode && (
-                      <button
-                        onClick={() => regenerateSummary(selected.key)}
-                        disabled={summaryLoading.has(selected.key)}
-                        className="flex items-center gap-1 text-[12px] hover:text-indigo-400 disabled:opacity-40 transition-colors" style={{ color: "var(--text-muted)" }}
-                        title="AI로 요약 재생성"
-                      >
-                        <svg className={`w-3 h-3 ${summaryLoading.has(selected.key) ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                          <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
-                        </svg>
-                        AI 재생성
-                      </button>
-                    )}
-                    {/* 편집 / 저장·취소 */}
-                    {!memoEditMode ? (
-                      <button
-                        onClick={() => { setMemoText(getCurrentMemo(selected.key)?.text ?? ""); setMemoEditMode(true); }}
-                        className="text-[12px] text-indigo-500 hover:text-indigo-700 font-medium"
-                      >{getCurrentMemo(selected.key) ? "편집" : "입력"}</button>
-                    ) : (
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => { saveMemo(selected.key, memoText); setMemoEditMode(false); }}
-                          className="text-[12px] bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium"
-                        >저장</button>
-                        <button onClick={() => setMemoEditMode(false)}
-                          className="text-[12px] px-2 py-1 hover:opacity-80" style={{ color: "var(--text-muted)" }}>취소</button>
-                      </div>
-                    )}
+            </>) /* ─ Overview: ETR + Wiki (구 Block C, Tier 4 안으로 inline 이동) 끝 ─ */}
                   </div>
+
                 </div>
-
-                {/* AI 에러 메시지 */}
-                {regenError && !memoEditMode && !summaryLoading.has(selected.key) && (
-                  <div className="mb-2 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-[13px] text-red-600">
-                    {regenError}
-                  </div>
-                )}
-
-                {/* 본문 */}
-                {memoEditMode ? (
-                  <textarea
-                    value={memoText}
-                    onChange={(e) => setMemoText(e.target.value)}
-                    placeholder="주요 내용, 이슈, 결정 사항 등을 입력하세요"
-                    rows={6}
-                    className="w-full text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-y" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
-                  />
-                ) : summaryLoading.has(selected.key) ? (
-                  <div className="flex items-center gap-2 text-[12px] text-indigo-400 bg-indigo-50 rounded-lg px-3 py-2">
-                    <svg className="animate-spin h-3.5 w-3.5 shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
-                    </svg>
-                    AI가 티켓 내용을 분석하고 있습니다… (최대 30초 소요)
-                  </div>
-                ) : getCurrentMemo(selected.key) ? (
-                  <>
-                    {/* 현재 버전 */}
-                    {(() => {
-                      const cur = getCurrentMemo(selected.key)!;
-                      const lines = cur.text.split("\n");
-                      const needsCollapse = lines.length > 3;
-                      const displayText = needsCollapse && memoCollapsed
-                        ? lines.slice(0, 3).join("\n")
-                        : cur.text;
-                      return (
-                        <div className="overflow-visible">
-                          <div className="text-sm whitespace-pre-wrap leading-relaxed rounded-lg px-3 py-2.5 mb-1" style={{ color: "var(--text-primary)", background: "var(--bg-overlay)" }}>
-                            {displayText}
-                          </div>
-                          {needsCollapse && (
-                            <button
-                              onClick={() => setMemoCollapsed(c => !c)}
-                              className="text-xs text-indigo-400 hover:text-indigo-600 mb-1.5 transition-colors"
-                            >
-                              {memoCollapsed ? "더 보기 ▾" : "접기 ▴"}
-                            </button>
-                          )}
-                          <div className="flex items-center justify-between">
-                            <span className="text-[12px] flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
-                              {cur.isAI && <span className="px-1 py-0.5 rounded border text-[11px]" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8", borderColor: "rgba(99,102,241,0.3)" }}>AI</span>}
-                              {cur.author}{cur.date ? ` · ${cur.date}` : ""}
-                            </span>
-                            {(memoHistory[selected.key]?.length ?? 0) > 1 && (
-                              <button
-                                onClick={() => setMemoHistoryOpen(o => !o)}
-                                className="text-[12px] hover:opacity-80 transition-colors" style={{ color: "var(--text-muted)" }}
-                              >
-                                {memoHistoryOpen ? "히스토리 닫기" : `이전 버전 ${(memoHistory[selected.key]?.length ?? 1) - 1}개`}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })()}
-
-                    {/* 히스토리 */}
-                    {memoHistoryOpen && (memoHistory[selected.key]?.length ?? 0) > 1 && (
-                      <div className="mt-3 space-y-2 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
-                        <p className="text-[12px] font-medium mb-1.5" style={{ color: "var(--text-muted)" }}>이전 버전</p>
-                        {[...(memoHistory[selected.key] ?? [])].reverse().slice(1).map((v, i) => (
-                          <div key={i} className="rounded-lg overflow-visible opacity-70" style={{ border: "1px solid var(--border)" }}>
-                            <div className="flex items-center justify-between px-3 py-1.5 rounded-t-lg" style={{ background: "var(--bg-overlay)", borderBottom: "1px solid var(--border)" }}>
-                              <span className="text-[12px] flex items-center gap-1" style={{ color: "var(--text-muted)" }}>
-                                {v.isAI && <span className="px-1 py-0.5 rounded text-[11px]" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}>AI</span>}
-                                {v.author}
-                              </span>
-                              <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>{v.date}</span>
-                            </div>
-                            <div className="text-sm whitespace-pre-wrap leading-relaxed px-3 py-2" style={{ color: "var(--text-muted)" }}>{v.text}</div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-[12px] italic" style={{ color: "var(--text-subtle)" }}>입력된 내용이 없습니다</p>
-                )}
-              </div>
-
-              {/* 메모 */}
-              <div className="mb-4 pt-4" style={{ borderTop: "1px solid var(--border)" }}>
-                <p className="text-sm font-semibold mb-2" style={{ color: "var(--text-secondary)" }}>메모</p>
-
-                {(ticketNotes[selected.key] ?? []).length > 0 ? (() => {
-                  type Group = { author: string; date: string; items: { text: string; idx: number }[] };
-                  const groups: Group[] = [];
-                  (ticketNotes[selected.key] ?? []).forEach((note, idx) => {
-                    const day = note.date.slice(0, 10);
-                    const last = groups[groups.length - 1];
-                    if (last && last.author === note.author && last.date === day) {
-                      last.items.push({ text: note.text, idx });
-                    } else {
-                      groups.push({ author: note.author, date: day, items: [{ text: note.text, idx }] });
-                    }
-                  });
-                  return (
-                    <div className="space-y-2 mb-2">
-                      {groups.map((g, gi) => (
-                        <div key={gi} className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                          <div className="flex items-center justify-between px-3 py-1.5" style={{ background: "var(--bg-overlay)", borderBottom: "1px solid var(--border)" }}>
-                            <span className="text-[12px] font-medium" style={{ color: "var(--text-primary)" }}>{g.author}</span>
-                            <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>{g.date}</span>
-                          </div>
-                          <div className="divide-y" style={{ borderColor: "var(--border)" }}>
-                            {g.items.map(({ text, idx }) => (
-                              <div key={idx} className="group flex items-start gap-2 px-3 py-2">
-                                <p className="flex-1 text-sm whitespace-pre-wrap leading-relaxed" style={{ color: "var(--text-primary)" }}>{text}</p>
-                                <button
-                                  onClick={() => deleteTicketNote(selected.key, idx)}
-                                  className="shrink-0 hover:text-red-400 text-[12px] opacity-0 group-hover:opacity-100 transition-opacity mt-0.5" style={{ color: "var(--text-subtle)" }}
-                                >삭제</button>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  );
-                })() : (
-                  <p className="text-[12px] italic mb-2" style={{ color: "var(--text-subtle)" }}>등록된 메모가 없습니다</p>
-                )}
-
-                <div className="flex flex-col gap-1.5">
-                  <textarea
-                    value={ticketNoteInput}
-                    onChange={(e) => setTicketNoteInput(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-                        addTicketNote(selected.key, ticketNoteInput);
-                        setTicketNoteInput("");
-                      }
-                    }}
-                    placeholder="메모를 입력하세요 (⌘+Enter로 등록)"
-                    rows={2}
-                    className="w-full text-sm rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 resize-none" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
-                  />
-                  <button
-                    onClick={() => { addTicketNote(selected.key, ticketNoteInput); setTicketNoteInput(""); }}
-                    disabled={!ticketNoteInput.trim()}
-                    className="self-end text-[12px] bg-indigo-600 text-white px-3 py-1.5 rounded-lg hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed font-medium transition-colors"
-                  >등록</button>
-                </div>
-              </div>
+              )}
             </div>
-            </>) /* ─ Overview: 주요 내용 요약 + 메모 끝 ─ */}
+            </>) /* ─ Overview: Tier 4 (참조 정보 collapsible) 끝 ─ */}
 
             {/* ══════════════════════════════════════════
                 Planning & Schedule 탭: 플래닝 상태
