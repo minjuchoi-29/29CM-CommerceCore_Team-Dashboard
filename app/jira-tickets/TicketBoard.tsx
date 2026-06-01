@@ -1046,17 +1046,147 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   );
 }
 
-/** Focus Mode 상단 strip — 미확정 일정을 Action Required 다음 위치로 승격.
+/** 미확정 일정 Summary — Focus Mode 상단 strip(`strip` layout) + Split View Overview 카드(`card` layout).
+ *
  *  목적: PM이 "지금 확정해야 할 일정"을 Gantt까지 스크롤 없이 즉시 파악.
- *  chip 클릭 → 부모(Focus Mode)가 setHighlightedScheduleRow + scrollIntoView로 Gantt 위치 강조. */
-function PlaceholderSummary({ roles, onJump, highlightRowKey }: {
+ *
+ *  표시 정책 (2026-06-04, 3차-보정 PR):
+ *    - 0건  → 컴포넌트 자체 렌더 안 함 (early return null)
+ *    - 1~3건 → 전부 펼침 (토글 없음)
+ *    - 4건+ → severity 내림차순(red→amber→gray)으로 상위 3건 표시 + "+N건 더 보기" 토글
+ *
+ *  chip 표시: 카드형 수직 stack (시스템 로그 톤 X)
+ *    Line 1: severity dot + (milestone diamond?) + phase 라벨 (bold severity 색)
+ *    Line 2: 담당 · {person|resource} (있을 때만)
+ *    Line 3: reason 텍스트
+ *
+ *  클릭: onJump(rowKey) → 부모가 (탭 전환 +) scrollIntoView + 강조 수행.
+ */
+function PlaceholderSummary({ roles, onJump, highlightRowKey, layout = "strip" }: {
   roles: RoleSchedule[];
   onJump: (rowKey: string) => void;
   highlightRowKey?: string | null;
+  layout?: "strip" | "card";
 }) {
+  const [expanded, setExpanded] = useState(false);
+
   const placeholders = roles.filter(isPlaceholderSchedule);
   if (placeholders.length === 0) return null;
 
+  // severity 내림차순 정렬 — 4건+ 절단 시 가장 critical한 항목이 상위 3건에 노출되도록
+  const SEVERITY_RANK: Record<"red" | "amber" | "gray", number> = { red: 0, amber: 1, gray: 2 };
+  const sorted = [...placeholders].sort((a, b) => {
+    const ra = SEVERITY_RANK[placeholderScheduleSeverity(placeholderScheduleReason(a))];
+    const rb = SEVERITY_RANK[placeholderScheduleSeverity(placeholderScheduleReason(b))];
+    return ra - rb;
+  });
+
+  const COLLAPSED_LIMIT = 3;
+  const shouldTruncate = sorted.length > COLLAPSED_LIMIT;
+  const visible = shouldTruncate && !expanded ? sorted.slice(0, COLLAPSED_LIMIT) : sorted;
+  const hiddenCount = shouldTruncate && !expanded ? sorted.length - COLLAPSED_LIMIT : 0;
+
+  const renderChip = (r: RoleSchedule) => {
+    const reason = placeholderScheduleReason(r);
+    const severity = placeholderScheduleSeverity(reason);
+    const phase = r.phase ?? inferPhase(r.role);
+    const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
+    const label = phase ? PHASE_LABEL[phase] : r.role;
+    const isMilestone = MILESTONE_ROLES.includes(r.role)
+      || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
+    const rowKey = placeholderScheduleRowKey(r);
+    const isActive = highlightRowKey === rowKey;
+    const s = PLACEHOLDER_SEVERITY_STYLE[severity];
+    const showPerson = r.person && r.person !== "-";
+    const showResourceAsPerson = !showPerson && resourceTeam && resourceTeam !== label;
+
+    return (
+      <button
+        key={rowKey}
+        onClick={() => onJump(rowKey)}
+        className="flex flex-col items-start gap-0.5 px-2.5 py-1.5 rounded-lg text-left transition-all hover:opacity-85"
+        style={{
+          background: s.bg,
+          border: `1px solid ${s.border}`,
+          borderLeft: `3px solid ${s.dot}`,
+          boxShadow: isActive ? `0 0 0 2px ${s.dot}55, 0 0 10px ${s.dot}40` : undefined,
+          minWidth: layout === "strip" ? 140 : 0,
+        }}
+        title={`${label}${showPerson ? ` · ${r.person}` : showResourceAsPerson ? ` · ${resourceTeam}` : ""}: ${reason}\n클릭 시 Gantt에서 해당 행을 강조 표시합니다`}
+      >
+        {/* Line 1: severity dot + (milestone diamond?) + phase */}
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.dot }} />
+          {isMilestone && (
+            <span
+              className="inline-block shrink-0"
+              style={{ width: 7, height: 7, background: s.color, transform: "rotate(45deg)", borderRadius: 1, opacity: 0.85 }}
+              aria-label="milestone"
+            />
+          )}
+          <span className="text-[12px] font-bold whitespace-nowrap" style={{ color: s.color }}>{label}</span>
+        </div>
+        {/* Line 2: 담당 (있을 때만) */}
+        {(showPerson || showResourceAsPerson) && (
+          <div className="text-[11px] font-medium pl-3 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
+            담당 · {showPerson ? r.person : resourceTeam}
+          </div>
+        )}
+        {/* Line 3: reason */}
+        <div className="text-[10.5px] pl-3 leading-tight" style={{ color: s.color, opacity: 0.82 }}>
+          {reason}
+        </div>
+      </button>
+    );
+  };
+
+  const toggleButton = shouldTruncate && (
+    <button
+      key="__toggle"
+      onClick={() => setExpanded(e => !e)}
+      className="text-[11px] font-medium px-2.5 py-1.5 rounded-md transition-colors hover:opacity-80 self-stretch flex items-center"
+      style={{
+        color: "var(--text-secondary)",
+        background: "var(--bg-overlay)",
+        border: "1px dashed var(--border-2)",
+      }}
+      title={expanded ? "접기" : `남은 ${hiddenCount}건 모두 표시`}
+    >
+      {expanded ? "▴ 접기" : `+${hiddenCount}건 더 보기`}
+    </button>
+  );
+
+  // ── card layout: Split View Overview 탭에서 Action Guidance 다음 카드로 노출 ──
+  if (layout === "card") {
+    return (
+      <div
+        className="rounded-lg px-3 py-2.5 mb-3"
+        style={{ background: "rgba(251,191,36,0.04)", border: "1px solid rgba(251,191,36,0.32)" }}
+      >
+        <p
+          className="text-[11px] font-semibold uppercase tracking-wide mb-2 flex items-center gap-1.5"
+          style={{ color: "#fbbf24" }}
+        >
+          <span>⚠ 미확정 일정</span>
+          <span
+            className="px-1.5 py-0.5 rounded text-[10px] font-bold normal-case"
+            style={{ background: "rgba(251,191,36,0.18)", color: "#fbbf24" }}
+          >
+            {placeholders.length}건
+          </span>
+        </p>
+        <div
+          className="grid gap-1.5"
+          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}
+        >
+          {visible.map(renderChip)}
+        </div>
+        {toggleButton && <div className="mt-2 flex">{toggleButton}</div>}
+      </div>
+    );
+  }
+
+  // ── strip layout: Focus Mode 상단 strip ──
   return (
     <div
       className="shrink-0 flex items-start gap-2 px-4 py-2 flex-wrap"
@@ -1069,50 +1199,9 @@ function PlaceholderSummary({ roles, onJump, highlightRowKey }: {
       >
         ⚠ 미확정 일정 {placeholders.length}건
       </span>
-      <div className="flex items-center gap-1.5 flex-wrap">
-        {placeholders.map(r => {
-          const reason = placeholderScheduleReason(r);
-          const severity = placeholderScheduleSeverity(reason);
-          const phase = r.phase ?? inferPhase(r.role);
-          const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
-          const label = phase ? PHASE_LABEL[phase] : r.role;
-          const isMilestone = MILESTONE_ROLES.includes(r.role)
-            || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
-          const rowKey = placeholderScheduleRowKey(r);
-          const isActive = highlightRowKey === rowKey;
-          const s = PLACEHOLDER_SEVERITY_STYLE[severity];
-          return (
-            <button
-              key={rowKey}
-              onClick={() => onJump(rowKey)}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all hover:opacity-85"
-              style={{
-                background: s.bg,
-                border: `1px solid ${s.border}`,
-                color: s.color,
-                boxShadow: isActive ? `0 0 0 2px ${s.dot}55, 0 0 10px ${s.dot}40` : undefined,
-              }}
-              title={`${label}${r.person && r.person !== "-" ? ` · ${r.person}` : ""}: ${reason}\n클릭 시 Gantt에서 해당 행을 강조 표시합니다`}
-            >
-              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.dot }} />
-              {isMilestone && (
-                <span
-                  className="inline-block shrink-0"
-                  style={{ width: 7, height: 7, background: s.color, transform: "rotate(45deg)", borderRadius: 1, opacity: 0.85 }}
-                  aria-label="milestone"
-                />
-              )}
-              <span className="font-semibold">{label}</span>
-              {r.person && r.person !== "-" && (
-                <span className="font-medium opacity-80">· {r.person}</span>
-              )}
-              {(!r.person || r.person === "-") && resourceTeam && resourceTeam !== label && (
-                <span className="font-medium opacity-80">· {resourceTeam}</span>
-              )}
-              <span className="opacity-65">— {reason}</span>
-            </button>
-          );
-        })}
+      <div className="flex items-stretch gap-1.5 flex-wrap">
+        {visible.map(renderChip)}
+        {toggleButton}
       </div>
     </div>
   );
@@ -1555,6 +1644,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Focus Mode 2-column 스크롤 대상 ref
   const focusLeftColRef  = useRef<HTMLDivElement>(null);
   const focusRightColRef = useRef<HTMLDivElement>(null);
+  // Split View 우측 panel scroll 컨테이너 — PlaceholderSummary card→Gantt row scroll에 사용
+  const splitScrollRef   = useRef<HTMLDivElement>(null);
   // Action Resolve 피드백 — Focus Mode에서 action 수가 줄면 toast 표시
   const [resolveToast, setResolveToast]   = useState<{ count: number } | null>(null);
   const prevActionCountRef = useRef<Record<string, number>>({});
@@ -7241,7 +7332,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           })()}
 
           {/* ── 스크롤 콘텐츠 (Focus Mode에서는 숨김) ── */}
-          {!isDetailExpanded && <div className="flex-1 overflow-y-auto min-h-0">
+          {!isDetailExpanded && <div ref={splitScrollRef} className="flex-1 overflow-y-auto min-h-0">
           <div className="p-5">
 
             {/* ── owner_dashboard deep-link Reminder Strip ──────────────────────────
@@ -7333,6 +7424,33 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
               );
             })()}
+
+            {/* ── 미확정 일정 Summary (Split View, 3차-보정 PR 2026-06-04) ──
+                Action Guidance 바로 아래에 노출 → PM이 메타·문서·Weekly까지 스크롤 없이
+                "지금 확정해야 할 일정"을 즉시 파악. Gantt(ops 탭) 내부 하단의 상세 영역은 그대로 유지. */}
+            <PlaceholderSummary
+              roles={schedules[selected.key] ?? selected.roles ?? []}
+              highlightRowKey={highlightedScheduleRow}
+              layout="card"
+              onJump={(rowKey) => {
+                setHighlightedScheduleRow(rowKey);
+                // Split View 흐름: ops 탭으로 전환 → 다음 frame에 scroll + highlight.
+                setDetailTab("ops");
+                requestAnimationFrame(() => {
+                  setTimeout(() => {
+                    const root = splitScrollRef.current;
+                    if (!root) return;
+                    const scheduleSection = root.querySelector<HTMLElement>('[data-focus-section="schedule"]');
+                    scheduleSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    setTimeout(() => {
+                      const rowEl = root.querySelector<HTMLElement>(`[data-fm-row-key="${rowKey}"]`);
+                      rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
+                    }, 260);
+                  }, 60);
+                });
+                setTimeout(() => setHighlightedScheduleRow(null), 3500);
+              }}
+            />
 
             {/* ── 핵심 메타 정보 ── */}
             <div className="rounded-lg px-3 py-3 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
