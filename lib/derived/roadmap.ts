@@ -1,13 +1,13 @@
 import {
   Ticket,
   RoleSchedule,
-  PlanningEntry,
   TrackState,
   DevTrackKey,
   JiraTypeGroup,
 } from "@/lib/types";
 import { classifyType, isTicketOverdue } from "@/lib/derived/tickets";
 import { computeHealth, HealthResult, HealthInput } from "@/lib/derived/health";
+import { getPlanningView } from "@/lib/planning-helpers";
 
 // Re-export types roadmap/page.tsx currently defines locally
 export type { JiraTypeGroup, TrackState, DevTrackKey };
@@ -34,29 +34,8 @@ function emptyTrackCount(): Record<TrackState, number> {
   return { "대기중": 0, "검토중": 0, "완료": 0, "대상아님": 0 };
 }
 
-function getPlanningEntry(raw: unknown): PlanningEntry {
-  if (!raw || typeof raw !== "object") return {};
-  const v = raw as Record<string, unknown>;
-  return {
-    design: (v.design as TrackState) ?? "대기중",
-    dev: (v.dev as TrackState) ?? "대기중",
-    devTracks: (v.devTracks as Partial<Record<DevTrackKey, TrackState>>) ?? {},
-    reviewNeeded: (v.reviewNeeded as boolean) ?? false,
-  };
-}
-
-function aggregateDevState(
-  devTracks: Partial<Record<DevTrackKey, TrackState>>
-): TrackState {
-  const vals = Object.values(devTracks).filter(Boolean) as TrackState[];
-  if (!vals.length) return "대기중";
-  if (vals.every((v) => v === "대상아님")) return "대상아님";
-  const active = vals.filter((v) => v !== "대상아님");
-  if (!active.length) return "대상아님";
-  if (active.some((v) => v === "대기중")) return "대기중";
-  if (active.some((v) => v === "검토중")) return "검토중";
-  return "완료";
-}
+// getPlanningEntry / aggregateDevState 자체 정의 제거 — lib/planning-helpers.ts 공통 source of truth 사용
+// (TicketBoard 간략·집중보기, q2-initiative, roadmap 페이지, InitiativeSummary 모두 동일 helper)
 
 function isScheduleUndecided(r: RoleSchedule): boolean {
   return (
@@ -123,13 +102,11 @@ export function computeInitiativeSummary(
     const ticket = allTickets.find((t) => t.key === key);
     byType[classifyType(ticket?.type ?? "")]++;
 
-    const p = getPlanningEntry(planning[key]);
-    const designState: TrackState = p.design ?? "대기중";
-    const devTracksRaw = p.devTracks ?? {};
-    const devState: TrackState =
-      Object.keys(devTracksRaw).length > 0
-        ? aggregateDevState(devTracksRaw)
-        : (p.dev ?? "대기중");
+    const p = getPlanningView(planning[key]);
+    // getPlanningView가 이미 dev 집계 처리 (devTracks 있으면 aggregateDevState, 없으면 v.dev fallback).
+    const designState: TrackState = p.design;
+    const devState: TrackState = p.dev;
+    const devTracksRaw = p.devTracks;
 
     design[designState]++;
     dev[devState]++;

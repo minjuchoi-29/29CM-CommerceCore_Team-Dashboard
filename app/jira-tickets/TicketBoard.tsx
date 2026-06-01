@@ -20,6 +20,16 @@ import {
 import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
+import {
+  type TrackState,
+  TRACK_STATES,
+  type DevTrackKey,
+  DEV_TRACK_KEYS,
+  type PlanningSummaryState,
+  aggregateDevState,
+  getPlanningView as getPlanningVal,
+  getPlanningStateSummary,
+} from "@/lib/planning-helpers";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -854,48 +864,8 @@ type TicketRequestInfo = {
   wikiLinks?: WikiLink[];
 };
 
-type TrackState = "대기중" | "검토중" | "완료" | "대상아님";
-const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료", "대상아님"];
-
-type DevTrackKey = "SP" | "PP" | "CFE" | "Mobile" | "DFE" | "QA" | "기타";
-const DEV_TRACK_KEYS: DevTrackKey[] = ["SP", "PP", "CFE", "Mobile", "DFE", "QA", "기타"];
-
-function aggregateDevState(devTracks: Partial<Record<DevTrackKey, TrackState>>): TrackState {
-  const values = Object.values(devTracks).filter(Boolean) as TrackState[];
-  if (values.length === 0) return "대기중";
-  if (values.every(v => v === "대상아님")) return "대상아님";
-  const active = values.filter(v => v !== "대상아님");
-  if (active.length === 0) return "대상아님";
-  if (active.some(v => v === "대기중")) return "대기중";
-  if (active.some(v => v === "검토중")) return "검토중";
-  return "완료";
-}
-
-function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState; devTracks: Partial<Record<DevTrackKey, TrackState>>; reviewNeeded: boolean } {
-  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중", devTracks: {}, reviewNeeded: false };
-  const v = val as Record<string, unknown>;
-  const devTracks = (v.devTracks as Partial<Record<DevTrackKey, TrackState>>) ?? {};
-  const devTracksHasEntries = Object.keys(devTracks).length > 0;
-  return {
-    design:       (v.design as TrackState) ?? "대기중",
-    dev:          devTracksHasEntries ? aggregateDevState(devTracks) : ((v.dev as TrackState) ?? "대기중"),
-    devTracks,
-    reviewNeeded: (v.reviewNeeded as boolean) ?? false,
-  };
-}
-
-type PlanningSummaryState = "확인필요" | "검토중" | "플래닝 완료" | "대기중" | "대상아님";
-
-function getPlanningStateSummary(val: unknown): PlanningSummaryState {
-  const p = getPlanningVal(val);
-  if (p.reviewNeeded) return "확인필요";
-  const allNA   = p.design === "대상아님" && p.dev === "대상아님";
-  if (allNA) return "대상아님";
-  const allDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
-  if (allDone) return "플래닝 완료";
-  if (p.design === "검토중" || p.dev === "검토중") return "검토중";
-  return "대기중";
-}
+// Planning 상태 정의 / 집계 / summary helper는 lib/planning-helpers.ts로 이동
+// (TicketBoard 간략·집중보기, q2-initiative, roadmap이 동일 source of truth를 공유)
 
 /** 상태별 tooltip 문구 — [현재 상태] / [필요한 행동] */
 const PLANNING_BADGE_TIPS: Record<PlanningSummaryState, string> = {

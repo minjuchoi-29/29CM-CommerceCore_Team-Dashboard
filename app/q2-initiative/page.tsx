@@ -1,6 +1,7 @@
 "use client";
 import { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
+import { getPlanningView } from "@/lib/planning-helpers";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 const TICKET_CACHE_KEY = "cc-tickets-v2";
@@ -41,13 +42,10 @@ type Ticket = {
   project: string;
 };
 
-type TrackState = "대기중" | "검토중" | "완료";
-
-function getPlanningVal(val: unknown): { design: TrackState; dev: TrackState } {
-  if (!val || typeof val === "string") return { design: "대기중", dev: "대기중" };
-  const v = val as Record<string, string>;
-  return { design: (v.design as TrackState) ?? "대기중", dev: (v.dev as TrackState) ?? "대기중" };
-}
+// Planning helper는 lib/planning-helpers.ts(공통 source of truth)에서 import
+// 이전: q2-initiative 자체 getPlanningVal — devTracks 무시했음
+// 변경: getPlanningView 사용 — TicketBoard와 동일하게 devTracks 있으면 aggregateDevState로 집계
+// UI 표시 로직은 그대로 유지 (정책 변경 없음).
 
 function extractDomain(summary: string): string {
   const m = summary.match(/^\[([^\]]+)\]/);
@@ -253,7 +251,7 @@ export default function AssigneeView() {
                               </span>
                             )}
                             {(() => {
-                              const p = getPlanningVal(planning[t.key]);
+                              const p = getPlanningView(planning[t.key]);
                               const designDone = p.design === "완료";
                               const devDone = p.dev === "완료";
                               if (designDone && devDone) return null;

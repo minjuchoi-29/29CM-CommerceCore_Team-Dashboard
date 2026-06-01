@@ -2,13 +2,14 @@
 
 import { useState, useEffect, useCallback, useMemo } from "react";
 import { RoadmapInitiative, SAMPLE_INITIATIVES } from "@/app/types/roadmap";
-import { Ticket, TrackState, DevTrackKey, RoleSchedule, PlanningEntry } from "@/lib/types";
+import { Ticket, TrackState, DevTrackKey, RoleSchedule } from "@/lib/types";
 import {
   computeInitiativeSummary,
   InitiativeSummary,
 } from "@/lib/derived/roadmap";
 import { classifyType } from "@/lib/derived/tickets";
 import type { JiraTypeGroup } from "@/lib/types";
+import { getPlanningView } from "@/lib/planning-helpers";
 
 // ─── 로컬 유틸 (roadmap 페이지 내부 전용) ───────────────────────────────────
 
@@ -16,16 +17,10 @@ function isScheduleUndecided(r: RoleSchedule): boolean {
   return (!r.start && !r.end) || r.status === "미정" || r.status === "확인필요";
 }
 
-function getPlanningEntry(raw: unknown): PlanningEntry {
-  if (!raw || typeof raw !== "object") return {};
-  const v = raw as Record<string, unknown>;
-  return {
-    design: (v.design as TrackState) ?? "대기중",
-    dev: (v.dev as TrackState) ?? "대기중",
-    devTracks: (v.devTracks as Partial<Record<DevTrackKey, TrackState>>) ?? {},
-    reviewNeeded: (v.reviewNeeded as boolean) ?? false,
-  };
-}
+// Planning helper는 lib/planning-helpers.ts 공통 source of truth에서 import
+// 이전: roadmap 자체 getPlanningEntry — devTracks 보존하지만 dev 상위는 v.dev 그대로 (집계 없음)
+// 변경: getPlanningView 사용 — TicketBoard/q2-initiative와 동일하게 devTracks 있으면 aggregateDevState로 집계
+// UI 표시 로직은 그대로 유지 (정책 변경 없음).
 
 // ─── 상수 ────────────────────────────────────────────────────────────────────
 const TICKET_CACHE_KEY = "cc-tickets-v1";
@@ -950,7 +945,7 @@ export default function RoadmapPage() {
                             style={{ color: "var(--text-subtle)" }}>{g === "Initiative" ? "Jira Initiative" : g}</p>
                           <div className="flex flex-col gap-1">
                             {list.map(t => {
-                              const tp = getPlanningEntry(planning[t.key]);
+                              const tp = getPlanningView(planning[t.key]);
                               const ticketRoles = schedules[t.key] ?? [];
                               const hasUndecidedSchedule = ticketRoles.some(r => isScheduleUndecided(r));
                               return (
