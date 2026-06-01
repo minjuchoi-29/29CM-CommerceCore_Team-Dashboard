@@ -3748,7 +3748,26 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   function savePlanning(key: string, track: "design" | "dev", state: TrackState) {
     const current = getPlanningVal(planning[key]);
-    const updated = { ...planning, [key]: { ...current, [track]: state } };
+
+    // Dev 상위 행 변경 정책 (B-1, 2026-05-29):
+    //   devTracks에 active sub-track이 있으면 그것들도 같은 state로 일괄 변경한다.
+    //   "대상아님" sub-track은 그대로 유지.
+    //   이렇게 해야 getPlanningVal()의 aggregateDevState(devTracks) 정책과 일치하여
+    //   사용자가 본 Dev 상태가 다음 render에서 원복되는 silent loss를 제거할 수 있다.
+    //   (Design은 단일 상태이므로 기존 동작 유지.
+    //    devTracks가 비어있는 ticket도 기존처럼 v.dev 단일 변경만.)
+    let nextEntry: typeof current;
+    if (track === "dev" && Object.keys(current.devTracks).length > 0) {
+      const newDevTracks: Partial<Record<DevTrackKey, TrackState>> = {};
+      for (const [k, v] of Object.entries(current.devTracks) as [DevTrackKey, TrackState][]) {
+        newDevTracks[k] = v === "대상아님" ? "대상아님" : state;
+      }
+      nextEntry = { ...current, devTracks: newDevTracks, dev: state };
+    } else {
+      nextEntry = { ...current, [track]: state };
+    }
+
+    const updated = { ...planning, [key]: nextEntry };
     setPlanning(updated);
     fetch("/api/kv", {
       method: "POST",
