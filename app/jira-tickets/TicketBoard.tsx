@@ -6755,6 +6755,76 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             </div>
                           );
                         })}
+
+                        {/* Dev 세부 트랙 — sub-track 직접 편집 (집중보기 전용)
+                            정책: 개별 sub-track 변경은 saveDevTrack → aggregateDevState로 Dev aggregate 자동 갱신.
+                            Dev aggregate 행(위)을 변경하면 B-1 cascade로 active sub-track 전체 일괄 변경.
+                            "대상아님" sub-track은 cascade 시 그대로 유지. */}
+                        <div className="px-3 py-2.5" style={{ borderTop: "1px solid var(--border)", background: "var(--bg-overlay)" }}>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-subtle)" }}>
+                              Dev 세부 트랙
+                            </span>
+                            <span className="text-[9.5px]" style={{ color: "var(--text-subtle)" }}>
+                              aggregate = <span style={{ color: "#60a5fa" }}>{fmPlan.dev}</span>
+                            </span>
+                          </div>
+                          {/* 트랙 토글 — active/inactive 추가/제거 */}
+                          <div className="flex flex-wrap gap-1 mb-2">
+                            {DEV_TRACK_KEYS.map(tk => {
+                              const isActive = tk in fmPlan.devTracks;
+                              return (
+                                <button
+                                  key={tk}
+                                  onClick={() => toggleDevTrack(selected.key, tk)}
+                                  className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full border transition-all"
+                                  style={isActive
+                                    ? { background: "rgba(59,130,246,0.18)", borderColor: "#60a5fa", color: "#60a5fa" }
+                                    : { background: "var(--bg-canvas)", borderColor: "var(--border-2)", color: "var(--text-subtle)" }}
+                                  title={isActive ? `${tk} 트랙 제거` : `${tk} 트랙 추가`}
+                                >
+                                  {isActive ? `${tk} ×` : `+ ${tk}`}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {/* active sub-track 상태 버튼 */}
+                          {Object.keys(fmPlan.devTracks).length === 0 ? (
+                            <p className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                              세부 트랙 미설정 — Dev 상위 행이 단일 상태로 작동합니다.
+                            </p>
+                          ) : (
+                            <div className="flex flex-col gap-1">
+                              {DEV_TRACK_KEYS.filter(tk => tk in fmPlan.devTracks).map(tk => {
+                                const current = fmPlan.devTracks[tk]!;
+                                return (
+                                  <div key={tk} className="flex items-center gap-2">
+                                    <span className="text-[11px] font-semibold w-10 shrink-0" style={{ color: "#60a5fa" }}>{tk}</span>
+                                    <div className="flex gap-1 flex-1">
+                                      {TRACK_STATES.map(s => {
+                                        const active = current === s;
+                                        const activeStyle =
+                                          s === "완료"     ? { background: "rgba(16,185,129,0.2)",  borderColor: "#34d399", color: "#34d399" } :
+                                          s === "검토중"   ? { background: "rgba(59,130,246,0.2)",  borderColor: "#60a5fa", color: "#60a5fa" } :
+                                          s === "대상아님" ? { background: "var(--bg-item-alt)", borderColor: "var(--text-primary)", color: "var(--text-primary)" } :
+                                                             { background: "var(--bg-item-alt)", borderColor: "var(--text-secondary)", color: "var(--text-secondary)" };
+                                        const inactiveStyle = { background: "var(--bg-canvas)", borderColor: "var(--border-2)", color: "var(--text-subtle)" };
+                                        return (
+                                          <button
+                                            key={s}
+                                            onClick={() => saveDevTrack(selected.key, tk, s)}
+                                            className="flex-1 py-1 px-1 rounded text-[10px] font-medium border transition-all hover:opacity-90"
+                                            style={active ? activeStyle : inactiveStyle}
+                                          >{s}</button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
 
