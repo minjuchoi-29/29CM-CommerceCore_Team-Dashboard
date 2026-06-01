@@ -926,46 +926,57 @@ const PLAN_STATE_PRIO: Record<string, number> = {
   "확인필요": 0, "검토중": 1, "대기중": 2, "완료": 9, "대상아님": 9,
 };
 
-/** Design + Dev 트랙별 { team, state } 목록 */
-function getPlanningTeamEntries(val: unknown): { team: string; state: TrackState; isDesign: boolean }[] {
-  const p = getPlanningVal(val);
-  const result: { team: string; state: TrackState; isDesign: boolean }[] = [];
-  result.push({ team: "Design", state: p.design, isDesign: true });
-  const activeTracks = DEV_TRACK_KEYS.filter(tk => tk in p.devTracks);
-  if (activeTracks.length > 0) {
-    for (const tk of activeTracks) {
-      result.push({ team: tk, state: p.devTracks[tk]!, isDesign: false });
-    }
-  } else {
-    // 레거시 dev 단일 상태
-    result.push({ team: "Dev", state: p.dev, isDesign: false });
-  }
-  return result;
-}
-
-/** 목록 서브행 — 팀 단위 플래닝 상태 compact badges */
-function PlanningCompactBadges({ planVal, maxVisible = 3 }: { planVal: unknown; maxVisible?: number }) {
+/** 목록 서브행 — ticket-level Planning 상태 compact badges (Design + Dev aggregate).
+ *
+ * 정책 (2026-06-01):
+ *   list view chip의 의미 단위는 ticket-level aggregate.
+ *   sub-track별 chip을 직접 노출하지 않음 — hover tooltip / 상세 panel trackgrid로 확인.
+ *
+ * 목적:
+ *   간략보기 ↔ 집중보기 ↔ Roadmap ↔ Q2 의미 단위 통일, list 시각 노이즈 감소.
+ *   Dev aggregate 값은 getPlanningView(=getPlanningVal alias)가 이미 devTracks 보수 집계로 계산.
+ *
+ * +N hint:
+ *   Dev chip에 한해 aggregate Dev 상태와 같은 상태인 sub-track 개수가 2개 이상이면 `+N` 표시.
+ *   예) PP=검토중 / CFE=검토중 / QA=검토중 → "Dev · 검토중 +2"
+ *   sub-track 0~1개거나 다른 상태가 섞이면 hint 생략.
+ */
+function PlanningCompactBadges({ planVal }: { planVal: unknown }) {
   const p = getPlanningVal(planVal);
-  const allEntries = getPlanningTeamEntries(planVal);
 
-  // tooltip: 전체 상태 표시 — 행 레벨 native title (compact row에서 사용)
+  // sub-track 상세는 tooltip / 상세 panel trackgrid로만 노출
+  const subTrackEntries = DEV_TRACK_KEYS
+    .filter(tk => tk in p.devTracks)
+    .map(tk => ({ team: tk, state: p.devTracks[tk]! }));
+
   const STATE_SHORT: Record<TrackState, string> = {
     "대기중":   "대기중 (플래닝 미시작)",
     "검토중":   "검토중 (플래닝 진행 중)",
     "완료":     "완료",
     "대상아님": "대상아님",
   };
+
+  // tooltip: ticket-level Design / Dev aggregate + sub-track breakdown (운영 동선: hover → owner 식별)
   const tooltipText = [
     p.reviewNeeded ? "⚡ 검토필요 — 스프린트 미팅 논의 대상" : null,
-    ...allEntries.map(e => `${e.team}: ${STATE_SHORT[e.state] ?? e.state}`),
-  ].filter(Boolean).join("\n");
+    `Design: ${STATE_SHORT[p.design]}`,
+    `Dev: ${STATE_SHORT[p.dev]}`,
+    ...(subTrackEntries.length > 0
+      ? ["  Dev sub-track:", ...subTrackEntries.map(e => `    ${e.team}: ${STATE_SHORT[e.state]}`)]
+      : []),
+  ].filter((s): s is string => Boolean(s)).join("\n");
 
-  // 표시 대상: 완료·대상아님 제외 — 순서 고정 (Design → SP → PP → CFE → 기타)
-  const visible = allEntries
-    .filter(e => e.state !== "완료" && e.state !== "대상아님");
+  // chip 대상: Design + Dev aggregate (완료·대상아님은 시각 노이즈 제거 — 상세 trackgrid에서 확인)
+  const chipEntries: { team: "Design" | "Dev"; state: TrackState }[] = [];
+  if (p.design !== "완료" && p.design !== "대상아님") {
+    chipEntries.push({ team: "Design", state: p.design });
+  }
+  if (p.dev !== "완료" && p.dev !== "대상아님") {
+    chipEntries.push({ team: "Dev", state: p.dev });
+  }
 
-  // 전부 완료·대상아님 + reviewNeeded 없음 → ✓ (muted — 완료 상태는 시각 노이즈 최소)
-  if (visible.length === 0 && !p.reviewNeeded) {
+  // 전부 완료·대상아님 + reviewNeeded 없음 → ✓ (muted)
+  if (chipEntries.length === 0 && !p.reviewNeeded) {
     return (
       <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] font-medium"
         title={tooltipText}
@@ -975,8 +986,7 @@ function PlanningCompactBadges({ planVal, maxVisible = 3 }: { planVal: unknown; 
 
   const items: React.ReactNode[] = [];
 
-  // reviewNeeded → ⚡ 최우선 badge (팀 prefix 없이)
-  const rnSlot = p.reviewNeeded ? 1 : 0;
+  // reviewNeeded → ⚡ 최우선 badge
   if (p.reviewNeeded) {
     items.push(
       <span key="__rn" className="inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[10px] font-bold shrink-0"
@@ -986,19 +996,21 @@ function PlanningCompactBadges({ planVal, maxVisible = 3 }: { planVal: unknown; 
     );
   }
 
-  // 팀 배지 — 남은 슬롯 만큼
-  const slots = maxVisible - rnSlot;
-  const toShow = visible.slice(0, slots);
-  const overflow = visible.length - toShow.length;
-
-  for (const entry of toShow) {
+  // Design / Dev aggregate chip
+  for (const entry of chipEntries) {
     const isReview = entry.state === "검토중";
-    const isWait   = entry.state === "대기중";
-    // 검토중 = amber (Design·Dev 구분 없이 통일 — color spec: amber=attention)
-    // 대기중 = neutral (amber 제거 — 시작 전 상태, 즉각 조치 불필요)
-    const color  = isReview ? "#fbbf24" : isWait ? "var(--text-muted)" : "var(--text-muted)";
-    const bg     = isReview ? "rgba(245,158,11,0.10)" : isWait ? "var(--bg-overlay)" : "var(--bg-overlay)";
-    const border = isReview ? "rgba(251,191,36,0.42)" : isWait ? "var(--border-2)"  : "var(--border-2)";
+    // 검토중 = amber (attention), 대기중 = neutral (시작 전, 즉각 조치 불필요)
+    const color  = isReview ? "#fbbf24" : "var(--text-muted)";
+    const bg     = isReview ? "rgba(245,158,11,0.10)" : "var(--bg-overlay)";
+    const border = isReview ? "rgba(251,191,36,0.42)" : "var(--border-2)";
+
+    // Dev chip의 +N hint — 같은 상태의 sub-track 개수 - 1 (>= 2일 때만 표기)
+    let countHint: number | null = null;
+    if (entry.team === "Dev" && subTrackEntries.length > 0) {
+      const matching = subTrackEntries.filter(e => e.state === entry.state).length;
+      if (matching > 1) countHint = matching - 1;
+    }
+
     items.push(
       <span key={entry.team}
         className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
@@ -1006,16 +1018,10 @@ function PlanningCompactBadges({ planVal, maxVisible = 3 }: { planVal: unknown; 
         <span style={{ color: "var(--text-subtle)", fontWeight: 500 }}>{entry.team}</span>
         <span style={{ opacity: 0.5 }}>·</span>
         <span>{entry.state}</span>
+        {countHint !== null && (
+          <span className="ml-0.5 text-[9px]" style={{ color: "var(--text-subtle)", opacity: 0.85 }}>+{countHint}</span>
+        )}
         {isReview && <span className="ml-0.5 w-1 h-1 rounded-full shrink-0 animate-pulse" style={{ background: "#f59e0b" }} />}
-      </span>
-    );
-  }
-
-  if (overflow > 0) {
-    items.push(
-      <span key="__ov" className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium shrink-0"
-        style={{ background: "var(--bg-overlay)", color: "var(--text-subtle)", border: "1px solid var(--border-2)" }}>
-        +{overflow}
       </span>
     );
   }
