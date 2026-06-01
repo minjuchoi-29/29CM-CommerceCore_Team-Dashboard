@@ -372,7 +372,60 @@ function calcWorkingDays(start: string, end: string): number {
   return count;
 }
 
-function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, ticketActive, onEditRow }: {
+// ─── Placeholder schedule helpers (module-level, GanttChart + PlaceholderSummary 공유) ───
+// 미확정 일정 분류·사유·severity 정책은 GanttChart 내부에 있던 로직을
+// 2026-06-02 module-level로 승격 — Focus Mode top-strip(PlaceholderSummary)이 같은 분류를
+// 사용하도록 단일 source of truth 유지. GanttChart placeholder grid와 drift 방지.
+
+function isPlaceholderSchedule(r: RoleSchedule): boolean {
+  const noDate = !r.start && !r.end;
+  const softStatus = r.status === "미정" || r.status === "확인필요";
+  return softStatus || noDate;
+}
+
+function placeholderScheduleReason(r: RoleSchedule): string {
+  if (r.status === "미정") {
+    if (!r.start && !r.end) return "기간/일정 산정 중";
+    return "기간 산정 중";
+  }
+  if (r.status === "확인필요") {
+    if (!r.start && !r.end) return "PM 확인 필요 — 일정 미입력";
+    return "PM 확인 필요 — 진행 현황 업데이트 대기";
+  }
+  if (!r.start && !r.end) {
+    const phase = r.phase ?? inferPhase(r.role);
+    if (phase === "Release" || phase === "Launch") return "론치 일정 미정 — 개발/QA 완료 후 확정";
+    return "날짜 미입력";
+  }
+  return "사유 미상";
+}
+
+function placeholderScheduleSeverity(reason: string): "red" | "amber" | "gray" {
+  // red: PM 즉시 액션 필요 (날짜 자체가 없음)
+  if (reason === "날짜 미입력") return "red";
+  if (reason === "PM 확인 필요 — 일정 미입력") return "red";
+  if (reason === "론치 일정 미정 — 개발/QA 완료 후 확정") return "red";
+  // amber: 정보는 있으나 확인 필요
+  if (reason === "PM 확인 필요 — 진행 현황 업데이트 대기") return "amber";
+  // gray: 진행성 — 즉시 액션 아님
+  if (reason === "기간/일정 산정 중") return "gray";
+  if (reason === "기간 산정 중") return "gray";
+  return "gray";
+}
+
+// Summary chip ↔ Gantt placeholder row 매칭용 stable key
+function placeholderScheduleRowKey(r: RoleSchedule): string {
+  return `${r.role}|${r.person ?? ""}|${r.start ?? ""}|${r.end ?? ""}|${r.status}`;
+}
+
+// severity별 색상 토큰 (chip + Gantt 강조 공통 사용)
+const PLACEHOLDER_SEVERITY_STYLE = {
+  red:   { dot: "#ef4444", color: "#f87171", bg: "rgba(239,68,68,0.10)",   border: "rgba(248,113,113,0.4)" },
+  amber: { dot: "#f59e0b", color: "#fbbf24", bg: "rgba(245,158,11,0.10)",  border: "rgba(251,191,36,0.4)" },
+  gray:  { dot: "#64748b", color: "#94a3b8", bg: "rgba(100,116,139,0.08)", border: "rgba(100,116,139,0.3)" },
+} as const;
+
+function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, ticketActive, onEditRow, highlightRowKey }: {
   roles?: RoleSchedule[];
   forceShowPastDone?: boolean;   // 외부 강제 노출: showCompleted=true와 동일 동작 (api 호환)
   extendedView?: boolean;        // 펼치기: 과거 6개월 + 미래 2개월
@@ -380,6 +433,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   ticketDone?: boolean;          // 완료 티켓: 완료 일정 토글 없이 항상 노출
   ticketActive?: boolean;        // 진행중·완료 티켓: Kick-Off 미입력 시 "확인필요", Release/Launch 미입력 시 "미정"
   onEditRow?: (r: RoleSchedule) => void;
+  highlightRowKey?: string | null; // PlaceholderSummary 클릭으로 강조될 placeholder row의 stable key
 }) {
   // 미확정 일정 섹션 펼치기 — 기본 접힘.
   const [showPlaceholders, setShowPlaceholders] = useState(false);
@@ -490,14 +544,19 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
     return sortedRoles;
   })();
 
-  // Placeholder 분리 — 미정 / 확인필요 / 날짜 없음 row.
-  const isPlaceholderRow = (r: RoleSchedule): boolean => {
-    const noDate = !r.start && !r.end;
-    const softStatus = r.status === "미정" || r.status === "확인필요";
-    return softStatus || noDate;
-  };
-  const confirmedRoles   = dedupedRoles.filter(r => !isPlaceholderRow(r));
-  const placeholderRoles = dedupedRoles.filter(isPlaceholderRow);
+  // Placeholder 분리 — module-level isPlaceholderSchedule 사용 (PlaceholderSummary와 공유)
+  const confirmedRoles   = dedupedRoles.filter(r => !isPlaceholderSchedule(r));
+  const placeholderRoles = dedupedRoles.filter(isPlaceholderSchedule);
+
+  // 외부에서 highlightRowKey가 들어오면 placeholder 섹션 자동 펼침
+  //   (Summary chip 클릭 → 해당 row 강조까지 한 동작으로 완결)
+  useEffect(() => {
+    if (highlightRowKey && !showPlaceholders) {
+      setShowPlaceholders(true);
+    }
+  // placeholderRoles.length는 derived이므로 의존성에서 제외; highlightRowKey 변경 시점만 trigger.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlightRowKey]);
 
   // Today 표시 정책 (2차 보정):
   //   strong = 활성 일정 존재 (진행중/예정/확인필요 등 비-완료 confirmed가 있음).
@@ -510,23 +569,9 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
     return "weak";
   })();
 
-  // 미확정 사유 자동 분류
-  const placeholderReason = (r: RoleSchedule): string => {
-    if (r.status === "미정") {
-      if (!r.start && !r.end) return "기간/일정 산정 중";
-      return "기간 산정 중";
-    }
-    if (r.status === "확인필요") {
-      if (!r.start && !r.end) return "PM 확인 필요 — 일정 미입력";
-      return "PM 확인 필요 — 진행 현황 업데이트 대기";
-    }
-    if (!r.start && !r.end) {
-      const phase = r.phase ?? inferPhase(r.role);
-      if (phase === "Release" || phase === "Launch") return "론치 일정 미정 — 개발/QA 완료 후 확정";
-      return "날짜 미입력";
-    }
-    return "사유 미상";
-  };
+  // 미확정 사유는 module-level placeholderScheduleReason 사용 (PlaceholderSummary와 공유).
+  // local alias 유지로 기존 callsite 변경 최소화.
+  const placeholderReason = placeholderScheduleReason;
 
   // 담당자 hover 강조 스타일 — 같은 person의 다른 row 강조용
   const personHighlight = (person: string) => {
@@ -905,10 +950,23 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                   ? (phase && MILESTONE_DOT_HEX[phase]) || "#94a3b8"
                   : "#94a3b8";
                 const reason = placeholderReason(r);
+                const rowKey = placeholderScheduleRowKey(r);
+                const isHighlighted = highlightRowKey === rowKey;
+                // 강조 시: severity 색의 옅은 배경 + 좌측 accent
+                const severity = placeholderScheduleSeverity(reason);
+                const sevDot = PLACEHOLDER_SEVERITY_STYLE[severity].dot;
+                const cellHighlightBg = isHighlighted ? `${sevDot}1f` : undefined;
+                const cellPadding = isHighlighted ? { paddingTop: "4px", paddingBottom: "4px" } : {};
+                // 첫 컬럼만 좌측 accent + scroll target
+                const firstCellAccent = isHighlighted ? { boxShadow: `inset 3px 0 0 ${sevDot}` } : {};
                 return (
                   <Fragment key={`ph-${r.role}-${r.person}-${i}`}>
-                    {/* Col 1: marker + phase */}
-                    <div className="flex items-center gap-1.5 py-0.5">
+                    {/* Col 1: marker + phase (scroll target) */}
+                    <div
+                      className="flex items-center gap-1.5 py-0.5 transition-colors"
+                      data-fm-row-key={rowKey}
+                      style={{ background: cellHighlightBg, ...cellPadding, ...firstCellAccent, paddingLeft: isHighlighted ? "6px" : undefined }}
+                    >
                       {isMilestone ? (
                         <span
                           className="inline-block shrink-0"
@@ -929,7 +987,10 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                       </span>
                     </div>
                     {/* Col 2: person · resource */}
-                    <span className="text-[11px] whitespace-nowrap py-0.5">
+                    <span
+                      className="text-[11px] whitespace-nowrap py-0.5 transition-colors"
+                      style={{ background: cellHighlightBg, ...cellPadding }}
+                    >
                       {r.person && r.person !== "-" ? (
                         <>
                           <span className="font-medium" style={{ color: "var(--text-secondary)" }}>{r.person}</span>
@@ -944,14 +1005,17 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                       )}
                     </span>
                     {/* Col 3: 기간 */}
-                    <span className="text-[11px] whitespace-nowrap py-0.5" style={{ color: "var(--text-subtle)" }}>
+                    <span
+                      className="text-[11px] whitespace-nowrap py-0.5 transition-colors"
+                      style={{ color: "var(--text-subtle)", background: cellHighlightBg, ...cellPadding }}
+                    >
                       {r.start && r.end ? `${r.start} ~ ${r.end}` : r.start || r.end || "—"}
                     </span>
                     {/* Col 4: status badge */}
                     <span
-                      className="text-[10px] px-1.5 py-0.5 rounded shrink-0"
+                      className="text-[10px] px-1.5 py-0.5 rounded shrink-0 transition-colors"
                       style={{
-                        background: "var(--bg-canvas)",
+                        background: isHighlighted ? cellHighlightBg : "var(--bg-canvas)",
                         color: r.status === "미정" ? "#f59e0b" : r.status === "확인필요" ? "#a78bfa" : "var(--text-muted)",
                         border: `1px solid ${r.status === "미정" ? "rgba(245,158,11,0.4)" : r.status === "확인필요" ? "rgba(167,139,250,0.4)" : "var(--border-2)"}`,
                       }}
@@ -959,7 +1023,11 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                       {r.status}
                     </span>
                     {/* Col 5: 사유 — 자동 분류 */}
-                    <span className="text-[10.5px] py-0.5 self-center" style={{ color: "var(--text-secondary)" }} title={reason}>
+                    <span
+                      className="text-[10.5px] py-0.5 self-center transition-colors"
+                      style={{ color: "var(--text-secondary)", background: cellHighlightBg, ...cellPadding, paddingRight: isHighlighted ? "6px" : undefined }}
+                      title={reason}
+                    >
                       {reason}
                     </span>
                   </Fragment>
@@ -974,6 +1042,78 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
           완료 row는 항상 인라인 시간순 노출 + row-level opacity 0.55로 톤다운.
           이전 PR에서 토글로 숨겼더니 진행중 ticket(TM-1241 등)이 "확정 일정 없음"으로
           보이는 issue 발생. 히스토리는 보여주되 시선은 뺏지 않는다. */}
+    </div>
+  );
+}
+
+/** Focus Mode 상단 strip — 미확정 일정을 Action Required 다음 위치로 승격.
+ *  목적: PM이 "지금 확정해야 할 일정"을 Gantt까지 스크롤 없이 즉시 파악.
+ *  chip 클릭 → 부모(Focus Mode)가 setHighlightedScheduleRow + scrollIntoView로 Gantt 위치 강조. */
+function PlaceholderSummary({ roles, onJump, highlightRowKey }: {
+  roles: RoleSchedule[];
+  onJump: (rowKey: string) => void;
+  highlightRowKey?: string | null;
+}) {
+  const placeholders = roles.filter(isPlaceholderSchedule);
+  if (placeholders.length === 0) return null;
+
+  return (
+    <div
+      className="shrink-0 flex items-start gap-2 px-4 py-2 flex-wrap"
+      style={{ borderBottom: "1px solid var(--border)", background: "rgba(251,191,36,0.04)" }}
+    >
+      <span
+        className="text-[11px] font-bold uppercase tracking-wide shrink-0 mr-0.5 self-center"
+        style={{ color: "#fbbf24" }}
+        title="이 티켓에서 PM이 즉시 확정해야 할 일정 항목"
+      >
+        ⚠ 미확정 일정 {placeholders.length}건
+      </span>
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {placeholders.map(r => {
+          const reason = placeholderScheduleReason(r);
+          const severity = placeholderScheduleSeverity(reason);
+          const phase = r.phase ?? inferPhase(r.role);
+          const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
+          const label = phase ? PHASE_LABEL[phase] : r.role;
+          const isMilestone = MILESTONE_ROLES.includes(r.role)
+            || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
+          const rowKey = placeholderScheduleRowKey(r);
+          const isActive = highlightRowKey === rowKey;
+          const s = PLACEHOLDER_SEVERITY_STYLE[severity];
+          return (
+            <button
+              key={rowKey}
+              onClick={() => onJump(rowKey)}
+              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium transition-all hover:opacity-85"
+              style={{
+                background: s.bg,
+                border: `1px solid ${s.border}`,
+                color: s.color,
+                boxShadow: isActive ? `0 0 0 2px ${s.dot}55, 0 0 10px ${s.dot}40` : undefined,
+              }}
+              title={`${label}${r.person && r.person !== "-" ? ` · ${r.person}` : ""}: ${reason}\n클릭 시 Gantt에서 해당 행을 강조 표시합니다`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.dot }} />
+              {isMilestone && (
+                <span
+                  className="inline-block shrink-0"
+                  style={{ width: 7, height: 7, background: s.color, transform: "rotate(45deg)", borderRadius: 1, opacity: 0.85 }}
+                  aria-label="milestone"
+                />
+              )}
+              <span className="font-semibold">{label}</span>
+              {r.person && r.person !== "-" && (
+                <span className="font-medium opacity-80">· {r.person}</span>
+              )}
+              {(!r.person || r.person === "-") && resourceTeam && resourceTeam !== label && (
+                <span className="font-medium opacity-80">· {resourceTeam}</span>
+              )}
+              <span className="opacity-65">— {reason}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1400,6 +1540,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [focusForKey,      setFocusForKey]      = useState<string | null>(null);
   const [focusContext,     setFocusContext]      = useState<string | null>(null);
   const [sectionHighlight, setSectionHighlight] = useState<string | null>(null);
+  // PlaceholderSummary → Gantt placeholder row 강조 연결 (3차 PR, 2026-06-02)
+  const [highlightedScheduleRow, setHighlightedScheduleRow] = useState<string | null>(null);
   const [activityLog, setActivityLog] = useState<ActivityEntry[]>([]);
   const [activityLoading, setActivityLoading] = useState(false);
   const planningMigratedRef         = useRef(false);
@@ -6276,7 +6418,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 style={{
                   background: "var(--bg-overlay)",
                   borderBottom: "1px solid var(--border)",
-                  zIndex: 10,
+                  // 3차 PR: 명시적 sticky로 outer-page scroll 엣지 케이스 보강.
+                  // 상위 panel(sticky top-0 h-screen flex flex-col) 안에서 title이 항상 panel 최상단.
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 11,
                 }}
               >
                 {/* 식별 정보 (2행) */}
@@ -6473,7 +6619,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               },
             ];
             return (
-              <div className="flex shrink-0 border-b" style={{ borderColor: "var(--border)", background: "var(--bg-canvas)" }}>
+              <div
+                className="flex shrink-0 border-b"
+                style={{
+                  borderColor: "var(--border)",
+                  background: "var(--bg-canvas)",
+                  // 3차 PR: 탭 nav도 sticky로 — title header 아래에 붙어서 항상 노출.
+                  // top 값은 title height(약 80px)에 근접하지만 정확히 측정 불가 → 0 + 상위 sticky에 의존.
+                  // shrink-0 + 상위 panel sticky로 자연스럽게 적층되며, 이 sticky는 outer-page scroll 보강.
+                  position: "sticky",
+                  top: 0,
+                  zIndex: 10,
+                }}
+              >
                 {TABS.map(tab => {
                   const active = detailTab === tab.id;
                   return (
@@ -6654,6 +6812,28 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     })}
                   </div>
                 )}
+
+                {/* ── 미확정 일정 Summary strip (3차 PR, 2026-06-02) ──
+                    Action Required 바로 아래로 승격해 PM이 "지금 확정할 일정"을
+                    Gantt 스크롤 없이 즉시 인지. chip 클릭 → 해당 Gantt placeholder row 강조. */}
+                <PlaceholderSummary
+                  roles={fmRoles}
+                  highlightRowKey={highlightedScheduleRow}
+                  onJump={(rowKey) => {
+                    setHighlightedScheduleRow(rowKey);
+                    // 1) Schedule 섹션을 화면에 띄움 → 2) tick 후 해당 row까지 추가 스크롤
+                    requestAnimationFrame(() => {
+                      const scheduleSection = focusRightColRef.current?.querySelector<HTMLElement>('[data-fm-section="schedule"]');
+                      scheduleSection?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      setTimeout(() => {
+                        const rowEl = focusRightColRef.current?.querySelector<HTMLElement>(`[data-fm-row-key="${rowKey}"]`);
+                        rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }, 280);
+                    });
+                    // auto-clear after 3.5s
+                    setTimeout(() => setHighlightedScheduleRow(null), 3500);
+                  }}
+                />
 
                 {/* ── 2-column body ── */}
                 <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -7025,6 +7205,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             ticketDone={["론치완료","완료","배포완료"].includes(selected.status)}
                             ticketActive={!["론치완료","완료","배포완료"].includes(selected.status)}
                             onEditRow={undefined}
+                            highlightRowKey={highlightedScheduleRow}
                           />
                         </div>
                       ) : (
