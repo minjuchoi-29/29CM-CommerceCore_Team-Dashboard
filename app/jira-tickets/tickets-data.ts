@@ -143,6 +143,7 @@ export const TICKET_KEYS: string[] = [
   "TM-2815",
   "TM-1285",
   "TM-1931",
+  "TM-1289",
 ];
 
 /**
