@@ -1776,8 +1776,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // API에서 받은 데이터를 상태 + localStorage에 저장 (사용자 추가 티켓 병합)
   function applyApiData(data: { tickets: Ticket[]; fetchedAt?: string }) {
     const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
-    // hiddenKeys 필터 적용 (KV에서만 로드된 상태 사용)
-    const hidden = hiddenKeys;
+    // hiddenKeys 필터 적용 — ref 사용 (stale closure 방지)
+    // loadTickets는 useCallback([], ...) 로 첫 렌더에 생성되므로
+    // 내부의 applyApiData도 첫 렌더 클로저 → hiddenKeys가 항상 new Set()으로 stale.
+    // hiddenKeysRef.current는 항상 최신값을 가리키므로 ref 사용.
+    const hidden = hiddenKeysRef.current;
 
     setTickets(prev => {
       const jiraKeys = new Set(data.tickets.map(t => t.key));
@@ -1881,15 +1884,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       // 화면 반영 + localStorage 갱신
       const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
-      const hiddenSync = hiddenKeys;
+      // ref 사용 — useCallback([], ...) stale closure 방지
+      const hiddenSync = hiddenKeysRef.current;
       setTickets((data.tickets as Ticket[]).filter(t => !hiddenSync.has(t.key)));
       setSyncedAt(at);
       // Transition snapshot 저장 (오늘 1회, 비동기)
       saveTransitionSnapshot(data.tickets as Ticket[], planning, hiddenSync);
       try {
+        // hiddenKeys 포함 저장 — 다음 캐시 hydration 시 정확한 필터링 보장
         localStorage.setItem(
           TICKET_CACHE_KEY,
-          JSON.stringify({ tickets: data.tickets, fetchedAt: at.toISOString() })
+          JSON.stringify({ tickets: data.tickets, fetchedAt: at.toISOString(), hiddenKeys: [...hiddenSync] })
         );
       } catch {}
 
@@ -2888,6 +2893,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const newHiddenKeys = new Set([...hiddenKeys, key]);
     hiddenKeysRef.current = newHiddenKeys;
     setHiddenKeys(newHiddenKeys);
+    // localStorage 캐시 hiddenKeys 즉시 동기화 (재로드 시 stale 플리커 방지)
+    try {
+      const raw = localStorage.getItem(TICKET_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        localStorage.setItem(TICKET_CACHE_KEY, JSON.stringify({ ...cached, hiddenKeys: [...newHiddenKeys] }));
+      }
+    } catch {}
 
     // cc-hidden-keys: KV 현재값 읽기 → key 추가 → 저장 (race-safe)
     fetch("/api/kv?keys=cc-hidden-keys,cc-hidden-meta")
@@ -2939,6 +2952,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     hiddenKeysRef.current = newHiddenKeys;
     setHiddenKeys(newHiddenKeys);
     setHiddenMeta(newHiddenMeta);
+    // localStorage 캐시 hiddenKeys 즉시 동기화 (재로드 시 stale 플리커 방지)
+    try {
+      const raw = localStorage.getItem(TICKET_CACHE_KEY);
+      if (raw) {
+        const cached = JSON.parse(raw);
+        localStorage.setItem(TICKET_CACHE_KEY, JSON.stringify({ ...cached, hiddenKeys: [...newHiddenKeys] }));
+      }
+    } catch {}
 
     const newHiddenArr = [...newHiddenKeys];
 
