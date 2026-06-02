@@ -129,25 +129,37 @@ export async function GET() {
     "customfield_14402", // Main Subject
   ].join(",");
 
-  // ── cc-filter-tickets + cc-jira-filters KV 로드 (실패해도 graceful fallback) ──
+  // ── KV 로드: cc-filter-tickets + cc-jira-filters + cc-custom-keys ──
   let filterTickets: FilterTicketsStore = {};
   let filtersStore: JiraFiltersStore = {};
+  let customKeysRaw: string[] = [];
   try {
-    const [ft, fs] = await Promise.all([
+    const [ft, fs, ck] = await Promise.all([
       redis.get<FilterTicketsStore>("cc-filter-tickets"),
       redis.get<JiraFiltersStore>("cc-jira-filters"),
+      redis.get<unknown>("cc-custom-keys"),
     ]);
     filterTickets = ft ?? {};
     filtersStore = fs ?? {};
+    // cc-custom-keys는 배열 또는 JSON 문자열로 저장될 수 있음
+    if (Array.isArray(ck)) customKeysRaw = ck as string[];
+    else if (typeof ck === "string") { try { customKeysRaw = JSON.parse(ck); } catch {} }
   } catch (e) {
-    console.error("[jira-tickets GET] KV 로드 실패 (filter-tickets), TICKET_KEYS만 사용:", e);
+    console.error("[jira-tickets GET] KV 로드 실패, TICKET_KEYS만 사용:", e);
   }
 
-  // TICKET_KEYS + 필터 전용 키 병합 (key 기준 dedupe)
-  const { allKeys, filterOnlyKeys } = mergeTicketKeyLists(TICKET_KEYS, filterTickets);
+  // manualKeys = TICKET_KEYS(seed) + cc-custom-keys(KV 수동 추가), key 기준 dedupe
+  // 정렬: TICKET_KEYS 순서 우선 → cc-custom-keys 추가분 후미
+  const manualKeySet = new Set<string>(TICKET_KEYS);
+  const additionalKeys = customKeysRaw.filter(k => !manualKeySet.has(k));
+  const manualKeys = [...TICKET_KEYS, ...additionalKeys];
+  // manualKeySet 업데이트 (cc-custom-keys 포함)
+  for (const k of additionalKeys) manualKeySet.add(k);
+
+  // TICKET_KEYS + cc-custom-keys + 필터 전용 키 병합 (key 기준 dedupe)
+  const { allKeys, filterOnlyKeys } = mergeTicketKeyLists(manualKeys, filterTickets);
   // 어떤 티켓이 어떤 필터에 속하는지 맵 빌드
   const sourceFiltersMap = buildSourceFiltersMap(filterTickets, filtersStore);
-  const manualKeySet = new Set<string>(TICKET_KEYS);
 
   // JIRA key in (...) 제한 회피를 위해 50개씩 청크로 나눠 병렬 조회
   const CHUNK_SIZE = 50;
@@ -174,8 +186,8 @@ export async function GET() {
   // ── 정렬: TICKET_KEYS 순서 우선 → 필터 전용 키 후미 ──
   const byKey = Object.fromEntries(tickets.map((t) => [t.key, t]));
 
-  // 1) 수동 등록 티켓 (TICKET_KEYS 순서 유지)
-  const manualSorted = TICKET_KEYS.map((k) => {
+  // 1) 수동 등록 티켓 (TICKET_KEYS 순서 → cc-custom-keys 추가분 순서 유지)
+  const manualSorted = manualKeys.map((k) => {
     if (byKey[k]) return byKey[k];
     // JIRA에서 못 가져온 키: TICKET_OVERRIDES fallback
     const ov = TICKET_OVERRIDES[k];
