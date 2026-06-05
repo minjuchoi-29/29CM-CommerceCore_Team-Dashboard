@@ -241,6 +241,15 @@ export type Ticket = {
   sourceFilters?: string[];
   /** TICKET_KEYS에 직접 등록된 수동 관리 티켓이면 true */
   isManual?: boolean;
+  /**
+   * 요청 메타 — ETR 등 외부 요청 티켓의 보조 정보.
+   * 현재는 reporter 만, 추후 department 등 확장 예정.
+   * 표시는 ETR 검토 페이지 / Simple Detail 에서만 사용.
+   */
+  requestMeta?: {
+    reporter?: string;
+    department?: string;
+  };
 };
 
 // 오늘 자정 기준 ms
@@ -2601,6 +2610,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setAddKeyError("올바른 형식이 아닙니다. 예: TM-1234");
       return;
     }
+    // Phase 2: ETR 은 /etr-review 페이지에서만 추가 가능
+    if (trimmed.startsWith("ETR-")) {
+      setAddKeyError("ETR 요청은 [ETR 검토] 메뉴에서 추가해주세요.");
+      return;
+    }
     if (tickets.some(t => t.key === trimmed)) {
       setAddKeyError(`${trimmed}은(는) 이미 등록되어 있습니다.`);
       setAddKeyInput("");
@@ -2662,8 +2676,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         setAddKeyInput("");
         // 스마트 탭 이동: 티켓 상태 기반으로 적절한 탭 자동 이동
+        // (Phase 2 이후 ETR 은 여기 도달 X — addTicket 시작부에서 차단됨)
         const smartTab = (() => {
-          if (trimmed.startsWith("ETR-")) return "요청 검토 중";
           if (["론치완료", "완료", "배포완료"].includes(newTicket.status)) return "완료";
           if (["개발중", "In Progress", "QA중"].includes(newTicket.status)) return "진행 중";
           return "플래닝 대기·검토";
@@ -2839,7 +2853,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // 스마트 탭 이동: 첫 번째 티켓 기준으로 적절한 탭 선택
       const firstTicket = fetched[0];
       const bulkSmartTab = (() => {
-        if (firstTicket.key.startsWith("ETR-")) return "요청 검토 중";
+        // ETR 은 addTicket 시작부에서 차단됨 — 여기 도달 X (방어)
         if (["론치완료", "완료", "배포완료"].includes(firstTicket.status)) return "완료";
         if (["개발중", "In Progress", "QA중"].includes(firstTicket.status)) return "진행 중";
         return "플래닝 대기·검토";
@@ -3122,7 +3136,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
     // ── 1. lifecycle 탭 결정 ─────────────────────────────────────────────────
     // priority: ?ptab= query > ticket.status 기반 자동 계산
-    const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "요청 검토 중", "완료"];
+    // Phase 2: "요청 검토 중" 탭은 /etr-review 페이지로 이관됨
+    const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
 
     function calcPlanningTab(status: string): string {
       const DONE_T     = ["론치완료", "완료", "배포완료", "개발완료"];
@@ -3130,10 +3145,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         "개발중", "QA", "QA중", "진행중", "In Progress", "In Review",
         "디자인중", "개발 진행중", "검수중", "기획중", "기획완료", "디자인완료",
       ];
-      const ETR_T      = ["요청 검토 중", "ETR 검토"];
       const PLANNING_T = ["준비중", "대기중", "SUGGESTED", "Backlog", "플래닝 대기"];
       if (DONE_T.includes(status))     return "완료";
-      if (ETR_T.includes(status))      return "요청 검토 중";
       if (ACTIVE_T.includes(status))   return "진행 중";
       if (PLANNING_T.includes(status)) return "플래닝 대기·검토";
       return "전체";
@@ -3748,12 +3761,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, []);
 
   const planningCounts = useMemo(() => {
-    // "전체"는 ETR 제외 (preFiltered와 동일 기준, 탭 카운트 = 실제 표시 행 수 일치)
+    // Phase 2: ETR 은 /etr-review 페이지로 이관됨 — 여기서는 카운트도 제외
     const nonEtrCount = dedupedTickets.filter(t => !t.key.startsWith("ETR-")).length;
-    const counts: Record<string, number> = { "전체": nonEtrCount, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0, "요청 검토 중": 0 };
+    const counts: Record<string, number> = { "전체": nonEtrCount, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0 };
     for (const t of dedupedTickets) {
-      // ETR 티켓은 "요청 검토 중"에만 집계
-      if (t.key.startsWith("ETR-")) { counts["요청 검토 중"]++; continue; }
+      if (t.key.startsWith("ETR-")) continue;
       const p = getPlanningVal(planning[t.key]);
       const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
       const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
@@ -3810,21 +3822,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           (wantQ1Q2 && isQ1Q2);
         if (!matches) return false;
       }
-      // ETR 티켓은 "요청 검토 중" 탭 전용 — 다른 탭(전체 포함)에는 미노출
-      const isEtr = t.key.startsWith("ETR-");
-      if (planningTab === "요청 검토 중") {
-        if (!isEtr) return false;
-      } else {
-        if (isEtr) return false; // ETR은 전체 포함 모든 탭에서 제외
-        if (planningTab !== "전체") {
-          const p = getPlanningVal(planning[t.key]);
-          const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
-          const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
-          const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
-          if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone)) return false;
-          if (planningTab === "플래닝 대기·검토" && (bothDone || isJiraActive)) return false;
-          if (planningTab === "완료" && !isTicketDone) return false;
-        }
+      // Phase 2: ETR 은 /etr-review 페이지로 이관됨 — 전체 과제 현황 어떤 탭에도 미노출
+      if (t.key.startsWith("ETR-")) return false;
+      if (planningTab !== "전체") {
+        const p = getPlanningVal(planning[t.key]);
+        const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
+        const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
+        const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
+        if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone)) return false;
+        if (planningTab === "플래닝 대기·검토" && (bothDone || isJiraActive)) return false;
+        if (planningTab === "완료" && !isTicketDone) return false;
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
@@ -5388,7 +5395,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             { key: "전체",           label: "전체",           desc: "모든 과제 (ETR 제외)" },
             { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중" },
             { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중" },
-            { key: "요청 검토 중",   label: "요청 검토 중",   desc: "ETR 티켓 — 검토 후 TM 전환" },
             { key: "완료",           label: "완료",           desc: "론치·배포 완료" },
           ] as const).map(({ key, label, desc }) => {
             const active = planningTab === key;
@@ -5403,21 +5409,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     ? key === "전체" ? "var(--border)"
                     : key === "진행 중" ? "rgba(99,102,241,0.25)"
                     : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.2)"
-                    : key === "완료" ? "rgba(16,185,129,0.2)"
-                    : "rgba(6,182,212,0.15)"   /* 요청 검토 중 — cyan */
+                    : "rgba(16,185,129,0.2)" /* 완료 */
                     : "var(--bg-overlay)",
                   border: `1px solid ${active
                     ? key === "전체" ? "var(--border-2)"
                     : key === "진행 중" ? "rgba(99,102,241,0.5)"
                     : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.4)"
-                    : key === "완료" ? "rgba(16,185,129,0.4)"
-                    : "rgba(6,182,212,0.45)"
+                    : "rgba(16,185,129,0.4)"
                     : "var(--border)"}`,
                   color: active
                     ? key === "진행 중" ? "#818cf8"
                     : key === "플래닝 대기·검토" ? "#fbbf24"
                     : key === "완료" ? "#34d399"
-                    : key === "요청 검토 중" ? "#22d3ee"
                     : "var(--text-primary)"
                     : "var(--text-muted)",
                 }}
@@ -5982,13 +5985,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
           </div>
 
-          {/* 티켓 추가 그룹 */}
+          {/* 티켓 추가 그룹 — Phase 2: 실행 과제 전용. ETR 은 /etr-review 페이지에서 추가 */}
           <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>추가</span>
+            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>+ 과제 추가</span>
             <div className="flex items-center gap-1.5">
             <input
               type="text"
-              placeholder="예: TM-1234, TM-5678"
+              placeholder="TM-1234, CMALL-5678 등 실행 과제 티켓"
               value={addKeyInput}
               onChange={e => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
               onKeyDown={e => e.key === "Enter" && addTickets(addKeyInput)}
@@ -6018,8 +6021,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const dupMatch = addKeyError.match(/^([A-Z][A-Z0-9]*-\d+)은\(는\) 이미 등록/);
               const dupKey   = dupMatch ? dupMatch[1] : null;
               const scrollTo = (key: string) => {
-                // ETR 티켓이면 해당 탭으로, 나머지는 전체 탭으로 전환 후 스크롤
-                setPlanningTab(key.startsWith("ETR-") ? "요청 검토 중" : "전체");
+                // Phase 2: ETR 은 별도 페이지(/etr-review) — duplicate scroll redirect
+                if (key.startsWith("ETR-")) {
+                  window.location.href = "/etr-review";
+                  return;
+                }
+                setPlanningTab("전체");
                 setStatusTab("전체");
                 setReviewFilter(false);
                 setTimeout(() => {

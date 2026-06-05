@@ -82,6 +82,9 @@ async function fetchChunk(
         summary: f.summary,
         status: f.status.name,
         assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
+        requestMeta: {
+          reporter: (f.reporter?.displayName ?? "").split("/")[0].trim() || undefined,
+        },
         eta: f.duedate ?? "-",
         type: f.issuetype.name,
         project: f.project.key,
@@ -119,7 +122,7 @@ export async function GET() {
   const headers = { Authorization: `Basic ${auth}`, Accept: "application/json" };
 
   const FIELDS = [
-    "summary", "status", "assignee", "issuetype", "project", "duedate",
+    "summary", "status", "assignee", "reporter", "issuetype", "project", "duedate",
     "priority", "parent",
     "customfield_10015", // Start date
     "customfield_10036", // Story Points
