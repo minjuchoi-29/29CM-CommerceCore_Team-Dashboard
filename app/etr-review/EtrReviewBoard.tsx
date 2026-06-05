@@ -66,6 +66,17 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [search, setSearch]         = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
+  // 정렬
+  type SortCol = "status" | "assignee" | "reporter" | "eta" | "priority" | "source" | "linkedWork" | "docs";
+  const [sort, setSort] = useState<{ col: SortCol; dir: "asc" | "desc" } | null>(null);
+  function toggleSort(col: SortCol) {
+    setSort(prev => {
+      if (prev?.col !== col) return { col, dir: "asc" };
+      if (prev.dir === "asc") return { col, dir: "desc" };
+      return null; // 3-state: asc → desc → off
+    });
+  }
+
   // 추가 UI
   const [addInput, setAddInput]   = useState("");
   const [adding, setAdding]       = useState(false);
@@ -81,18 +92,19 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     let cancelled = false;
     async function load() {
       try {
-        const [ticketsRes, etrRes, memosRes, hiddenRes] = await Promise.all([
+        const [ticketsRes, kvRes] = await Promise.all([
           fetch("/api/jira-tickets").then(r => r.ok ? r.json() : Promise.reject(new Error(`tickets ${r.status}`))),
-          fetch("/api/kv?key=cc-etr").then(r => r.ok ? r.json() : { value: {} }),
-          fetch("/api/kv?key=cc-memos-v2").then(r => r.ok ? r.json() : { value: {} }),
-          fetch("/api/kv?key=cc-hidden-keys").then(r => r.ok ? r.json() : { value: [] }),
+          // /api/kv 는 keys= (복수) 받고 { "cc-etr": {...}, "cc-memos-v2": {...}, ... } 형태로 반환
+          fetch("/api/kv?keys=cc-etr,cc-memos-v2,cc-hidden-keys").then(r => r.ok ? r.json() as Promise<Record<string, unknown>> : ({} as Record<string, unknown>)),
         ]);
         if (cancelled) return;
         setTickets(Array.isArray(ticketsRes?.tickets) ? ticketsRes.tickets : []);
-        setEtrMap(typeof etrRes?.value === "object" && etrRes.value ? etrRes.value : {});
-        setMemos(typeof memosRes?.value === "object" && memosRes.value ? memosRes.value : {});
-        const h = hiddenRes?.value;
-        setHiddenKeys(new Set(Array.isArray(h) ? h : []));
+        const etr = kvRes?.["cc-etr"];
+        setEtrMap(etr && typeof etr === "object" && !Array.isArray(etr) ? (etr as Record<string, EtrInfoEntry>) : {});
+        const m = kvRes?.["cc-memos-v2"];
+        setMemos(m && typeof m === "object" && !Array.isArray(m) ? (m as Record<string, Memo>) : {});
+        const h = kvRes?.["cc-hidden-keys"];
+        setHiddenKeys(new Set(Array.isArray(h) ? (h as string[]) : []));
         setLoading(false);
       } catch (e) {
         if (cancelled) return;
@@ -142,10 +154,10 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     return c;
   }, [allEtrTickets, etrReverseMap]);
 
-  // 필터 적용
+  // 필터 + 정렬 적용
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return allEtrTickets.filter(t => {
+    const out = allEtrTickets.filter(t => {
       const lwSum = deriveLinkedWorkSummary(etrReverseMap.get(t.key) ?? []);
       const noLW = lwSum.count === 0;
       let pass = true;
@@ -161,7 +173,26 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
       if (q && !t.summary.toLowerCase().includes(q) && !t.key.toLowerCase().includes(q)) return false;
       return true;
     });
-  }, [allEtrTickets, filter, search, etrReverseMap]);
+
+    if (!sort) return out;
+    const cmp = (a: Ticket, b: Ticket): number => {
+      const empty = "￿"; // 빈 값은 항상 후순위
+      switch (sort.col) {
+        case "status":     return (a.status || empty).localeCompare(b.status || empty);
+        case "assignee":   return (a.assignee || empty).localeCompare(b.assignee || empty);
+        case "reporter":   return (a.requestMeta?.reporter || empty).localeCompare(b.requestMeta?.reporter || empty);
+        case "eta":        return ((a.eta && a.eta !== "-" ? a.eta : empty)).localeCompare(b.eta && b.eta !== "-" ? b.eta : empty);
+        case "priority":   return (a.requestPriority || empty).localeCompare(b.requestPriority || empty);
+        case "source":     return deriveSource(a).localeCompare(deriveSource(b));
+        case "linkedWork": return (etrReverseMap.get(a.key)?.length ?? 0) - (etrReverseMap.get(b.key)?.length ?? 0);
+        case "docs":       return Number(hasDocs(a.key, etrReverseMap, etrMap, ticketByKey)) - Number(hasDocs(b.key, etrReverseMap, etrMap, ticketByKey));
+        default:           return 0;
+      }
+    };
+    const sorted = [...out].sort(cmp);
+    if (sort.dir === "desc") sorted.reverse();
+    return sorted;
+  }, [allEtrTickets, filter, search, etrReverseMap, sort, etrMap, ticketByKey]);
 
   const selected = selectedKey ? ticketByKey.get(selectedKey) ?? null : null;
 
@@ -274,11 +305,29 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     return <div className="flex items-center justify-center min-h-screen text-sm text-red-500">에러: {error}</div>;
   }
 
+  // 정렬 가능 헤더 cell — click 시 toggleSort
+  function SortHead({ col, label, className }: { col: SortCol; label: string; className?: string }) {
+    const active = sort?.col === col;
+    const arrow = !active ? "" : sort?.dir === "asc" ? " ▲" : " ▼";
+    return (
+      <button
+        type="button"
+        onClick={() => toggleSort(col)}
+        className={`flex items-center justify-center gap-1 hover:text-indigo-300 transition-colors ${className ?? ""}`}
+        style={{ color: active ? "#a5b4fc" : undefined, fontWeight: active ? 600 : undefined }}
+        title={`정렬: ${label}`}
+      >
+        {label}{arrow}
+      </button>
+    );
+  }
+
   return (
-    <div className="flex min-h-screen" style={{ background: "var(--bg-canvas)" }}>
-      <div className={`flex-1 min-w-0 ${selected ? "max-w-[60%]" : ""}`}>
-        {/* ── Header ── */}
-        <header className="px-6 py-5" style={{ borderBottom: "1px solid var(--border)" }}>
+    <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg-canvas)" }}>
+      {/* ── 좌측: list column (독립 스크롤) ── */}
+      <div className={`flex flex-col min-w-0 ${selected ? "flex-1" : "flex-1"}`}>
+        {/* ── Header (sticky) ── */}
+        <header className="shrink-0 px-6 py-4" style={{ borderBottom: "1px solid var(--border)" }}>
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
               <h1 className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>ETR 검토</h1>
@@ -317,8 +366,8 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
           )}
         </header>
 
-        {/* ── Filter Tabs ── */}
-        <nav className="px-6 py-3 flex items-center gap-1.5 flex-wrap" style={{ borderBottom: "1px solid var(--border)" }}>
+        {/* ── Filter Tabs (sticky) ── */}
+        <nav className="shrink-0 px-6 py-3 flex items-center gap-1.5 flex-wrap" style={{ borderBottom: "1px solid var(--border)" }}>
           {(["needsAction", "all", "noLinkedWork", "hasLinkedWork", "reviewed", "closed"] as EtrReviewFilterKey[]).map(k => {
             const active = filter === k;
             return (
@@ -349,28 +398,28 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
           </div>
         </nav>
 
-        {/* ── List ── */}
-        <main className="px-6 py-4">
+        {/* ── List (독립 스크롤) ── */}
+        <main className="flex-1 overflow-y-auto px-6 py-4">
           {filtered.length === 0 ? (
             <div className="py-16 text-center text-sm" style={{ color: "var(--text-subtle)" }}>
               {filter === "needsAction" ? "처리 필요한 ETR 이 없습니다 — 모두 검토되었거나 실행 티켓이 연결됨." : "결과가 없습니다."}
             </div>
           ) : (
             <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-              {/* Header row */}
-              <div className="flex items-center px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider"
+              {/* Header row — sortable */}
+              <div className="flex items-center px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider sticky top-0 z-10"
                 style={{ background: "var(--bg-item)", color: "var(--text-subtle)", borderBottom: "1px solid var(--border)" }}>
                 <span className="w-6 shrink-0" />
                 <span className="w-28 shrink-0">Key</span>
                 <span className="flex-1 min-w-0 pr-3">Summary</span>
-                <span className="w-32 shrink-0 text-center">Status</span>
-                <span className="w-24 shrink-0 text-center">담당자</span>
-                <span className="w-24 shrink-0 text-center">보고자</span>
-                <span className="w-24 shrink-0 text-center">ETA</span>
-                <span className="w-16 shrink-0 text-center">우선순위</span>
-                <span className="w-24 shrink-0 text-center">Linked Work</span>
-                <span className="w-14 shrink-0 text-center">Docs</span>
-                <span className="w-28 shrink-0 text-center">Source</span>
+                <SortHead col="status"     label="Status"      className="w-32 shrink-0" />
+                <SortHead col="assignee"   label="담당자"       className="w-24 shrink-0" />
+                <SortHead col="reporter"   label="보고자"       className="w-24 shrink-0" />
+                <SortHead col="eta"        label="ETA"          className="w-24 shrink-0" />
+                <SortHead col="priority"   label="우선순위"      className="w-16 shrink-0" />
+                <SortHead col="linkedWork" label="Linked Work"  className="w-24 shrink-0" />
+                <SortHead col="docs"       label="Docs"         className="w-14 shrink-0" />
+                <SortHead col="source"     label="Source"       className="w-28 shrink-0" />
                 <span className="w-8 shrink-0" />
               </div>
 
@@ -405,7 +454,11 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
                       onClick={e => e.stopPropagation()}
                       className="w-28 shrink-0 font-mono text-xs font-semibold text-blue-500 hover:underline truncate"
                     >{t.key}</a>
-                    <span className="flex-1 min-w-0 pr-3 truncate font-medium" style={{ color: "var(--text-primary)" }}>{t.summary}</span>
+                    <span
+                      className="flex-1 min-w-0 pr-3 font-medium leading-snug"
+                      style={{ color: "var(--text-primary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+                      title={t.summary}
+                    >{t.summary}</span>
                     <span className="w-32 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${chip(STATUS_PILL[t.status])}`}>
                         {t.status}
@@ -435,7 +488,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
                       {docsExist ? "✓" : "—"}
                     </span>
                     <span className="w-28 shrink-0 flex justify-center">
-                      <SourceChip source={src} />
+                      <SourceChip source={src} isManual={t.isManual} sourceFilters={t.sourceFilters} />
                     </span>
                     <span className="w-8 shrink-0" />
                   </div>
@@ -446,10 +499,10 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
         </main>
       </div>
 
-      {/* ── Simple Detail Panel ── */}
+      {/* ── Simple Detail Panel (독립 스크롤) ── */}
       {selected && (
         <aside
-          className="shrink-0 overflow-y-auto"
+          className="shrink-0 h-full overflow-y-auto"
           style={{ width: "40%", maxWidth: 600, borderLeft: "1px solid var(--border)", background: "var(--bg-canvas)" }}
         >
           <SimpleDetail
@@ -476,15 +529,20 @@ function getMemoText(m: Memo | undefined): string | null {
   return m.text || null;
 }
 
-function SourceChip({ source }: { source: EtrSource }) {
+function SourceChip({ source, isManual, sourceFilters }: { source: EtrSource; isManual?: boolean; sourceFilters?: string[] }) {
   const style: Record<EtrSource, { bg: string; color: string; border: string }> = {
     filter:          { bg: "rgba(59,130,246,0.10)",  color: "#60a5fa", border: "rgba(59,130,246,0.3)" },
     manual:          { bg: "rgba(168,85,247,0.10)",  color: "#a78bfa", border: "rgba(168,85,247,0.3)" },
     "filter+manual": { bg: "rgba(16,185,129,0.10)",  color: "#34d399", border: "rgba(16,185,129,0.3)" },
   };
   const s = style[source];
+  // 검증용 hover title — 실제 isManual / sourceFilters 값 노출
+  const title = [
+    `isManual: ${isManual === true ? "true" : isManual === false ? "false" : "—"}`,
+    `sourceFilters: ${(sourceFilters?.length ?? 0) > 0 ? sourceFilters!.join(", ") : "(none)"}`,
+  ].join("\n");
   return (
-    <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap"
+    <span title={title} className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap cursor-help"
       style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}` }}>
       {SOURCE_LABEL[source]}
     </span>
@@ -525,7 +583,8 @@ function SimpleDetail({
       {/* Header */}
       <div className="flex items-start justify-between gap-3 mb-4">
         <div className="min-w-0">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-1.5 mb-1">
+            <TicketCopyButton ticketKey={ticket.key} summary={ticket.summary} size="xs" />
             <a
               href={`${JIRA_BASE}${ticket.key}`}
               target="_blank"
@@ -535,7 +594,7 @@ function SimpleDetail({
             <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${chip(STATUS_PILL[ticket.status])}`}>
               {ticket.status}
             </span>
-            <SourceChip source={src} />
+            <SourceChip source={src} isManual={ticket.isManual} sourceFilters={ticket.sourceFilters} />
           </div>
           <h2 className="text-base font-semibold leading-snug" style={{ color: "var(--text-primary)" }}>{ticket.summary}</h2>
         </div>
