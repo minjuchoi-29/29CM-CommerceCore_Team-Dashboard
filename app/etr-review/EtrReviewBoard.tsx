@@ -67,7 +67,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
   // 정렬
-  type SortCol = "status" | "assignee" | "reporter" | "eta" | "priority" | "source" | "linkedWork" | "docs";
+  type SortCol = "key" | "summary" | "status" | "assignee" | "reporter" | "eta" | "priority" | "source" | "linkedWork" | "docs";
   const [sort, setSort] = useState<{ col: SortCol; dir: "asc" | "desc" } | null>(null);
   function toggleSort(col: SortCol) {
     setSort(prev => {
@@ -178,6 +178,22 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     const cmp = (a: Ticket, b: Ticket): number => {
       const empty = "￿"; // 빈 값은 항상 후순위
       switch (sort.col) {
+        case "key": {
+          // ETR-3427 → 3427 (numeric part 기준)
+          const an = parseInt(a.key.split("-")[1] ?? "0", 10);
+          const bn = parseInt(b.key.split("-")[1] ?? "0", 10);
+          return an - bn;
+        }
+        case "summary": {
+          // 가나다/알파벳 정렬. 빈 summary 는 asc/desc 모두 항상 후순위.
+          // dir 을 보정해 sort 후 reverse() 가 적용돼도 empty 가 끝에 남도록 함.
+          const av = a.summary?.trim();
+          const bv = b.summary?.trim();
+          if (!av && !bv) return 0;
+          if (!av) return sort.dir === "desc" ? -1 : 1;
+          if (!bv) return sort.dir === "desc" ? 1 : -1;
+          return av.localeCompare(bv, "ko");
+        }
         case "status":     return (a.status || empty).localeCompare(b.status || empty);
         case "assignee":   return (a.assignee || empty).localeCompare(b.assignee || empty);
         case "reporter":   return (a.requestMeta?.reporter || empty).localeCompare(b.requestMeta?.reporter || empty);
@@ -305,15 +321,16 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     return <div className="flex items-center justify-center min-h-screen text-sm text-red-500">에러: {error}</div>;
   }
 
-  // 정렬 가능 헤더 cell — click 시 toggleSort
-  function SortHead({ col, label, className }: { col: SortCol; label: string; className?: string }) {
+  // 정렬 가능 헤더 cell — click 시 toggleSort. align="left|center" 로 텍스트 정렬 보정.
+  function SortHead({ col, label, className, align = "center" }: { col: SortCol; label: string; className?: string; align?: "left" | "center" }) {
     const active = sort?.col === col;
     const arrow = !active ? "" : sort?.dir === "asc" ? " ▲" : " ▼";
+    const justify = align === "left" ? "justify-start" : "justify-center";
     return (
       <button
         type="button"
         onClick={() => toggleSort(col)}
-        className={`flex items-center justify-center gap-1 hover:text-indigo-300 transition-colors ${className ?? ""}`}
+        className={`flex items-center ${justify} gap-1 hover:text-indigo-300 transition-colors text-left ${className ?? ""}`}
         style={{ color: active ? "#a5b4fc" : undefined, fontWeight: active ? 600 : undefined }}
         title={`정렬: ${label}`}
       >
@@ -410,8 +427,8 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
               <div className="flex items-center px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider sticky top-0 z-10"
                 style={{ background: "var(--bg-item)", color: "var(--text-subtle)", borderBottom: "1px solid var(--border)" }}>
                 <span className="w-6 shrink-0" />
-                <span className="w-28 shrink-0">Key</span>
-                <span className="flex-1 min-w-0 pr-3">Summary</span>
+                <SortHead col="key"     label="Key"     className="w-28 shrink-0"        align="left" />
+                <SortHead col="summary" label="Summary" className="flex-1 min-w-0 pr-3" align="left" />
                 <SortHead col="status"     label="Status"      className="w-32 shrink-0" />
                 <SortHead col="assignee"   label="담당자"       className="w-24 shrink-0" />
                 <SortHead col="reporter"   label="보고자"       className="w-24 shrink-0" />
