@@ -18,6 +18,13 @@ import {
   summarizeTransitions,
 } from "@/lib/transitions";
 import type { WeeklyNote, UpdateCandidate, ScheduleSource } from "@/lib/weekly-types";
+import {
+  buildEtrReverseMap,
+  collectLinkedDocs,
+  DOC_TYPE_META,
+  type LinkedWork,
+  type LinkedDoc,
+} from "@/lib/etr-links";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -2386,6 +2393,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       return true;
     });
   }, [tickets]);
+
+  // Phase 1: ETR Linked Work / Linked Docs
+  const ticketByKey = useMemo(() => {
+    const m = new Map<string, Ticket>();
+    for (const t of dedupedTickets) m.set(t.key, t);
+    return m;
+  }, [dedupedTickets]);
+
+  const etrReverseMap = useMemo(
+    () => buildEtrReverseMap(etrMap, ticketByKey),
+    [etrMap, ticketByKey],
+  );
 
   // popstate: 뒤로가기/앞으로가기 시 상태 복원 (dedupedTickets 선언 후 배치)
   useEffect(() => {
@@ -5179,6 +5198,117 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 transition: "box-shadow 0.4s ease, border-color 0.4s ease",
               }}
             >
+              {selected.key.startsWith("ETR-") ? (() => {
+                /* ═══ Phase 1: ETR Linked Work + Linked Docs ═══
+                   Origin(ETR header status)는 절대 덮어쓰지 않음.
+                   Execution Status(QA중 등)는 Linked Work item 내부 칩으로만 노출. */
+                const linkedWork: LinkedWork[] = etrReverseMap.get(selected.key) ?? [];
+                const linkedDocs: LinkedDoc[] = collectLinkedDocs(selected.key, etrReverseMap, etrMap, ticketByKey);
+                return (<>
+                  {/* Linked Work 섹션 헤더 */}
+                  <div className="flex items-center gap-1.5 mb-2.5">
+                    <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>Linked Work</p>
+                    <Tooltip
+                      content={"이 ETR을 참조해 실행 중인 티켓입니다.\nExecution Status는 보조 정보로만 표시되며,\nETR의 Origin 상태를 대체하지 않습니다."}
+                      side="bottom"
+                      maxWidth={240}
+                    >
+                      <span className="inline-flex items-center justify-center w-3.5 h-3.5 rounded-full text-[9px] font-bold cursor-default"
+                        style={{ background: "var(--bg-item)", color: "var(--text-subtle)", border: "1px solid var(--border-2)" }}>
+                        ?
+                      </span>
+                    </Tooltip>
+                    {linkedWork.length > 0 && (
+                      <span className="ml-auto text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>{linkedWork.length}건</span>
+                    )}
+                  </div>
+
+                  {/* Linked Work 본문 */}
+                  {linkedWork.length === 0 ? (
+                    <p className="text-[12px] mb-3" style={{ color: "var(--text-subtle)" }}>연결된 실행 티켓 없음</p>
+                  ) : (
+                    <div className="space-y-1.5 mb-3">
+                      {linkedWork.map(lw => (
+                        <div key={lw.tmKey} className="rounded-lg px-3 py-2.5" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
+                          {lw.summary && (
+                            <p className="text-[12px] font-medium mb-1.5 leading-snug" style={{ color: "var(--text-primary)" }}>
+                              {lw.summary}
+                            </p>
+                          )}
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <a
+                              href={`${JIRA_BASE}${lw.tmKey}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="font-mono text-[12px] hover:underline shrink-0"
+                              style={{ color: "#60a5fa" }}
+                            >{lw.tmKey}</a>
+                            {lw.level && (
+                              <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${TYPE_COLOR[lw.level] ?? "bg-gray-100 text-gray-500"}`}>
+                                {lw.level}
+                              </span>
+                            )}
+                            {lw.status && (
+                              <Tooltip content={"Execution Status (보조)\nETR 상태를 대체하지 않습니다."} side="top" maxWidth={200}>
+                                <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${STATUS_COLOR[lw.status] ?? "bg-gray-100 text-gray-500"}`}>
+                                  {lw.status}
+                                </span>
+                              </Tooltip>
+                            )}
+                            {lw.assignee && (
+                              <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>담당 {lw.assignee}</span>
+                            )}
+                            <span className="ml-auto rounded px-1.5 py-0.5 text-[10px] font-medium shrink-0"
+                              style={{ background: "rgba(16,185,129,0.12)", color: "#34d399", border: "1px solid rgba(16,185,129,0.3)" }}>
+                              High
+                            </span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Linked Docs 섹션 */}
+                  <div className="mt-3 pt-3" style={{ borderTop: "1px solid var(--border)" }}>
+                    <div className="flex items-center gap-1.5 mb-2">
+                      <p className="text-sm font-semibold" style={{ color: "var(--text-muted)" }}>Linked Docs</p>
+                      {linkedDocs.length > 0 && (
+                        <span className="ml-auto text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>{linkedDocs.length}건</span>
+                      )}
+                    </div>
+                    {linkedDocs.length === 0 ? (
+                      <p className="text-[12px]" style={{ color: "var(--text-subtle)" }}>연결된 문서 없음</p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {linkedDocs.map(d => {
+                          const meta = DOC_TYPE_META[d.type];
+                          const sourceLabel = d.source.kind === "self" ? "self" : d.source.tmKey;
+                          return (
+                            <div key={d.url} className="rounded-lg px-3 py-2 flex items-start gap-2" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
+                              <span className="shrink-0 text-[14px] leading-none mt-0.5" aria-hidden>{meta.icon}</span>
+                              <div className="flex-1 min-w-0">
+                                <a
+                                  href={d.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="block text-[13px] font-medium hover:underline leading-snug truncate"
+                                  style={{ color: "var(--text-primary)" }}
+                                  title={d.url}
+                                >{d.title}</a>
+                                <div className="flex items-center gap-1.5 mt-0.5 text-[11px]" style={{ color: "var(--text-subtle)" }}>
+                                  <span style={{ color: meta.color }}>{meta.label}</span>
+                                  <span>·</span>
+                                  <span>{sourceLabel}</span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </>);
+              })() : (<>
               {/* 섹션 헤더 */}
               <div className="flex items-center gap-1.5 mb-2.5">
                 <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>요구사항 출처</p>
@@ -5452,6 +5582,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   <p className="text-[12px]" style={{ color: "var(--text-subtle)" }}>연결된 문서가 없습니다</p>
                 )}
               </div>
+              </>)}
             </div>
 
             </>) /* ─ Overview: 요구사항 출처 + 관련 문서 끝 ─ */}
