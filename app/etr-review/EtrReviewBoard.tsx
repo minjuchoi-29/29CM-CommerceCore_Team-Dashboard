@@ -87,6 +87,18 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [unManaging, setUnManaging] = useState<string | null>(null);
   const [hidingKey, setHidingKey]   = useState<string | null>(null);
 
+  // Phase 3: ?key= 딥링크 — URL 에 key 가 있으면 해당 ETR 자동 선택
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const k = params.get("key");
+    if (k && k.startsWith("ETR-")) {
+      setSelectedKey(k);
+      // 현재 필터 (default = needsAction) 에서 안 보일 수 있으므로 "전체 요청" 으로 강제 전환
+      setFilter("all");
+    }
+  }, []);
+
   // ── 초기 로드 ─────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
@@ -553,10 +565,10 @@ function SourceChip({ source, isManual, sourceFilters }: { source: EtrSource; is
     "filter+manual": { bg: "rgba(16,185,129,0.10)",  color: "#34d399", border: "rgba(16,185,129,0.3)" },
   };
   const s = style[source];
-  // 검증용 hover title — 실제 isManual / sourceFilters 값 노출
+  // 검증용 hover title — 실제 source 정보 노출 (사용자 검증 보조)
   const title = [
-    `isManual: ${isManual === true ? "true" : isManual === false ? "false" : "—"}`,
-    `sourceFilters: ${(sourceFilters?.length ?? 0) > 0 ? sourceFilters!.join(", ") : "(none)"}`,
+    `Filter: ${(sourceFilters?.length ?? 0) > 0 ? sourceFilters!.join(", ") : "(none)"}`,
+    `Manual: ${isManual === true ? "true" : "false"}`,
   ].join("\n");
   return (
     <span title={title} className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium whitespace-nowrap cursor-help"

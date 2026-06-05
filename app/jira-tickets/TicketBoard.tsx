@@ -1,5 +1,6 @@
 "use client";
 import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "react";
+import Link from "next/link";
 import TicketCopyButton from "@/app/components/TicketCopyButton";
 import { Tooltip } from "@/app/components/Tooltip";
 import { ActivityEntry } from "@/lib/activity";
@@ -1639,7 +1640,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [newFilter, setNewFilter]       = useState(false); // 최근 2주 신규 티켓만 필터
   const [planningKpiFilter, setPlanningKpiFilter] = useState<{ team: string; status: TrackState } | null>(null); // 상단 KPI 카드 클릭 필터
   const [ticketAddedDates, setTicketAddedDates] = useState<Record<string, string>>({}); // key → "YYYY-MM-DD"
-  const [planningTab, setPlanningTab] = useState("진행 중");
+  // Phase 3: 마지막 탭 / 선택 티켓 localStorage 복원
+  // 최초 진입 = 기본 "진행 중", 이후 마지막 상태 복원. invalid 값은 fallback.
+  const [planningTab, setPlanningTab] = useState<string>(() => {
+    if (typeof window === "undefined") return "진행 중";
+    const VALID = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
+    const raw = localStorage.getItem("cc-planning-tab");
+    return raw && VALID.includes(raw) ? raw : "진행 중";
+  });
   const [kvLoaded, setKvLoaded]     = useState(false);
   const [kvSaveStatus, setKvSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const kvSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1745,6 +1753,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [addKeyInput, setAddKeyInput]     = useState("");
   const [addKeyLoading, setAddKeyLoading] = useState(false);
   const [addKeyError, setAddKeyError]     = useState<string | null>(null);
+  // Phase 3: 추가 후 강제 탭 이동 대신 toast (이동 link 포함)
+  const [addedTicketInfo, setAddedTicketInfo] = useState<{ key: string; suggestedTab: string } | null>(null);
   const [addKeyProgress, setAddKeyProgress] = useState<{ current: number; total: number } | null>(null);
   const [newlyAddedKeys, setNewlyAddedKeys] = useState<Set<string>>(new Set());
   const [duplicateKeys, setDuplicateKeys] = useState<Set<string>>(new Set());
@@ -2675,14 +2685,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }).catch(() => {});
 
         setAddKeyInput("");
-        // 스마트 탭 이동: 티켓 상태 기반으로 적절한 탭 자동 이동
-        // (Phase 2 이후 ETR 은 여기 도달 X — addTicket 시작부에서 차단됨)
-        const smartTab = (() => {
+        // Phase 3: 현재 탭 강제 이동 제거 — 사용자가 선택한 탭 유지.
+        // 추가된 티켓이 보일 탭은 toast 의 [이동] 링크로 안내.
+        const suggestedTab = (() => {
           if (["론치완료", "완료", "배포완료"].includes(newTicket.status)) return "완료";
           if (["개발중", "In Progress", "QA중"].includes(newTicket.status)) return "진행 중";
           return "플래닝 대기·검토";
         })();
-        setPlanningTab(smartTab);
+        setAddedTicketInfo({ key: trimmed, suggestedTab });
+        setTimeout(() => setAddedTicketInfo(null), 8000);
         setNewlyAddedKeys(new Set([trimmed]));
         setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
 
@@ -2850,15 +2861,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setAddKeyProgress(null);
     setAddKeyLoading(false);
     if (fetched.length > 0) {
-      // 스마트 탭 이동: 첫 번째 티켓 기준으로 적절한 탭 선택
-      const firstTicket = fetched[0];
-      const bulkSmartTab = (() => {
-        // ETR 은 addTicket 시작부에서 차단됨 — 여기 도달 X (방어)
-        if (["론치완료", "완료", "배포완료"].includes(firstTicket.status)) return "완료";
-        if (["개발중", "In Progress", "QA중"].includes(firstTicket.status)) return "진행 중";
-        return "플래닝 대기·검토";
-      })();
-      setPlanningTab(bulkSmartTab);
+      // Phase 3: 강제 탭 이동 제거. 현재 탭 유지.
+      // bulk add 토스트는 별도로 처리해도 되지만 일단 newlyAddedKeys highlight 만 유지.
       setNewlyAddedKeys(new Set(fetched.map(t => t.key)));
       setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
 
@@ -3111,7 +3115,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const sourceParam = params.get("source");
     const modeParam   = params.get("mode");   // "focus" → Focus Mode 자동 진입
 
-    if (!ticketParam) return;
+    if (!ticketParam) {
+      // Phase 3: URL 에 ?ticket= 없으면 localStorage 의 cc-planning-selected-ticket 으로 복원
+      // (다른 페이지 이동 후 돌아왔을 때 마지막 선택 ticket 복구)
+      if (typeof window === "undefined") return;
+      const restored = localStorage.getItem("cc-planning-selected-ticket");
+      if (restored && !deepLinkProcessedRef.current) {
+        const match = tickets.find(t => t.key === restored);
+        if (match) {
+          setSelected(match);
+          setDetailTab("overview");
+          deepLinkProcessedRef.current = true;
+        }
+      }
+      return;
+    }
 
     if (process.env.NODE_ENV === "development") {
       console.debug("[TicketBoard] deepLink 처리 시작", {
@@ -3434,11 +3452,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     window.history.replaceState({ tab: planningTab, ticket: initialTicket, expanded: false }, "");
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 탭 전환 — 유저 액션 전용 래퍼 (pushState 포함)
+  // 탭 전환 — 유저 액션 전용 래퍼 (pushState + localStorage 동기화)
   function changeTab(newTab: string) {
     setPlanningTab(newTab);
     window.history.pushState({ tab: newTab, ticket: null, expanded: false }, "");
+    try { localStorage.setItem("cc-planning-tab", newTab); } catch {}
   }
+
+  // Phase 3: planningTab 이 changeTab 외 경로로 변경돼도 (deep-link 등) localStorage 동기화
+  useEffect(() => {
+    try { localStorage.setItem("cc-planning-tab", planningTab); } catch {}
+  }, [planningTab]);
+
+  // Phase 3: 선택된 ticket key localStorage 동기화 — 다른 페이지 이동 후 복귀 시 복원용
+  useEffect(() => {
+    try {
+      if (selected?.key) localStorage.setItem("cc-planning-selected-ticket", selected.key);
+      else localStorage.removeItem("cc-planning-selected-ticket");
+    } catch {}
+  }, [selected?.key]);
 
   // 새로 추가된 티켓이 생기면 첫 번째 행으로 스크롤
   useEffect(() => {
@@ -6016,6 +6048,36 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             >
               {addKeyLoading ? (addKeyProgress ? `${addKeyProgress.current}/${addKeyProgress.total}` : "추가 중…") : "추가"}
             </button>
+            {/* Phase 3: 추가 완료 토스트 — 이동 link 포함 (강제 이동 대신 사용자 선택) */}
+            {addedTicketInfo && (
+              <div
+                className="flex items-center gap-2 text-[11.5px] px-2.5 py-1 rounded-md"
+                style={{ background: "rgba(16,185,129,0.10)", border: "1px solid rgba(16,185,129,0.30)", color: "#34d399" }}
+              >
+                <span className="font-mono font-semibold">{addedTicketInfo.key}</span>
+                <span>추가됨</span>
+                {addedTicketInfo.suggestedTab !== planningTab && (
+                  <button
+                    onClick={() => {
+                      changeTab(addedTicketInfo.suggestedTab);
+                      setTimeout(() => {
+                        document.querySelector(`[data-ticket-key="${addedTicketInfo.key}"]`)
+                          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }, 80);
+                      setAddedTicketInfo(null);
+                    }}
+                    className="ml-1 px-1.5 py-0.5 rounded text-[10.5px] hover:underline transition-colors"
+                    style={{ background: "rgba(16,185,129,0.18)", color: "#10b981", border: "1px solid rgba(16,185,129,0.35)" }}
+                    title={`${addedTicketInfo.suggestedTab} 탭으로 이동`}
+                  >→ {addedTicketInfo.suggestedTab}</button>
+                )}
+                <button
+                  onClick={() => setAddedTicketInfo(null)}
+                  className="ml-auto opacity-60 hover:opacity-100"
+                  title="닫기"
+                >×</button>
+              </div>
+            )}
             {addKeyError && (() => {
               // 이미 등록된 티켓 키 추출 → 클릭 시 해당 행으로 스크롤
               const dupMatch = addKeyError.match(/^([A-Z][A-Z0-9]*-\d+)은\(는\) 이미 등록/);
@@ -7024,6 +7086,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
                         요구사항 출처
                       </p>
+                      {/* Phase 3: Focus Mode 에도 source 선택 버튼 추가 (관리용) */}
+                      <div className="flex gap-1 mb-2">
+                        {(["자체발의", "ELT", "ETR"] as const).map(src => {
+                          const active = fmEtr?.source === src;
+                          const label = src === "자체발의" ? "자체발의" : src === "ELT" ? "ELT 요구사항" : "외부 부서 요청";
+                          const activeStyle =
+                            src === "자체발의" ? { background: "rgba(99,102,241,0.18)", borderColor: "rgba(99,102,241,0.45)", color: "#a5b4fc" } :
+                            src === "ELT"     ? { background: "rgba(245,158,11,0.18)",  borderColor: "rgba(245,158,11,0.45)",  color: "#fbbf24" } :
+                                                 { background: "rgba(59,130,246,0.18)",  borderColor: "rgba(59,130,246,0.45)",  color: "#60a5fa" };
+                          const inactiveStyle = { background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-muted)" };
+                          return (
+                            <button
+                              key={src}
+                              onClick={() => setEtrSource(selected.key, src)}
+                              className="flex-1 py-1 px-1.5 rounded text-[10.5px] font-medium border transition-all"
+                              style={active ? activeStyle : inactiveStyle}
+                              title={`출처: ${label}`}
+                            >{label}</button>
+                          );
+                        })}
+                      </div>
                       {fmEtr ? (
                         <div className="space-y-1.5">
                           {/* 출처 유형 배지 */}
@@ -7489,6 +7572,110 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
               );
             })()}
+
+            {/* ══════════════════════════════════════════════════════
+                Phase 3: Origin Request Card (Read-only Summary)
+                Action Required 직후. ETR 연결이 있는 Execution 티켓만 노출.
+                관리용 source 선택 UI 는 Tier 4 collapsible 에 유지.
+                ══════════════════════════════════════════════════════ */}
+            {detailTab === "overview" && !selected.key.startsWith("ETR-") && etrMap[selected.key]?.source === "ETR" && (etrMap[selected.key]?.etrTickets?.length ?? 0) > 0 && (
+              <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid rgba(59,130,246,0.25)" }}>
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5">
+                    <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2">
+                      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                      <polyline points="14 2 14 8 20 8" />
+                      <path d="M9 13l2 2 4-4" />
+                    </svg>
+                    <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#60a5fa" }}>
+                      Origin Request
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setOverviewRefExpanded(true);
+                      setTimeout(() => {
+                        const el = document.querySelector<HTMLElement>('[data-focus-section="etr"]');
+                        el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                      }, 60);
+                    }}
+                    className="text-[10.5px] hover:underline"
+                    style={{ color: "var(--text-subtle)" }}
+                    title="출처 관리 UI로 이동 (참조 정보 펼치기)"
+                  >출처 변경</button>
+                </div>
+
+                <div className="space-y-2">
+                  {(etrMap[selected.key]?.etrTickets ?? []).map(et => {
+                    const live = ticketByKey.get(et.key);
+                    const status = live?.status ?? et.status ?? "-";
+                    const summary = live?.summary ?? et.summary ?? "";
+                    const assignee = live?.assignee ?? "-";
+                    const reporter = live?.requestMeta?.reporter ?? "-";
+                    const eta = live?.eta && live.eta !== "-" ? live.eta : "—";
+                    const priority = live?.requestPriority ?? "-";
+                    const statusCls = STATUS_COLOR[status] ?? "bg-gray-100 text-gray-500";
+                    return (
+                      <div key={et.key} className="rounded-lg px-3 py-2.5" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
+                        {/* row 1: key + status + actions */}
+                        <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
+                          <TicketCopyButton ticketKey={et.key} summary={summary} size="xs" />
+                          <a
+                            href={`${JIRA_BASE}${et.key}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="font-mono text-[12.5px] font-semibold hover:underline"
+                            style={{ color: "#60a5fa" }}
+                          >{et.key}</a>
+                          <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${statusCls}`}>
+                            {status}
+                          </span>
+                          <span className="ml-auto flex items-center gap-1.5">
+                            <Link
+                              href={`/etr-review?key=${encodeURIComponent(et.key)}`}
+                              className="text-[10.5px] px-2 py-0.5 rounded hover:underline transition-colors"
+                              style={{ color: "#a5b4fc", background: "rgba(99,102,241,0.08)", border: "1px solid rgba(99,102,241,0.25)" }}
+                              title="ETR 검토 페이지에서 보기"
+                            >ETR 검토에서 보기</Link>
+                            <a
+                              href={`${JIRA_BASE}${et.key}`}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[10.5px] px-2 py-0.5 rounded hover:underline transition-colors"
+                              style={{ color: "var(--text-muted)", background: "var(--bg-item)", border: "1px solid var(--border-2)" }}
+                              title="Jira 에서 열기"
+                            >Jira 열기 ↗</a>
+                          </span>
+                        </div>
+                        {/* row 2: summary */}
+                        {summary && (
+                          <p className="text-[12px] mb-2 leading-snug" style={{ color: "var(--text-primary)" }}>{summary}</p>
+                        )}
+                        {/* row 3: meta grid */}
+                        <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
+                          <div className="flex gap-1.5">
+                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>담당</span>
+                            <span style={{ color: "var(--text-secondary)" }}>{assignee}</span>
+                          </div>
+                          <div className="flex gap-1.5">
+                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>요청자</span>
+                            <span style={{ color: "var(--text-secondary)" }}>{reporter}</span>
+                          </div>
+                          <div className="flex gap-1.5">
+                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>ETA</span>
+                            <span style={{ color: "var(--text-secondary)" }}>{eta}</span>
+                          </div>
+                          <div className="flex gap-1.5">
+                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>우선순위</span>
+                            <span style={{ color: "var(--text-secondary)" }}>{priority}</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* ── 미확정 일정 Summary (Split View, 3차-보정 PR 2026-06-04) ──
                 Action Guidance 바로 아래에 노출 → PM이 메타·문서·Weekly까지 스크롤 없이
