@@ -58,11 +58,6 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       return session;
     },
     authorized({ auth, request: { nextUrl } }) {
-      // Vercel preview 환경에서는 auth bypass — verification 용도.
-      // VERCEL_ENV 는 Vercel infrastructure 가 deployment 별로 자동 주입하는 시스템 env var
-      // ("production" | "preview" | "development"). 사용자가 임의로 설정 불가.
-      // production 배포는 영향 없음.
-      if (process.env.VERCEL_ENV === "preview") return true;
       const isPublic =
         nextUrl.pathname.startsWith("/api/auth") ||
         nextUrl.pathname.startsWith("/api/sheet-priorities") ||
