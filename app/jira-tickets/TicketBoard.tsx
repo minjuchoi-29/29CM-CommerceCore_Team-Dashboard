@@ -7062,9 +7062,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
                 )}
 
-                {/* ── 현재 필요한 액션 스트립 ──
-                    Phase 5: ETR 연결 여부와 무관하게 실행 티켓이면 항상 표시 (Jira 연결 확인 버튼 노출용). */}
-                {(fmActions.length > 0 || !selected.key.startsWith("ETR-")) && (
+                {/* ── 현재 필요한 액션 스트립 ── */}
+                {fmActions.length > 0 && (
                   <div
                     className="shrink-0 flex items-center gap-1.5 px-4 py-2 flex-wrap"
                     style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-canvas)" }}
@@ -7072,19 +7071,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <span className="text-[11px] font-semibold uppercase tracking-wide shrink-0 mr-0.5" style={{ color: "var(--text-muted)" }}>
                       현재 필요한 액션
                     </span>
-                    {/* Phase 5: Focus Mode Action 헤더 우측에 Jira 연결 확인 — 항상 노출 */}
-                    {!selected.key.startsWith("ETR-") && (
-                      <button
-                        onClick={() => syncJiraLinks(selected.key)}
-                        disabled={syncingJiraLinksFor === selected.key}
-                        className="ml-auto order-last text-[10.5px] px-2 py-0.5 rounded transition-colors disabled:opacity-40 shrink-0"
-                        style={{ color: "#34d399", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}
-                        title="Jira issue link 에서 ETR 연결 정보 가져오기"
-                      >{syncingJiraLinksFor === selected.key ? "동기화 중…" : "↻ Jira 연결 확인"}</button>
-                    )}
-                    {fmActions.length === 0 && !selected.key.startsWith("ETR-") && (
-                      <span className="text-[11px] italic" style={{ color: "var(--text-subtle)" }}>지금 필요한 액션 없음</span>
-                    )}
                     {fmActions.map(action => {
                       const s = LEVEL_STYLE[action.level];
                       return (
@@ -7240,7 +7226,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 );
                               })
                             ) : (
-                              <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>연결된 ETR 없음</p>
+                              <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>현재 연결된 요청이 없습니다. 우측 "연결된 티켓 가져오기" 로 Jira issue link 를 확인할 수 있습니다.</p>
                             )}
                           </div>
                         );
@@ -7721,19 +7707,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               return (
                 <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-                  <div className="flex items-center justify-between mb-2 gap-2">
-                    <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
-                      현재 필요한 액션
-                    </p>
-                    {/* Phase 5: 미연결 상태에서도 항상 노출. Action 카드 헤더 우측. */}
-                    <button
-                      onClick={() => syncJiraLinks(selected.key)}
-                      disabled={syncingJiraLinksFor === selected.key}
-                      className="text-[10.5px] px-2 py-0.5 rounded transition-colors disabled:opacity-40 shrink-0"
-                      style={{ color: "#34d399", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}
-                      title="Jira issue link 에서 ETR 연결 정보 가져오기"
-                    >{syncingJiraLinksFor === selected.key ? "동기화 중…" : "↻ Jira 연결 확인"}</button>
-                  </div>
+                  <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
+                    현재 필요한 액션
+                  </p>
                   <div className="space-y-1.5">
                     {visible.map(action => {
                       const s = LEVEL_STYLE[action.level];
@@ -7773,7 +7749,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const jiraEtrs = filterEtrJiraLinks(selected.jiraLinks);
               const manualEtrs = etrMap[selected.key]?.etrTickets ?? [];
               const merged: MergedEtrLink[] = mergeJiraAndManualEtrTickets(manualEtrs, jiraEtrs);
-              if (merged.length === 0) return null;
+              // Phase 6: 연결 0건이어도 카드 항상 렌더 — empty state + 동일 위치 sync 버튼 유지.
               const syncing = syncingJiraLinksFor === selected.key;
               return (
               <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid rgba(59,130,246,0.25)" }}>
@@ -7787,7 +7763,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#60a5fa" }}>
                       Origin Request
                     </p>
-                    <span className="text-[10px] font-mono opacity-70" style={{ color: "#60a5fa" }}>{merged.length}건</span>
+                    {merged.length > 0 && (
+                      <span className="text-[10px] font-mono opacity-70" style={{ color: "#60a5fa" }}>{merged.length}건</span>
+                    )}
                   </div>
                   <div className="flex items-center gap-2 ml-auto">
                     <button
@@ -7813,7 +7791,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
 
                 <div className="space-y-2">
-                  {merged.map(et => {
+                  {merged.length === 0 ? (
+                    <p className="text-[11.5px] italic px-1 py-1" style={{ color: "var(--text-subtle)" }}>현재 연결된 요청이 없습니다. 우측 "연결된 티켓 가져오기" 로 Jira issue link 를 확인할 수 있습니다.</p>
+                  ) : merged.map(et => {
                     const live = ticketByKey.get(et.key);
                     const status = live?.status ?? et.status ?? "-";
                     const summary = live?.summary ?? et.summary ?? "";
