@@ -1763,8 +1763,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [selectedCleanupIds, setSelectedCleanupIds] = useState<Set<string>>(new Set());
   const [cleanupInFlight, setCleanupInFlight] = useState<Set<string>>(new Set());
 
-  // 정렬
-  const [sortBy, setSortBy] = useState<"default" | "priority" | "startDate" | "eta" | "ticketNo">("eta");
+  // 정렬 — Phase 7.1: localStorage persist
+  type SortBy = "default" | "priority" | "priorityDesc" | "startDate" | "eta" | "ticketNo";
+  const SORT_BY_KEY = "cc-sort-by";
+  const VALID_SORT_VALUES: ReadonlySet<SortBy> = new Set<SortBy>(["default", "priority", "priorityDesc", "startDate", "eta", "ticketNo"]);
+  const [sortBy, setSortBy] = useState<SortBy>(() => {
+    if (typeof window === "undefined") return "eta";
+    const raw = localStorage.getItem(SORT_BY_KEY);
+    return raw && VALID_SORT_VALUES.has(raw as SortBy) ? (raw as SortBy) : "eta";
+  });
+  useEffect(() => {
+    try { localStorage.setItem(SORT_BY_KEY, sortBy); } catch {}
+  }, [sortBy]);
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기" | "기획" | "디자인" | "준비중" | "개발" | "QA">("전체");
 
   // 사용자 직접 추가 티켓 관리
@@ -2864,25 +2874,40 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 사용자 추가 티켓 제거
   // Phase 7: KV 단일 진실 소스 — Sheet 폐기. helper 함수.
-  function savePrioritiesToKv(next: Record<string, string>) {
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-planning-priorities", value: next }),
-    }).catch(() => {});
+  // Phase 7.1: 저장 실패 시 호출부가 rollback 할 수 있도록 Promise<boolean> 반환.
+  async function savePrioritiesToKv(next: Record<string, string>): Promise<boolean> {
+    try {
+      const res = await fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-planning-priorities", value: next }),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
   }
 
-  /** 단일 ticket priority 변경 (number) — KV 즉시 저장 + 정렬 sync */
-  function setPriority(ticketKey: string, value: string) {
+  /**
+   * 단일 ticket priority 변경 (number) — KV 즉시 저장 + 정렬 sync.
+   * Phase 7.1: optimistic update + 저장 실패 시 rollback + toast.
+   */
+  async function setPriority(ticketKey: string, value: string) {
     const trimmed = value.trim();
-    const next = { ...priorities };
+    const prev = priorities;
+    const next = { ...prev };
     if (!trimmed || trimmed === "0") {
       delete next[ticketKey];
     } else {
       next[ticketKey] = trimmed;
     }
     setPriorities(next);
-    savePrioritiesToKv(next);
+    const ok = await savePrioritiesToKv(next);
+    if (!ok) {
+      setPriorities(prev);
+      setSheetSyncMsg("우선순위 저장 실패. 잠시 후 다시 시도해 주세요.");
+      setTimeout(() => setSheetSyncMsg(null), 4000);
+    }
   }
 
   function removeTicket(key: string) {
@@ -3883,6 +3908,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     );
   }, [priorities, tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Phase 7.1: numeric priority 값별 중복 카운트 (활성 ticket 기준)
+  // 예: { "1": 2, "3": 1 } → P1 이 2개 있음 (운영자가 정렬 후 직접 조정)
+  const priorityDuplicateCount = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const v of Object.values(activePriorities)) {
+      const n = parseInt(v, 10);
+      if (Number.isFinite(n) && n > 0) {
+        const key = String(n);
+        counts[key] = (counts[key] ?? 0) + 1;
+      }
+    }
+    return counts;
+  }, [activePriorities]);
+
   // statusTab 제외한 필터 (카운트 계산용)
   const preFiltered = useMemo(() => {
     return dedupedTickets.filter((t: Ticket) => {
@@ -4027,19 +4066,47 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // 신규 필터
     if (newFilter) result = result.filter(t => isRecentTicket(t.key));
     const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
+    // Phase 7.1: numeric priority sort 안정화
+    //  - "완료" / 빈값 / non-numeric → Infinity (항상 마지막)
+    //  - secondary: ETA 빠른 순 → key numeric 순
+    const ticketNum = (key: string) => {
+      const m = key.match(/(\d+)$/);
+      return m ? parseInt(m[1], 10) : 0;
+    };
+    const priorityNum = (key: string) => {
+      const raw = activePriorities[key];
+      if (!raw) return Infinity;
+      const n = parseInt(raw, 10);
+      return Number.isFinite(n) && n > 0 ? n : Infinity;
+    };
+    const prioritySecondary = (a: Ticket, b: Ticket) => {
+      const etaDelta = dateVal(a.eta) - dateVal(b.eta);
+      if (etaDelta !== 0) return etaDelta;
+      return ticketNum(a.key) - ticketNum(b.key);
+    };
     if (sortBy === "priority") {
-      result.sort((a: Ticket, b: Ticket) =>
-        parseInt(activePriorities[a.key] ?? "999") - parseInt(activePriorities[b.key] ?? "999")
-      );
+      result.sort((a: Ticket, b: Ticket) => {
+        const pa = priorityNum(a.key);
+        const pb = priorityNum(b.key);
+        if (pa !== pb) return pa - pb;
+        return prioritySecondary(a, b);
+      });
+    } else if (sortBy === "priorityDesc") {
+      result.sort((a: Ticket, b: Ticket) => {
+        const pa = priorityNum(a.key);
+        const pb = priorityNum(b.key);
+        // 미지정(Infinity)은 desc 에서도 마지막
+        if (pa === Infinity && pb === Infinity) return prioritySecondary(a, b);
+        if (pa === Infinity) return 1;
+        if (pb === Infinity) return -1;
+        if (pa !== pb) return pb - pa;
+        return prioritySecondary(a, b);
+      });
     } else if (sortBy === "startDate") {
       result.sort((a: Ticket, b: Ticket) => dateVal(a.startDate) - dateVal(b.startDate));
     } else if (sortBy === "eta") {
       result.sort((a: Ticket, b: Ticket) => dateVal(a.eta) - dateVal(b.eta));
     } else if (sortBy === "ticketNo") {
-      const ticketNum = (key: string) => {
-        const m = key.match(/(\d+)$/);
-        return m ? parseInt(m[1], 10) : 0;
-      };
       result.sort((a: Ticket, b: Ticket) => ticketNum(a.key) - ticketNum(b.key));
     }
     return result;
@@ -6073,6 +6140,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <option value="eta">ETA순</option>
                 <option value="default">등록순</option>
                 <option value="priority">우선순위 P1↑</option>
+                <option value="priorityDesc">우선순위 P9↓</option>
                 <option value="startDate">시작일순</option>
                 <option value="ticketNo">티켓 No순</option>
               </select>
@@ -6467,6 +6535,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   value={priorities[t.key] ?? ""}
                                   onChange={v => setPriority(t.key, v)}
                                   active={!!activePriorities[t.key]}
+                                  dupCount={priorityDuplicateCount[priorities[t.key] ?? ""] ?? 0}
                                 />
                                 <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
                                   {t.type}
@@ -9673,8 +9742,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
  * Phase 7: inline 우선순위 input — row 안에서 직접 number 입력.
  * 빈 값: "—" placeholder. 값 있음: amber 배지 형태. 변경 시 onBlur 또는 Enter 로 commit.
  * active=false 시 (현재 ticket 의 priority 가 sortable 정렬에 비활성) opacity 살짝 낮춤.
+ * Phase 7.1: dupCount ≥ 2 면 ⚠ 표시 + tooltip (운영자가 정렬 후 직접 조정 안내).
  */
-function PriorityInput({ value, onChange, active }: { value: string; onChange: (v: string) => void; active: boolean }) {
+function PriorityInput({ value, onChange, active, dupCount = 0 }: { value: string; onChange: (v: string) => void; active: boolean; dupCount?: number }) {
   const [local, setLocal] = useState(value);
   const [editing, setEditing] = useState(false);
   // 외부 value 변경 (KV reload 등) 시 동기화
@@ -9686,7 +9756,8 @@ function PriorityInput({ value, onChange, active }: { value: string; onChange: (
   }
   const isCompleted = value === "완료";
   const hasValue = value && !isCompleted;
-  const display = isCompleted ? "✓" : (hasValue ? `P${value}` : "—");
+  const isDup = hasValue && dupCount >= 2;
+  const display = isCompleted ? "✓" : (hasValue ? (isDup ? `P${value}⚠` : `P${value}`) : "—");
 
   if (editing) {
     return (
@@ -9714,13 +9785,17 @@ function PriorityInput({ value, onChange, active }: { value: string; onChange: (
       onClick={e => { e.stopPropagation(); setEditing(true); setLocal(value); }}
       className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono cursor-pointer transition-colors"
       style={{
-        background: hasValue ? "rgba(245,158,11,0.15)" : "transparent",
-        border: `1px solid ${hasValue ? "rgba(245,158,11,0.35)" : "var(--border-2)"}`,
-        color: hasValue ? (active ? "#d97706" : "#a16207") : "var(--text-subtle)",
+        background: isDup ? "rgba(239,68,68,0.12)" : (hasValue ? "rgba(245,158,11,0.15)" : "transparent"),
+        border: `1px solid ${isDup ? "rgba(239,68,68,0.45)" : (hasValue ? "rgba(245,158,11,0.35)" : "var(--border-2)")}`,
+        color: isDup ? "#dc2626" : (hasValue ? (active ? "#d97706" : "#a16207") : "var(--text-subtle)"),
         opacity: hasValue && !active ? 0.55 : 1,
         minWidth: 40,
       }}
-      title={hasValue ? `우선순위 P${value} — 클릭해서 변경` : "우선순위 미설정 — 클릭해서 입력"}
+      title={
+        isDup
+          ? `P${value} 우선순위가 ${dupCount}개 있습니다. 정렬 후 직접 조정해주세요. (클릭해서 변경)`
+          : (hasValue ? `우선순위 P${value} — 클릭해서 변경` : "우선순위 미설정 — 클릭해서 입력")
+      }
     >
       {display}
     </button>
