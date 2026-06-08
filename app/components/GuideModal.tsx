@@ -127,7 +127,7 @@ export default function GuideModal({ onClose }: Props) {
                   <p className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>담당자 대시보드</p>
                 </div>
                 <p style={{ color: "var(--text-muted)", lineHeight: 1.6 }}>
-                  내 이름이 담당자인 티켓 중 <span style={{ color: "#f87171", fontWeight: 600 }}>Action Required</span>가 있는 항목만 우선순위 순으로 표시됩니다.
+                  내 이름이 담당자인 티켓 중 <span style={{ color: "#f87171", fontWeight: 600 }}>현재 필요한 액션</span>이 있는 항목만 우선순위 순으로 표시됩니다.
                 </p>
                 <div
                   className="mt-0.5 rounded px-2 py-1 text-[10px] font-medium"
@@ -204,7 +204,7 @@ export default function GuideModal({ onClose }: Props) {
                 {
                   emoji: "🚀",
                   label: "Launch 일정 설정",
-                  steps: ["Focus Mode → 우측 Ops 탭", "Launch Date 섹션에 목표 런치일 입력", "미입력 시 Action Required(Warning) 발생"],
+                  steps: ["Focus Mode → 우측 Ops 탭", "Launch Date 섹션에 목표 런치일 입력", "미입력 시 현재 필요한 액션(Warning) 발생"],
                   accentColor: "#f97316",
                   bgColor: "rgba(249,115,22,0.06)",
                   borderColor: "rgba(249,115,22,0.2)",
@@ -245,9 +245,9 @@ export default function GuideModal({ onClose }: Props) {
             </div>
           </section>
 
-          {/* ── SECTION 3: Action Required 컬러 가이드 ────────────── */}
+          {/* ── SECTION 3: 현재 필요한 액션 컬러 가이드 ────────────── */}
           <section>
-            <SectionLabel>03 · Action Required 컬러 가이드</SectionLabel>
+            <SectionLabel>03 · 현재 필요한 액션 컬러 가이드</SectionLabel>
             <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
               {[
                 {
