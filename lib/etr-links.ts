@@ -281,6 +281,104 @@ export function isClosed(status: string): boolean {
   return STATUS_CLOSED.has(status);
 }
 
+// ─── Phase 4: Jira issue link 기반 ETR 연결 ────────────────────────────────
+
+export type JiraLink = {
+  key: string;
+  linkType: string;
+  direction: "in" | "out";
+  summary?: string;
+  status?: string;
+  type?: string;
+};
+
+/** Jira-linked ETR 만 추출 — key 가 "ETR-" 로 시작하는 항목 */
+export function filterEtrJiraLinks(links: JiraLink[] | undefined): JiraLink[] {
+  if (!links) return [];
+  return links.filter(l => l.key?.startsWith("ETR-"));
+}
+
+/**
+ * cc-etr 에 저장된 수동 etrTickets 와 Jira 에서 조회한 jiraLinks 를 머지.
+ * - manual + jira 양쪽에 있으면 source="jira+manual"
+ * - manual 만 → "manual"
+ * - jira 만 → "jira"
+ * - 어느 한쪽에서 사라져도 자동 삭제하지 않음 (사용자의 "기존 연결 보존" 원칙)
+ */
+export type MergedEtrLink = {
+  key: string;
+  summary?: string;
+  status?: string;
+  requestDept?: string;
+  source: "manual" | "jira" | "jira+manual";
+  linkType?: string;
+};
+export function mergeJiraAndManualEtrTickets(
+  manual: { key: string; summary?: string; status?: string; requestDept?: string }[] | undefined,
+  jiraEtrLinks: JiraLink[],
+): MergedEtrLink[] {
+  const byKey = new Map<string, MergedEtrLink>();
+  for (const m of manual ?? []) {
+    if (!m?.key) continue;
+    byKey.set(m.key, {
+      key: m.key,
+      summary: m.summary,
+      status: m.status,
+      requestDept: m.requestDept,
+      source: "manual",
+    });
+  }
+  for (const j of jiraEtrLinks) {
+    const existing = byKey.get(j.key);
+    if (existing) {
+      byKey.set(j.key, {
+        ...existing,
+        // Jira 가 최신값이므로 비어있던 메타 보강
+        summary: existing.summary ?? j.summary,
+        status:  existing.status  ?? j.status,
+        source:  "jira+manual",
+        linkType: j.linkType,
+      });
+    } else {
+      byKey.set(j.key, {
+        key: j.key,
+        summary: j.summary,
+        status:  j.status,
+        source:  "jira",
+        linkType: j.linkType,
+      });
+    }
+  }
+  return Array.from(byKey.values());
+}
+
+/**
+ * "연결된 티켓 가져오기" 버튼 핸들러용 — jiraLinks 에 있는 ETR 중
+ * 아직 cc-etr 의 etrTickets[] 에 없는 항목만 append.
+ * 기존 manual 항목은 그대로. 반환값을 cc-etr.[tmKey].etrTickets 에 저장.
+ */
+export function appendJiraEtrsToManual(
+  existing: { key: string; summary?: string; status?: string; requestDept?: string }[] | undefined,
+  jiraEtrLinks: JiraLink[],
+): { key: string; summary?: string; status?: string; requestDept?: string }[] {
+  const keySet = new Set((existing ?? []).map(e => e.key));
+  const out = [...(existing ?? [])];
+  for (const j of jiraEtrLinks) {
+    if (keySet.has(j.key)) continue;
+    out.push({
+      key: j.key,
+      summary: j.summary,
+      status: j.status,
+    });
+    keySet.add(j.key);
+  }
+  return out;
+}
+
+// ─── Phase 4: Doc source = "auto" | "manual" 통합 표시 ───────────────────────
+
+export type MergedDoc = LinkedDoc & { source: LinkedDoc["source"] | { kind: "manual" } | { kind: "auto" } };
+
 export const DOC_TYPE_META: Record<DocType, { icon: string; label: string; color: string }> = {
   PRD:         { icon: "📄", label: "PRD",          color: "#60a5fa" },
   Wiki:        { icon: "🗂",  label: "Wiki",         color: "#a78bfa" },

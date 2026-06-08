@@ -35,8 +35,12 @@ import {
   buildEtrReverseMap,
   collectLinkedDocs,
   DOC_TYPE_META,
+  filterEtrJiraLinks,
+  mergeJiraAndManualEtrTickets,
+  appendJiraEtrsToManual,
   type LinkedWork,
   type LinkedDoc,
+  type MergedEtrLink,
 } from "@/lib/etr-links";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
@@ -251,6 +255,18 @@ export type Ticket = {
     reporter?: string;
     department?: string;
   };
+  /**
+   * Phase 4: Jira issue links — Jira 에서 직접 조회한 연결 티켓 목록.
+   * 사용자의 수동 etrMap 분류와 독립적으로 보존됨.
+   */
+  jiraLinks?: Array<{
+    key: string;
+    linkType: string;
+    direction: "in" | "out";
+    summary?: string;
+    status?: string;
+    type?: string;
+  }>;
 };
 
 // 오늘 자정 기준 ms
@@ -4311,13 +4327,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   function setEtrSource(ticketKey: string, source: TicketRequestInfo["source"]) {
     const current = etrMap[ticketKey];
+    // Phase 4 P0 fix: Source Type 과 Linked Entities 디커플링.
+    // source 변경 시 etrTickets / wikiLinks / etrStatus 등 **모두 보존**.
+    // 사용자가 "자체발의" 선택해도 기존 Jira-linked ETR 정보는 그대로 유지된다.
     saveEtr({
       ...etrMap,
       [ticketKey]: {
         ...current,
         source,
-        etrStatus: source === "ETR" ? (current?.etrStatus ?? "추가필요") : undefined,
-        etrTickets: source === "ETR" ? (current?.etrTickets ?? []) : undefined,
       },
     });
   }
@@ -4325,6 +4342,40 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   function setEtrStatus(ticketKey: string, status: "추가완료" | "추가필요") {
     const current = etrMap[ticketKey] ?? { source: "ETR" as const };
     saveEtr({ ...etrMap, [ticketKey]: { ...current, etrStatus: status } });
+  }
+
+  /**
+   * Phase 4: "연결된 티켓 가져오기" — 선택된 실행 티켓의 Jira issue links 에서
+   * ETR-* 만 추출해 cc-etr.[ticketKey].etrTickets[] 에 append.
+   * 기존 manual 항목은 그대로 보존. 중복은 key 기준 dedupe.
+   * Jira 에서 사라진 ETR 도 자동 삭제하지 않음.
+   */
+  const [syncingJiraLinksFor, setSyncingJiraLinksFor] = useState<string | null>(null);
+  async function syncJiraLinks(ticketKey: string) {
+    setSyncingJiraLinksFor(ticketKey);
+    try {
+      const res = await fetch(`/api/jira-tickets/single?key=${encodeURIComponent(ticketKey)}`);
+      if (!res.ok) { setSyncingJiraLinksFor(null); return; }
+      const data = await res.json();
+      const t = data?.ticket as Ticket | undefined;
+      if (!t) { setSyncingJiraLinksFor(null); return; }
+      const etrJiraLinks = filterEtrJiraLinks(t.jiraLinks);
+      const current = etrMap[ticketKey];
+      const merged = appendJiraEtrsToManual(current?.etrTickets, etrJiraLinks);
+      // source 가 undefined 인 entry (legacy) 도 보존. source 만 ETR 로 강제하지 않음 (Phase 4: 디커플링)
+      saveEtr({
+        ...etrMap,
+        [ticketKey]: {
+          ...current,
+          source: current?.source ?? "ETR",
+          etrTickets: merged,
+        },
+      });
+      // tickets[] 의 jiraLinks 도 최신화
+      setTickets(prev => prev.map(p => p.key === ticketKey ? { ...p, jiraLinks: t.jiraLinks } : p));
+    } finally {
+      setSyncingJiraLinksFor(null);
+    }
   }
 
   async function addEtr(ticketKey: string, etrKey: string) {
@@ -7016,7 +7067,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-canvas)" }}
                   >
                     <span className="text-[11px] font-semibold uppercase tracking-wide shrink-0 mr-0.5" style={{ color: "var(--text-muted)" }}>
-                      Action Required
+                      현재 필요한 액션
                     </span>
                     {fmActions.map(action => {
                       const s = LEVEL_STYLE[action.level];
@@ -7124,33 +7175,60 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           );
                         })}
                       </div>
-                      {fmEtr ? (
-                        <div className="space-y-1.5">
-                          {/* 출처 유형 배지 */}
-                          <div
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium"
-                            style={
-                              fmEtr.source === "자체발의" ? { background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.35)", color: "#818cf8" } :
-                              fmEtr.source === "ELT"     ? { background: "rgba(245,158,11,0.12)",  border: "1px solid rgba(245,158,11,0.35)",  color: "#fbbf24" } :
-                                                           { background: "rgba(59,130,246,0.12)",  border: "1px solid rgba(59,130,246,0.35)",  color: "#60a5fa" }
-                            }
-                          >
-                            {fmEtr.source === "자체발의" ? "자체발의" : fmEtr.source === "ELT" ? "ELT 요구사항" : "외부 부서 요청 (ETR)"}
-                          </div>
-                          {/* ETR 티켓 목록 */}
-                          {fmEtr.source === "ETR" && (fmEtr.etrTickets ?? []).map(t => (
-                            <div key={t.key} className="flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs"
-                              style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
-                            >
-                              <span className="font-mono font-semibold shrink-0" style={{ color: "#818cf8" }}>{t.key}</span>
-                              {t.summary && <span className="flex-1 truncate" style={{ color: "var(--text-primary)" }}>{t.summary}</span>}
-                              {t.requestDept && <span className="shrink-0 text-[11px]" style={{ color: "var(--text-muted)" }}>{t.requestDept}</span>}
+                      {/* Phase 4: 출처 유형 배지 + Jira+Manual 머지 ETR 목록 + 연결된 티켓 가져오기 */}
+                      {(() => {
+                        const fmJiraEtrs = filterEtrJiraLinks(selected.jiraLinks);
+                        const fmMerged: MergedEtrLink[] = mergeJiraAndManualEtrTickets(fmEtr?.etrTickets, fmJiraEtrs);
+                        const fmSyncing = syncingJiraLinksFor === selected.key;
+                        return (
+                          <div className="space-y-1.5">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <div
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium"
+                                style={
+                                  fmEtr?.source === "자체발의" ? { background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.35)", color: "#818cf8" } :
+                                  fmEtr?.source === "ELT"     ? { background: "rgba(245,158,11,0.12)",  border: "1px solid rgba(245,158,11,0.35)",  color: "#fbbf24" } :
+                                                                { background: "rgba(59,130,246,0.12)",  border: "1px solid rgba(59,130,246,0.35)",  color: "#60a5fa" }
+                                }
+                              >
+                                {fmEtr?.source === "자체발의" ? "자체발의" : fmEtr?.source === "ELT" ? "ELT 요구사항" : "외부 부서 요청 (ETR)"}
+                              </div>
+                              <button
+                                onClick={() => syncJiraLinks(selected.key)}
+                                disabled={fmSyncing}
+                                className="ml-auto text-[10.5px] px-2 py-0.5 rounded transition-colors disabled:opacity-40"
+                                style={{ color: "#34d399", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}
+                                title="Jira issue link 에서 ETR 추출 → cc-etr 에 append"
+                              >{fmSyncing ? "동기화 중…" : "연결된 티켓 가져오기"}</button>
                             </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>출처 미등록</p>
-                      )}
+                            {/* Jira + Manual 머지 ETR 목록 (source 와 무관하게 노출) */}
+                            {fmMerged.length > 0 ? (
+                              fmMerged.map(t => {
+                                const live = ticketByKey.get(t.key);
+                                const summary = live?.summary ?? t.summary ?? "";
+                                const status = live?.status ?? t.status ?? "";
+                                const srcLabel = t.source === "jira+manual" ? "J+M" : t.source === "jira" ? "Jira" : "Manual";
+                                const srcColor = t.source === "jira+manual" ? "#34d399" : t.source === "jira" ? "#60a5fa" : "#a78bfa";
+                                return (
+                                  <div key={t.key} className="flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs"
+                                    style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+                                    <a href={`${JIRA_BASE}${t.key}`} target="_blank" rel="noopener noreferrer"
+                                      className="font-mono font-semibold shrink-0 hover:underline" style={{ color: "#818cf8" }}>{t.key}</a>
+                                    <span className="shrink-0 text-[10px] px-1 rounded" style={{ color: srcColor, border: `1px solid ${srcColor}33` }}>{srcLabel}</span>
+                                    {status && <span className="shrink-0 text-[10px] px-1 py-0.5 rounded" style={{ background: "var(--bg-item)", color: "var(--text-muted)" }}>{status}</span>}
+                                    {summary && <span className="flex-1 truncate" style={{ color: "var(--text-primary)" }}>{summary}</span>}
+                                    <Link href={`/etr-review?key=${encodeURIComponent(t.key)}`}
+                                      className="shrink-0 text-[10px] hover:underline" style={{ color: "#a5b4fc" }}
+                                      title="ETR 검토에서 보기">→</Link>
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>연결된 ETR 없음</p>
+                            )}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     {/* 관련 문서 (Wiki) */}
@@ -7591,13 +7669,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             })()}
 
             {/* ══════════════════════════════════════════════════════
-                Phase 3: Origin Request Card (Read-only Summary)
-                Action Required 직후. ETR 연결이 있는 Execution 티켓만 노출.
-                관리용 source 선택 UI 는 Tier 4 collapsible 에 유지.
+                Phase 4: Origin Request Card — Jira links + Manual 통합
+                Action Required 직후. source 와 무관하게 Jira-linked ETR 또는
+                manual etrTickets 가 있으면 노출 (자체발의/ELT 케이스도 포함).
+                "연결된 티켓 가져오기" 버튼으로 Jira 최신 링크 동기화.
                 ══════════════════════════════════════════════════════ */}
-            {detailTab === "overview" && !selected.key.startsWith("ETR-") && etrMap[selected.key]?.source === "ETR" && (etrMap[selected.key]?.etrTickets?.length ?? 0) > 0 && (
+            {detailTab === "overview" && !selected.key.startsWith("ETR-") && (() => {
+              const jiraEtrs = filterEtrJiraLinks(selected.jiraLinks);
+              const manualEtrs = etrMap[selected.key]?.etrTickets ?? [];
+              const merged: MergedEtrLink[] = mergeJiraAndManualEtrTickets(manualEtrs, jiraEtrs);
+              if (merged.length === 0) return null;
+              const syncing = syncingJiraLinksFor === selected.key;
+              return (
               <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid rgba(59,130,246,0.25)" }}>
-                <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
                   <div className="flex items-center gap-1.5">
                     <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="#60a5fa" strokeWidth="2">
                       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
@@ -7607,34 +7692,50 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#60a5fa" }}>
                       Origin Request
                     </p>
+                    <span className="text-[10px] font-mono opacity-70" style={{ color: "#60a5fa" }}>{merged.length}건</span>
                   </div>
-                  <button
-                    onClick={() => {
-                      setOverviewRefExpanded(true);
-                      setTimeout(() => {
-                        const el = document.querySelector<HTMLElement>('[data-focus-section="etr"]');
-                        el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                      }, 60);
-                    }}
-                    className="text-[10.5px] hover:underline"
-                    style={{ color: "var(--text-subtle)" }}
-                    title="출처 관리 UI로 이동 (참조 정보 펼치기)"
-                  >출처 변경</button>
+                  <div className="flex items-center gap-2 ml-auto">
+                    <button
+                      onClick={() => syncJiraLinks(selected.key)}
+                      disabled={syncing}
+                      className="text-[10.5px] px-2 py-0.5 rounded transition-colors disabled:opacity-40"
+                      style={{ color: "#34d399", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}
+                      title="Jira issue link 에서 ETR 추출 → cc-etr 에 append (기존 수동 항목 보존)"
+                    >{syncing ? "동기화 중…" : "연결된 티켓 가져오기"}</button>
+                    <button
+                      onClick={() => {
+                        setOverviewRefExpanded(true);
+                        setTimeout(() => {
+                          const el = document.querySelector<HTMLElement>('[data-focus-section="etr"]');
+                          el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                        }, 60);
+                      }}
+                      className="text-[10.5px] hover:underline"
+                      style={{ color: "var(--text-subtle)" }}
+                      title="출처 관리 UI로 이동 (참조 정보 펼치기)"
+                    >출처 변경</button>
+                  </div>
                 </div>
 
                 <div className="space-y-2">
-                  {(etrMap[selected.key]?.etrTickets ?? []).map(et => {
+                  {merged.map(et => {
                     const live = ticketByKey.get(et.key);
                     const status = live?.status ?? et.status ?? "-";
                     const summary = live?.summary ?? et.summary ?? "";
                     const assignee = live?.assignee ?? "-";
                     const reporter = live?.requestMeta?.reporter ?? "-";
+                    const bodyReqDept = live?.bodyRequestDept ?? "-";
                     const eta = live?.eta && live.eta !== "-" ? live.eta : "—";
                     const priority = live?.requestPriority ?? "-";
                     const statusCls = STATUS_COLOR[status] ?? "bg-gray-100 text-gray-500";
+                    const srcStyle =
+                      et.source === "jira+manual" ? { bg: "rgba(16,185,129,0.10)",  color: "#34d399", border: "rgba(16,185,129,0.30)" } :
+                      et.source === "jira"        ? { bg: "rgba(59,130,246,0.10)",  color: "#60a5fa", border: "rgba(59,130,246,0.30)" } :
+                                                    { bg: "rgba(168,85,247,0.10)",  color: "#a78bfa", border: "rgba(168,85,247,0.30)" };
+                    const srcLabel = et.source === "jira+manual" ? "Jira + Manual" : et.source === "jira" ? "Jira" : "Manual";
                     return (
                       <div key={et.key} className="rounded-lg px-3 py-2.5" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
-                        {/* row 1: key + status + actions */}
+                        {/* row 1: key + status + source + actions */}
                         <div className="flex items-center gap-1.5 mb-1.5 flex-wrap">
                           <TicketCopyButton ticketKey={et.key} summary={summary} size="xs" />
                           <a
@@ -7646,6 +7747,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >{et.key}</a>
                           <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${statusCls}`}>
                             {status}
+                          </span>
+                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap"
+                            style={{ background: srcStyle.bg, color: srcStyle.color, border: `1px solid ${srcStyle.border}` }}
+                            title={et.linkType ? `Jira link: ${et.linkType}` : srcLabel}>
+                            {srcLabel}
                           </span>
                           <span className="ml-auto flex items-center gap-1.5">
                             <Link
@@ -7668,23 +7774,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         {summary && (
                           <p className="text-[12px] mb-2 leading-snug" style={{ color: "var(--text-primary)" }}>{summary}</p>
                         )}
-                        {/* row 3: meta grid */}
+                        {/* row 3: meta grid (4-col) */}
                         <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[11px]">
                           <div className="flex gap-1.5">
-                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>담당</span>
+                            <span className="w-16 shrink-0" style={{ color: "var(--text-subtle)" }}>담당</span>
                             <span style={{ color: "var(--text-secondary)" }}>{assignee}</span>
                           </div>
                           <div className="flex gap-1.5">
-                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>요청자</span>
+                            <span className="w-16 shrink-0" style={{ color: "var(--text-subtle)" }}>보고자</span>
                             <span style={{ color: "var(--text-secondary)" }}>{reporter}</span>
                           </div>
                           <div className="flex gap-1.5">
-                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>ETA</span>
+                            <span className="w-16 shrink-0" style={{ color: "var(--text-subtle)" }}>ETA</span>
                             <span style={{ color: "var(--text-secondary)" }}>{eta}</span>
                           </div>
                           <div className="flex gap-1.5">
-                            <span className="w-12 shrink-0" style={{ color: "var(--text-subtle)" }}>우선순위</span>
+                            <span className="w-16 shrink-0" style={{ color: "var(--text-subtle)" }}>우선순위</span>
                             <span style={{ color: "var(--text-secondary)" }}>{priority}</span>
+                          </div>
+                          <div className="flex gap-1.5 col-span-2">
+                            <span className="w-16 shrink-0" style={{ color: "var(--text-subtle)" }}>요청부서</span>
+                            <span style={{ color: "var(--text-secondary)" }}>{bodyReqDept}</span>
                           </div>
                         </div>
                       </div>
@@ -7692,7 +7802,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   })}
                 </div>
               </div>
-            )}
+              );
+            })()}
 
             {/* ── 미확정 일정 Summary (Split View, 3차-보정 PR 2026-06-04) ──
                 Action Guidance 바로 아래에 노출 → PM이 메타·문서·Weekly까지 스크롤 없이

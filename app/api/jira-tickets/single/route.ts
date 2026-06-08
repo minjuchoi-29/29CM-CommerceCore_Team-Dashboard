@@ -6,6 +6,46 @@ export const dynamic = "force-dynamic";
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 
+/** Phase 4: Jira issuelinks 배열 → JiraLink[] */
+type JiraLinkParsed = {
+  key: string;
+  linkType: string;
+  direction: "in" | "out";
+  summary?: string;
+  status?: string;
+  type?: string;
+};
+function parseIssuelinks(raw: unknown): JiraLinkParsed[] {
+  if (!Array.isArray(raw)) return [];
+  const result: JiraLinkParsed[] = [];
+  for (const link of raw as Array<Record<string, any>>) {
+    const t = link?.type?.name ?? "Relates";
+    if (link?.outwardIssue) {
+      const i = link.outwardIssue;
+      result.push({
+        key: i.key,
+        linkType: t,
+        direction: "out",
+        summary: i.fields?.summary ?? undefined,
+        status: i.fields?.status?.name ?? undefined,
+        type: i.fields?.issuetype?.name ?? undefined,
+      });
+    }
+    if (link?.inwardIssue) {
+      const i = link.inwardIssue;
+      result.push({
+        key: i.key,
+        linkType: t,
+        direction: "in",
+        summary: i.fields?.summary ?? undefined,
+        status: i.fields?.status?.name ?? undefined,
+        type: i.fields?.issuetype?.name ?? undefined,
+      });
+    }
+  }
+  return result;
+}
+
 /** customfield URL 값 추출 — 문자열이면 그대로, 객체면 url/href 키 사용 */
 function extractUrl(val: unknown): string | undefined {
   if (!val) return undefined;
@@ -61,7 +101,7 @@ export async function GET(request: Request) {
 
   const FIELDS = [
     "summary", "status", "assignee", "reporter", "issuetype", "project", "duedate",
-    "priority", "parent",
+    "priority", "parent", "issuelinks",
     "customfield_10015", // Start date
     "customfield_10036", // Story Points
     "customfield_10067", // 요청부문 (multiselect)
@@ -129,6 +169,7 @@ export async function GET(request: Request) {
       bodyRequestDept: extractMultiSelect(f.customfield_10067),
       requestPriority: f.priority?.name ?? undefined,
       parent: f.parent?.key ?? undefined,
+      jiraLinks: parseIssuelinks(f.issuelinks),
       ...override,
     };
 
