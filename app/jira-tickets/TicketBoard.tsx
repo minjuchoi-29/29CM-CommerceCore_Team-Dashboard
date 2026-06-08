@@ -1942,65 +1942,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         );
       } catch {}
 
-      // 시트 우선순위 갱신 + 완료 전환 재정렬 + 누락 티켓 시트 추가
+      // Phase 7: KV (cc-planning-priorities) 단일 진실. Sheet 폐기.
+      // forceRefresh 후 완료 전환 재정렬 + KV 저장.
       try {
-        const priRes = await fetch("/api/sheet-priorities");
-        const priData = await priRes.json();
-        const rawPri: Record<string, string> = priData.priorities ?? {};
-        const sheetKeySet = new Set<string>(priData.sheetKeys ?? []);
-        setPriorityError(priData.error ?? null);
-
+        const rawPri = { ...priorities };
         const allNewTickets = data.tickets as Ticket[];
+        const ticketMap = new Map(allNewTickets.map(t => [t.key, t.status]));
 
-        // 토큰 없으면 시트 연동 스킵
-        if (!priData.error) {
-          const ticketMap = new Map(allNewTickets.map(t => [t.key, t.status]));
-
-          // 1. 시트에 없는 티켓 추가 (완료 포함 전체)
-          const missingKeys = allNewTickets.map(t => t.key).filter(k => !sheetKeySet.has(k));
-          if (missingKeys.length > 0) {
-            try {
-              const appendRes = await fetch("/api/sheet-append", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ keys: missingKeys }),
-              });
-              if (appendRes.ok) {
-                missingKeys.forEach(k => sheetKeySet.add(k)); // 새로 추가된 키 반영
-                setSheetSyncMsg(`시트에 ${missingKeys.length}개 티켓 추가됨`);
-                setTimeout(() => setSheetSyncMsg(null), 4000);
-              } else {
-                console.error("[sheet-append]", await appendRes.json());
-              }
-            } catch (e) { console.error("[sheet-append]", e); }
+        // 1. 완료 상태 ticket 의 priority 를 "완료" 마커로 변경
+        const withCompleted: Record<string, string> = { ...rawPri };
+        for (const key of Object.keys(withCompleted)) {
+          const status = ticketMap.get(key);
+          if (status && DONE_PRIORITY_STATUSES.has(status) && withCompleted[key] !== "완료") {
+            withCompleted[key] = "완료";
           }
-
-          // 2. 우선순위 재정렬 (완료 → "완료", 활성 → 재번호)
-          const rebalanced = computeRebalance(rawPri, allNewTickets);
-
-          // 3. 시트에 있지만 B열이 아직 "완료"가 아닌 완료 티켓 → "완료" 기입
-          const completedUpdate: Record<string, string> = {};
-          for (const key of sheetKeySet) {
-            const status = ticketMap.get(key);
-            if (status && DONE_PRIORITY_STATUSES.has(status) && rawPri[key] !== "완료") {
-              completedUpdate[key] = "완료";
-            }
-          }
-
-          const sheetUpdate = { ...(rebalanced?.sheetUpdate ?? {}), ...completedUpdate };
-          setPriorities(rebalanced?.newState ?? rawPri);
-
-          if (Object.keys(sheetUpdate).length > 0) {
-            fetch("/api/sheet-priorities", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ priorities: sheetUpdate }),
-            }).catch(() => {});
-          }
-        } else {
-          setPriorities(rawPri);
         }
-      } catch {};
+
+        // 2. 활성 ticket 의 priority 재정렬 (숫자 누락 시 재번호)
+        const rebalanced = computeRebalance(withCompleted, allNewTickets);
+        const nextState = rebalanced?.newState ?? withCompleted;
+        setPriorities(nextState);
+
+        // 3. KV 저장 (변경 있을 때만)
+        if (JSON.stringify(nextState) !== JSON.stringify(rawPri)) {
+          savePrioritiesToKv(nextState);
+        }
+      } catch (e) { console.error("[priorities rebalance]", e); }
       fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos")
         .then(r => r.json())
         .then(d => {
@@ -2896,6 +2863,28 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   // 사용자 추가 티켓 제거
+  // Phase 7: KV 단일 진실 소스 — Sheet 폐기. helper 함수.
+  function savePrioritiesToKv(next: Record<string, string>) {
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-planning-priorities", value: next }),
+    }).catch(() => {});
+  }
+
+  /** 단일 ticket priority 변경 (number) — KV 즉시 저장 + 정렬 sync */
+  function setPriority(ticketKey: string, value: string) {
+    const trimmed = value.trim();
+    const next = { ...priorities };
+    if (!trimmed || trimmed === "0") {
+      delete next[ticketKey];
+    } else {
+      next[ticketKey] = trimmed;
+    }
+    setPriorities(next);
+    savePrioritiesToKv(next);
+  }
+
   function removeTicket(key: string) {
     // 우선순위 재정렬: 삭제 티켓 아래 번호를 -1씩 당김
     const deletedP = parseInt(priorities[key] ?? "");
@@ -2907,11 +2896,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         shifted[k] = p > deletedP ? String(p - 1) : v;
       });
       setPriorities(shifted);
-      fetch("/api/sheet-priorities", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ priorities: { ...shifted, [key]: "" } }),
-      }).catch(() => {});
+      savePrioritiesToKv(shifted);
     }
 
     // hiddenMeta에 티켓 정보 저장 (복원용)
@@ -3050,25 +3035,49 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 마운트 시 자동 로드
   useEffect(() => { loadTickets(); }, [loadTickets]);
 
-  // 시트 우선순위 로드 (마운트 + 탭 복귀 + 30초 폴링)
+  // 우선순위 로드 — KV (cc-planning-priorities) 우선, 비어있으면 Sheet 1회 마이그레이션
+  // 변경: Google Sheet 폐기, KV (cc-planning-priorities) 단일 진실 소스.
+  // mount 시 KV 로드. KV 가 비어있고 Sheet 에 데이터 있으면 1회 마이그레이션 후 KV write.
   useEffect(() => {
-    function fetchPriorities() {
-      fetch("/api/sheet-priorities")
-        .then(r => r.json())
-        .then(d => {
-          if (d.priorities) setPriorities(d.priorities);
-          setPriorityError(d.error ?? null);
-        })
-        .catch(() => {});
+    let cancelled = false;
+    async function loadPriorities() {
+      try {
+        const kvRes = await fetch("/api/kv?keys=cc-planning-priorities");
+        if (!kvRes.ok) throw new Error(`kv ${kvRes.status}`);
+        const kvData = await kvRes.json() as Record<string, unknown>;
+        const fromKv = kvData["cc-planning-priorities"];
+        if (cancelled) return;
+
+        if (fromKv && typeof fromKv === "object" && !Array.isArray(fromKv) && Object.keys(fromKv).length > 0) {
+          // KV 에 데이터 있음 — Source of Truth
+          setPriorities(fromKv as Record<string, string>);
+          setPriorityError(null);
+          return;
+        }
+
+        // KV 비어있음 → Sheet 에서 1회 마이그레이션 시도
+        const sheetRes = await fetch("/api/sheet-priorities");
+        const sheetData = await sheetRes.json();
+        if (cancelled) return;
+        const sheetPri: Record<string, string> = sheetData?.priorities ?? {};
+        if (Object.keys(sheetPri).length > 0) {
+          setPriorities(sheetPri);
+          // 1회 KV 저장 (마이그레이션 — silent)
+          fetch("/api/kv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: "cc-planning-priorities", value: sheetPri }),
+          }).catch(() => {});
+        }
+        setPriorityError(sheetData?.error ?? null);
+      } catch (e) {
+        if (cancelled) return;
+        console.error("[priorities] load failed:", e);
+        setPriorityError("load_error");
+      }
     }
-    fetchPriorities();
-    const interval = setInterval(fetchPriorities, 30_000);
-    function onVisible() { if (document.visibilityState === "visible") fetchPriorities(); }
-    document.addEventListener("visibilitychange", onVisible);
-    return () => {
-      clearInterval(interval);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
+    loadPriorities();
+    return () => { cancelled = true; };
   }, []);
 
   // tickets 갱신 시 선택된 티켓도 최신 데이터로 동기화
@@ -6453,11 +6462,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     추가됨
                                   </span>
                                 )}
-                                {activePriorities[t.key] && (
-                                  <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
-                                    P{activePriorities[t.key]}
-                                  </span>
-                                )}
+                                {/* Phase 7: inline 우선순위 input — 클릭/입력 즉시 KV 저장 */}
+                                <PriorityInput
+                                  value={priorities[t.key] ?? ""}
+                                  onChange={v => setPriority(t.key, v)}
+                                  active={!!activePriorities[t.key]}
+                                />
                                 <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
                                   {t.type}
                                 </span>
@@ -9659,6 +9669,64 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 }
 
 // ── ActivityRow 컴포넌트 ──────────────────────────────────────
+/**
+ * Phase 7: inline 우선순위 input — row 안에서 직접 number 입력.
+ * 빈 값: "—" placeholder. 값 있음: amber 배지 형태. 변경 시 onBlur 또는 Enter 로 commit.
+ * active=false 시 (현재 ticket 의 priority 가 sortable 정렬에 비활성) opacity 살짝 낮춤.
+ */
+function PriorityInput({ value, onChange, active }: { value: string; onChange: (v: string) => void; active: boolean }) {
+  const [local, setLocal] = useState(value);
+  const [editing, setEditing] = useState(false);
+  // 외부 value 변경 (KV reload 등) 시 동기화
+  useEffect(() => { if (!editing) setLocal(value); }, [value, editing]);
+
+  function commit() {
+    setEditing(false);
+    if (local !== value) onChange(local);
+  }
+  const isCompleted = value === "완료";
+  const hasValue = value && !isCompleted;
+  const display = isCompleted ? "✓" : (hasValue ? `P${value}` : "—");
+
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        type="number"
+        min="1"
+        value={local}
+        onChange={e => setLocal(e.target.value)}
+        onClick={e => e.stopPropagation()}
+        onBlur={commit}
+        onKeyDown={e => {
+          e.stopPropagation();
+          if (e.key === "Enter") commit();
+          if (e.key === "Escape") { setLocal(value); setEditing(false); }
+        }}
+        className="shrink-0 w-12 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono text-center"
+        style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.45)", color: "#d97706", outline: "none" }}
+      />
+    );
+  }
+  return (
+    <button
+      type="button"
+      onClick={e => { e.stopPropagation(); setEditing(true); setLocal(value); }}
+      className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold font-mono cursor-pointer transition-colors"
+      style={{
+        background: hasValue ? "rgba(245,158,11,0.15)" : "transparent",
+        border: `1px solid ${hasValue ? "rgba(245,158,11,0.35)" : "var(--border-2)"}`,
+        color: hasValue ? (active ? "#d97706" : "#a16207") : "var(--text-subtle)",
+        opacity: hasValue && !active ? 0.55 : 1,
+        minWidth: 40,
+      }}
+      title={hasValue ? `우선순위 P${value} — 클릭해서 변경` : "우선순위 미설정 — 클릭해서 입력"}
+    >
+      {display}
+    </button>
+  );
+}
+
 function ActivityRow({ entry }: { entry: ActivityEntry }) {
   const verbLabel: Record<string, string> = {
     eta_changed:        "ETA 변경",
