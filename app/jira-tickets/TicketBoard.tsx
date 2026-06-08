@@ -34,6 +34,8 @@ import {
 import {
   buildEtrReverseMap,
   collectLinkedDocs,
+  classifyDoc,
+  dedupeDocsByUrl,
   DOC_TYPE_META,
   filterEtrJiraLinks,
   mergeJiraAndManualEtrTickets,
@@ -7060,8 +7062,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
                 )}
 
-                {/* ── Action Required 스트립 ── */}
-                {fmActions.length > 0 && (
+                {/* ── 현재 필요한 액션 스트립 ──
+                    Phase 5: ETR 연결 여부와 무관하게 실행 티켓이면 항상 표시 (Jira 연결 확인 버튼 노출용). */}
+                {(fmActions.length > 0 || !selected.key.startsWith("ETR-")) && (
                   <div
                     className="shrink-0 flex items-center gap-1.5 px-4 py-2 flex-wrap"
                     style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-canvas)" }}
@@ -7069,6 +7072,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <span className="text-[11px] font-semibold uppercase tracking-wide shrink-0 mr-0.5" style={{ color: "var(--text-muted)" }}>
                       현재 필요한 액션
                     </span>
+                    {/* Phase 5: Focus Mode Action 헤더 우측에 Jira 연결 확인 — 항상 노출 */}
+                    {!selected.key.startsWith("ETR-") && (
+                      <button
+                        onClick={() => syncJiraLinks(selected.key)}
+                        disabled={syncingJiraLinksFor === selected.key}
+                        className="ml-auto order-last text-[10.5px] px-2 py-0.5 rounded transition-colors disabled:opacity-40 shrink-0"
+                        style={{ color: "#34d399", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}
+                        title="Jira issue link 에서 ETR 연결 정보 가져오기"
+                      >{syncingJiraLinksFor === selected.key ? "동기화 중…" : "↻ Jira 연결 확인"}</button>
+                    )}
+                    {fmActions.length === 0 && !selected.key.startsWith("ETR-") && (
+                      <span className="text-[11px] italic" style={{ color: "var(--text-subtle)" }}>지금 필요한 액션 없음</span>
+                    )}
                     {fmActions.map(action => {
                       const s = LEVEL_STYLE[action.level];
                       return (
@@ -7231,35 +7247,104 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       })()}
                     </div>
 
-                    {/* 관련 문서 (Wiki) */}
-                    {fmWikis.length > 0 && (
-                      <div>
-                        <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
-                          관련 문서
-                        </p>
-                        <div className="space-y-1">
-                          {fmWikis.map(w => (
-                            <a
-                              key={w.url}
-                              href={w.url}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs hover:opacity-80 transition-opacity"
-                              style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                            >
-                              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="currentColor" className="w-3.5 h-3.5 shrink-0" style={{ color: "#818cf8" }}>
-                                <path fillRule="evenodd" d="M8.914 6.025a.75.75 0 0 1 1.06 0 3.5 3.5 0 0 1 0 4.95l-2 2a3.5 3.5 0 0 1-5.396-4.402.75.75 0 0 1 1.251.827 2 2 0 0 0 3.085 2.514l2-2a2 2 0 0 0 0-2.828.75.75 0 0 1 0-1.06Z" clipRule="evenodd" />
-                                <path fillRule="evenodd" d="M7.086 9.975a.75.75 0 0 1-1.06 0 3.5 3.5 0 0 1 0-4.95l2-2a3.5 3.5 0 0 1 5.396 4.402.75.75 0 0 1-1.251-.827 2 2 0 0 0-3.085-2.514l-2 2a2 2 0 0 0 0 2.828.75.75 0 0 1 0 1.06Z" clipRule="evenodd" />
-                              </svg>
-                              <span className="flex-1 min-w-0">
-                                <span className="block font-medium truncate">{w.title}</span>
-                                <span className="block text-[11px] truncate opacity-60">{w.url}</span>
-                              </span>
-                            </a>
-                          ))}
+                    {/* Phase 5: 관련 문서 카드 (Focus Mode) — self + linked ETR docs 통합 + 빠른 추가 */}
+                    {!selected.key.startsWith("ETR-") && (() => {
+                      const selfDocsFm: LinkedDoc[] = [];
+                      if (selected.twoPagerUrl) selfDocsFm.push({ url: selected.twoPagerUrl, title: "2-Pager", type: "2Pager", source: { kind: "self" } });
+                      if (selected.prdUrl)      selfDocsFm.push({ url: selected.prdUrl, title: "PRD", type: "PRD", source: { kind: "self" } });
+                      for (const w of etrMap[selected.key]?.wikiLinks ?? []) {
+                        if (!w?.url) continue;
+                        selfDocsFm.push({ url: w.url, title: w.title || w.url, type: classifyDoc(w.url, w.title), source: { kind: "self" } });
+                      }
+                      const linkedDocsFm: LinkedDoc[] = [];
+                      const jiraEtrsFm = filterEtrJiraLinks(selected.jiraLinks);
+                      const mergedEtrsFm = mergeJiraAndManualEtrTickets(etrMap[selected.key]?.etrTickets, jiraEtrsFm);
+                      for (const me of mergedEtrsFm) {
+                        const et = ticketByKey.get(me.key);
+                        if (et?.twoPagerUrl) linkedDocsFm.push({ url: et.twoPagerUrl, title: "2-Pager", type: "2Pager", source: { kind: "tm", tmKey: me.key } });
+                        if (et?.prdUrl)      linkedDocsFm.push({ url: et.prdUrl, title: "PRD", type: "PRD", source: { kind: "tm", tmKey: me.key } });
+                        for (const w of etrMap[me.key]?.wikiLinks ?? []) {
+                          if (!w?.url) continue;
+                          linkedDocsFm.push({ url: w.url, title: w.title || w.url, type: classifyDoc(w.url, w.title), source: { kind: "tm", tmKey: me.key } });
+                        }
+                      }
+                      const allDocsFm = dedupeDocsByUrl([...selfDocsFm, ...linkedDocsFm]);
+                      return (
+                        <div>
+                          <div className="flex items-center justify-between mb-2 gap-2">
+                            <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+                              관련 문서 {allDocsFm.length > 0 && <span className="text-[10px] font-mono opacity-70">{allDocsFm.length}</span>}
+                            </p>
+                            <button
+                              onClick={() => { setWikiAddOpen(v => !v); setWikiError(null); setWikiInput(""); setWikiTitleInput(""); }}
+                              className="text-[10.5px] px-2 py-0.5 rounded transition-colors shrink-0"
+                              style={wikiAddOpen
+                                ? { background: "rgba(124,58,237,0.18)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.45)" }
+                                : { background: "var(--bg-item)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}
+                              title="문서 URL 추가"
+                            >{wikiAddOpen ? "✕ 취소" : "+ 문서 연결"}</button>
+                          </div>
+                          {wikiAddOpen && (
+                            <div className="space-y-1.5 rounded-lg p-2 mb-2" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
+                              <input
+                                autoFocus
+                                type="text"
+                                placeholder="URL (https://...)"
+                                value={wikiInput}
+                                onChange={e => { setWikiInput(e.target.value); setWikiError(null); }}
+                                onKeyDown={e => e.key === "Enter" && addWikiLink(selected.key)}
+                                className="w-full rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                              />
+                              <div className="flex gap-1.5">
+                                <input
+                                  type="text"
+                                  placeholder="제목 (선택)"
+                                  value={wikiTitleInput}
+                                  onChange={e => setWikiTitleInput(e.target.value)}
+                                  onKeyDown={e => e.key === "Enter" && addWikiLink(selected.key)}
+                                  className="flex-1 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                                  style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                                />
+                                <button
+                                  onClick={() => addWikiLink(selected.key)}
+                                  disabled={!wikiInput.trim()}
+                                  className="px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 transition-colors"
+                                  style={{ background: "#7c3aed", color: "#fff" }}
+                                >저장</button>
+                              </div>
+                              {wikiError && <p className="text-red-500 text-[11px]">{wikiError}</p>}
+                            </div>
+                          )}
+                          {allDocsFm.length === 0 ? (
+                            <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>연결된 문서 없음</p>
+                          ) : (
+                            <div className="space-y-1">
+                              {allDocsFm.map(d => {
+                                const meta = DOC_TYPE_META[d.type];
+                                const srcLabel = d.source.kind === "self" ? "self" : d.source.tmKey;
+                                return (
+                                  <a
+                                    key={d.url}
+                                    href={d.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="flex items-center gap-2 px-3 py-2 rounded-lg text-xs hover:opacity-80 transition-opacity"
+                                    style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
+                                    title={d.url}
+                                  >
+                                    <span className="shrink-0 text-[13px] leading-none" aria-hidden>{meta.icon}</span>
+                                    <span className="flex-1 min-w-0 truncate">{d.title}</span>
+                                    <span className="shrink-0 text-[10px]" style={{ color: meta.color }}>{meta.label}</span>
+                                    <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {srcLabel}</span>
+                                  </a>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    )}
+                      );
+                    })()}
 
                     {/* 최근 Weekly 요약 — Focus Mode 공통 helper. 데이터 없으면 outer div도 렌더 안 함. */}
                     {(() => {
@@ -7636,9 +7721,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               return (
                 <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-                  <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
-                    현재 필요한 액션
-                  </p>
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
+                      현재 필요한 액션
+                    </p>
+                    {/* Phase 5: 미연결 상태에서도 항상 노출. Action 카드 헤더 우측. */}
+                    <button
+                      onClick={() => syncJiraLinks(selected.key)}
+                      disabled={syncingJiraLinksFor === selected.key}
+                      className="text-[10.5px] px-2 py-0.5 rounded transition-colors disabled:opacity-40 shrink-0"
+                      style={{ color: "#34d399", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.25)" }}
+                      title="Jira issue link 에서 ETR 연결 정보 가져오기"
+                    >{syncingJiraLinksFor === selected.key ? "동기화 중…" : "↻ Jira 연결 확인"}</button>
+                  </div>
                   <div className="space-y-1.5">
                     {visible.map(action => {
                       const s = LEVEL_STYLE[action.level];
@@ -7802,6 +7897,123 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   })}
                 </div>
               </div>
+              );
+            })()}
+
+            {/* ══════════════════════════════════════════════════════
+                Phase 5: 관련 문서 카드 (상위 영역)
+                self (TM) + linked ETR docs 통합. classifyDoc 으로 type 분류.
+                "+ 문서 연결" 버튼으로 빠른 추가. Tier 4 상세 관리 UI 와 병행.
+                ══════════════════════════════════════════════════════ */}
+            {detailTab === "overview" && !selected.key.startsWith("ETR-") && (() => {
+              // TM 자체 docs
+              const selfDocs: LinkedDoc[] = [];
+              if (selected.twoPagerUrl) {
+                selfDocs.push({ url: selected.twoPagerUrl, title: "2-Pager", type: "2Pager", source: { kind: "self" } });
+              }
+              if (selected.prdUrl) {
+                selfDocs.push({ url: selected.prdUrl, title: "PRD", type: "PRD", source: { kind: "self" } });
+              }
+              for (const w of etrMap[selected.key]?.wikiLinks ?? []) {
+                if (!w?.url) continue;
+                selfDocs.push({ url: w.url, title: w.title || w.url, type: classifyDoc(w.url, w.title), source: { kind: "self" } });
+              }
+              // linked ETR docs (TM 관점에서 보강 정보)
+              const linkedDocs: LinkedDoc[] = [];
+              const fmJiraEtrs2 = filterEtrJiraLinks(selected.jiraLinks);
+              const fmMerged2 = mergeJiraAndManualEtrTickets(etrMap[selected.key]?.etrTickets, fmJiraEtrs2);
+              for (const me of fmMerged2) {
+                const etrTicket = ticketByKey.get(me.key);
+                if (etrTicket?.twoPagerUrl) linkedDocs.push({ url: etrTicket.twoPagerUrl, title: "2-Pager", type: "2Pager", source: { kind: "tm", tmKey: me.key } });
+                if (etrTicket?.prdUrl)      linkedDocs.push({ url: etrTicket.prdUrl, title: "PRD", type: "PRD", source: { kind: "tm", tmKey: me.key } });
+                for (const w of etrMap[me.key]?.wikiLinks ?? []) {
+                  if (!w?.url) continue;
+                  linkedDocs.push({ url: w.url, title: w.title || w.url, type: classifyDoc(w.url, w.title), source: { kind: "tm", tmKey: me.key } });
+                }
+              }
+              const allDocs = dedupeDocsByUrl([...selfDocs, ...linkedDocs]);
+              return (
+                <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid rgba(168,85,247,0.20)" }}>
+                  <div className="flex items-center justify-between mb-2 gap-2">
+                    <div className="flex items-center gap-1.5">
+                      <span style={{ color: "#a78bfa", fontSize: 12 }}>🗂</span>
+                      <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#a78bfa" }}>관련 문서</p>
+                      {allDocs.length > 0 && (
+                        <span className="text-[10px] font-mono opacity-70" style={{ color: "#a78bfa" }}>{allDocs.length}건</span>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => { setWikiAddOpen(v => !v); setWikiError(null); setWikiInput(""); setWikiTitleInput(""); }}
+                      className="text-[10.5px] px-2 py-0.5 rounded transition-colors shrink-0"
+                      style={wikiAddOpen
+                        ? { background: "rgba(124,58,237,0.18)", color: "#a78bfa", border: "1px solid rgba(124,58,237,0.45)" }
+                        : { background: "var(--bg-item)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}
+                      title="현재 티켓에 문서 URL 추가"
+                    >{wikiAddOpen ? "✕ 취소" : "+ 문서 연결"}</button>
+                  </div>
+
+                  {/* 추가 input (간단 form) */}
+                  {wikiAddOpen && (
+                    <div className="space-y-1.5 rounded-lg p-2 mb-2" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
+                      <input
+                        autoFocus
+                        type="text"
+                        placeholder="URL (https://...)"
+                        value={wikiInput}
+                        onChange={e => { setWikiInput(e.target.value); setWikiError(null); }}
+                        onKeyDown={e => e.key === "Enter" && addWikiLink(selected.key)}
+                        className="w-full rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                        style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                      />
+                      <div className="flex gap-1.5">
+                        <input
+                          type="text"
+                          placeholder="제목 (비우면 URL 에서 자동 추출)"
+                          value={wikiTitleInput}
+                          onChange={e => setWikiTitleInput(e.target.value)}
+                          onKeyDown={e => e.key === "Enter" && addWikiLink(selected.key)}
+                          className="flex-1 rounded px-2 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                        />
+                        <button
+                          onClick={() => addWikiLink(selected.key)}
+                          disabled={!wikiInput.trim()}
+                          className="px-3 py-1.5 rounded text-xs font-medium disabled:opacity-40 transition-colors"
+                          style={{ background: "#7c3aed", color: "#fff" }}
+                        >저장</button>
+                      </div>
+                      {wikiError && <p className="text-red-500 text-[11px]">{wikiError}</p>}
+                    </div>
+                  )}
+
+                  {/* 문서 목록 */}
+                  {allDocs.length === 0 ? (
+                    <p className="text-[11.5px]" style={{ color: "var(--text-subtle)" }}>연결된 문서 없음</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {allDocs.map(d => {
+                        const meta = DOC_TYPE_META[d.type];
+                        const sourceLabel = d.source.kind === "self" ? "self" : d.source.tmKey;
+                        return (
+                          <a
+                            key={d.url}
+                            href={d.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-xs hover:opacity-80 transition-opacity"
+                            style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+                            title={d.url}
+                          >
+                            <span className="shrink-0 text-[13px] leading-none" aria-hidden>{meta.icon}</span>
+                            <span className="flex-1 min-w-0 truncate" style={{ color: "var(--text-primary)" }}>{d.title}</span>
+                            <span className="shrink-0 text-[10px]" style={{ color: meta.color }}>{meta.label}</span>
+                            <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {sourceLabel}</span>
+                          </a>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               );
             })()}
 
