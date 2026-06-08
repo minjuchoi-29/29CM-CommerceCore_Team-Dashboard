@@ -3115,12 +3115,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const sourceParam = params.get("source");
     const modeParam   = params.get("mode");   // "focus" → Focus Mode 자동 진입
 
+    // ETR 은 /etr-review 페이지 전용 — URL 딥링크로 진입한 경우 redirect.
+    // TicketBoard 는 Execution 티켓 전용 영역.
+    if (ticketParam?.startsWith("ETR-")) {
+      window.location.replace(`/etr-review?key=${encodeURIComponent(ticketParam)}`);
+      return;
+    }
+
     if (!ticketParam) {
       // Phase 3: URL 에 ?ticket= 없으면 localStorage 의 cc-planning-selected-ticket 으로 복원
       // (다른 페이지 이동 후 돌아왔을 때 마지막 선택 ticket 복구)
       if (typeof window === "undefined") return;
       const restored = localStorage.getItem("cc-planning-selected-ticket");
       if (restored && !deepLinkProcessedRef.current) {
+        // ETR key 가 남아있으면 localStorage 클리어 후 /etr-review 로 redirect.
+        if (restored.startsWith("ETR-")) {
+          try { localStorage.removeItem("cc-planning-selected-ticket"); } catch {}
+          window.location.replace(`/etr-review?key=${encodeURIComponent(restored)}`);
+          return;
+        }
         const match = tickets.find(t => t.key === restored);
         if (match) {
           setSelected(match);
@@ -3154,7 +3167,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
     // ── 1. lifecycle 탭 결정 ─────────────────────────────────────────────────
     // priority: ?ptab= query > ticket.status 기반 자동 계산
-    // Phase 2: "요청 검토 중" 탭은 /etr-review 페이지로 이관됨
     const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
 
     function calcPlanningTab(status: string): string {
@@ -3727,6 +3739,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       if (!s) return;
       if (s.tab) setPlanningTab(s.tab);
       if (s.ticket) {
+        // ETR 은 /etr-review 페이지 전용 — popstate 복원 시에도 redirect.
+        if (s.ticket.startsWith("ETR-")) {
+          window.location.replace(`/etr-review?key=${encodeURIComponent(s.ticket)}`);
+          return;
+        }
         const t = dedupedTickets.find(t => t.key === s.ticket);
         if (t) {
           setSelected(t);
@@ -5468,7 +5485,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         {/* 빠른 필터 행: 검토필요 + 최근 2주 신규 */}
         {(() => {
-          // 검토필요: 탭 무관하게 전체 기준 (플래닝 대기·검토 + 요청 검토 중 포함 총합)
+          // 검토필요: 탭 무관하게 전체 ticket 기준 총합
           const reviewCount = dedupedTickets.filter(t => getPlanningVal(planning[t.key]).reviewNeeded).length;
           // 최근 2주 신규: 현재 탭 기준
           const newCount    = preFiltered.filter(t => isRecentTicket(t.key)).length;
@@ -8257,7 +8274,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 transition: "box-shadow 0.4s ease, border-color 0.4s ease",
               }}
             >
-              {selected.key.startsWith("ETR-") ? null : (<>
               {/* 섹션 헤더 */}
               <div className="flex items-center gap-1.5 mb-2.5">
                 <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>요구사항 출처</p>
@@ -8531,7 +8547,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   <p className="text-[12px]" style={{ color: "var(--text-subtle)" }}>연결된 문서가 없습니다</p>
                 )}
               </div>
-              </>)}
             </div>
 
             </>) /* ─ Overview: ETR + Wiki (구 Block C, Tier 4 안으로 inline 이동) 끝 ─ */}
