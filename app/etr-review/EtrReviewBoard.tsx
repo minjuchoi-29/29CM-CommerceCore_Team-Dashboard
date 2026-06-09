@@ -15,6 +15,7 @@ import {
   isReviewPending,
   isReviewed,
   isClosed,
+  statusUpdateNeeded,
   ETR_REVIEW_FILTER_LABEL,
   DOC_TYPE_META,
   type LinkedWork,
@@ -63,6 +64,15 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [etrMap, setEtrMap]         = useState<Record<string, EtrInfoEntry>>({});
   const [memos, setMemos]           = useState<Record<string, Memo>>({});
   const [filter, setFilter]         = useState<EtrReviewFilterKey>("needsAction");
+  // Phase A: ETR Jira status 기준 dropdown 필터 ("" = 전체)
+  const ETR_STATUS_FILTER_KEY = "cc-etr-status-filter";
+  const [statusFilter, setStatusFilter] = useState<string>(() => {
+    if (typeof window === "undefined") return "";
+    return localStorage.getItem(ETR_STATUS_FILTER_KEY) ?? "";
+  });
+  useEffect(() => {
+    try { localStorage.setItem(ETR_STATUS_FILTER_KEY, statusFilter); } catch {}
+  }, [statusFilter]);
   const [search, setSearch]         = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
@@ -148,10 +158,30 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     [tickets, hiddenKeys],
   );
 
+  // Phase A: "상태 업데이트 필요" 판정 set — row badge + filter 양쪽에서 사용
+  const statusUpdateNeededSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const t of allEtrTickets) {
+      if (statusUpdateNeeded(etrReverseMap.get(t.key) ?? [], t.status)) {
+        s.add(t.key);
+      }
+    }
+    return s;
+  }, [allEtrTickets, etrReverseMap]);
+
+  // Phase A: ETR 에 실제 등장하는 status 값 — dropdown 옵션 source
+  const availableStatuses = useMemo(() => {
+    const set = new Set<string>();
+    for (const t of allEtrTickets) {
+      if (t.status) set.add(t.status);
+    }
+    return Array.from(set).sort();
+  }, [allEtrTickets]);
+
   // 카운트 (필터별)
   const counts = useMemo(() => {
     const c: Record<EtrReviewFilterKey, number> = {
-      needsAction: 0, all: 0, noLinkedWork: 0, hasLinkedWork: 0, reviewed: 0, closed: 0,
+      needsAction: 0, all: 0, statusUpdateNeeded: 0, noLinkedWork: 0, hasLinkedWork: 0, reviewed: 0, closed: 0,
     };
     for (const t of allEtrTickets) {
       const lwSum = deriveLinkedWorkSummary(etrReverseMap.get(t.key) ?? []);
@@ -162,9 +192,10 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
       if (isReviewed(t.status)) c.reviewed++;
       if (isClosed(t.status)) c.closed++;
       if (noLW && isReviewPending(t.status)) c.needsAction++;
+      if (statusUpdateNeededSet.has(t.key)) c.statusUpdateNeeded++;
     }
     return c;
-  }, [allEtrTickets, etrReverseMap]);
+  }, [allEtrTickets, etrReverseMap, statusUpdateNeededSet]);
 
   // 필터 + 정렬 적용
   const filtered = useMemo(() => {
@@ -174,14 +205,17 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
       const noLW = lwSum.count === 0;
       let pass = true;
       switch (filter) {
-        case "needsAction":   pass = noLW && isReviewPending(t.status); break;
-        case "all":           pass = true; break;
-        case "noLinkedWork":  pass = noLW; break;
-        case "hasLinkedWork": pass = !noLW; break;
-        case "reviewed":      pass = isReviewed(t.status); break;
-        case "closed":        pass = isClosed(t.status); break;
+        case "needsAction":        pass = noLW && isReviewPending(t.status); break;
+        case "all":                pass = true; break;
+        case "statusUpdateNeeded": pass = statusUpdateNeededSet.has(t.key); break;
+        case "noLinkedWork":       pass = noLW; break;
+        case "hasLinkedWork":      pass = !noLW; break;
+        case "reviewed":           pass = isReviewed(t.status); break;
+        case "closed":             pass = isClosed(t.status); break;
       }
       if (!pass) return false;
+      // Phase A: Jira status 필터 — chip 과 AND 조합
+      if (statusFilter && t.status !== statusFilter) return false;
       if (q && !t.summary.toLowerCase().includes(q) && !t.key.toLowerCase().includes(q)) return false;
       return true;
     });
@@ -220,7 +254,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     const sorted = [...out].sort(cmp);
     if (sort.dir === "desc") sorted.reverse();
     return sorted;
-  }, [allEtrTickets, filter, search, etrReverseMap, sort, etrMap, ticketByKey]);
+  }, [allEtrTickets, filter, statusFilter, statusUpdateNeededSet, search, etrReverseMap, sort, etrMap, ticketByKey]);
 
   const selected = selectedKey ? ticketByKey.get(selectedKey) ?? null : null;
 
@@ -397,17 +431,21 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
 
         {/* ── Filter Tabs (sticky) ── */}
         <nav className="shrink-0 px-6 py-3 flex items-center gap-1.5 flex-wrap" style={{ borderBottom: "1px solid var(--border)" }}>
-          {(["needsAction", "all", "noLinkedWork", "hasLinkedWork", "reviewed", "closed"] as EtrReviewFilterKey[]).map(k => {
+          {(["needsAction", "all", "statusUpdateNeeded", "noLinkedWork", "hasLinkedWork", "reviewed", "closed"] as EtrReviewFilterKey[]).map(k => {
             const active = filter === k;
+            const isWarning = k === "statusUpdateNeeded";
+            const activeBg     = isWarning ? "rgba(245,158,11,0.15)" : "rgba(99,102,241,0.12)";
+            const activeColor  = isWarning ? "#d97706" : "#818cf8";
+            const activeBorder = isWarning ? "rgba(245,158,11,0.45)" : "rgba(99,102,241,0.35)";
             return (
               <button
                 key={k}
                 onClick={() => setFilter(k)}
                 className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center gap-1.5"
                 style={{
-                  background: active ? "rgba(99,102,241,0.12)" : "var(--bg-item)",
-                  color:      active ? "#818cf8" : "var(--text-muted)",
-                  border:     `1px solid ${active ? "rgba(99,102,241,0.35)" : "var(--border)"}`,
+                  background: active ? activeBg : "var(--bg-item)",
+                  color:      active ? activeColor : "var(--text-muted)",
+                  border:     `1px solid ${active ? activeBorder : "var(--border)"}`,
                 }}
               >
                 <span>{ETR_REVIEW_FILTER_LABEL[k]}</span>
@@ -415,6 +453,19 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
               </button>
             );
           })}
+          {/* Phase A: ETR Jira status dropdown — 기존 chip 과 AND 조합 */}
+          <div className="ml-2 flex items-center gap-1.5">
+            <span className="text-[10px] font-semibold" style={{ color: "var(--text-subtle)" }}>Status</span>
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value)}
+              className="px-2 py-1.5 rounded-lg text-xs border cursor-pointer"
+              style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none" }}
+            >
+              <option value="">전체</option>
+              {availableStatuses.map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+          </div>
           <div className="ml-auto">
             <input
               type="text"
@@ -460,6 +511,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
                 const src = deriveSource(t);
                 const reporter = t.requestMeta?.reporter ?? "-";
                 const priority = t.requestPriority ?? "-";
+                const needsStatusUpdate = statusUpdateNeededSet.has(t.key);
                 return (
                   <div
                     key={t.key}
@@ -484,10 +536,19 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
                       className="w-28 shrink-0 font-mono text-xs font-semibold text-blue-500 hover:underline truncate"
                     >{t.key}</a>
                     <span
-                      className="flex-1 min-w-0 pr-3 font-medium leading-snug"
-                      style={{ color: "var(--text-primary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+                      className="flex-1 min-w-0 pr-3 font-medium leading-snug flex items-start gap-2"
+                      style={{ color: "var(--text-primary)" }}
                       title={t.summary}
-                    >{t.summary}</span>
+                    >
+                      {needsStatusUpdate && (
+                        <span
+                          className="shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
+                          style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.45)", color: "#d97706" }}
+                          title="연결된 실행 티켓이 모두 완료되었습니다. ETR 상태를 최신으로 업데이트해주세요."
+                        >⚠ 상태 업데이트</span>
+                      )}
+                      <span className="min-w-0" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{t.summary}</span>
+                    </span>
                     <span className="w-32 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${chip(STATUS_PILL[t.status])}`}>
                         {t.status}
@@ -606,6 +667,7 @@ function SimpleDetail({
   const linkedDocs: LinkedDoc[] = collectLinkedDocs(ticket.key, etrReverseMap, etrMap, ticketByKey);
   const src = deriveSource(ticket);
   const reporter = ticket.requestMeta?.reporter ?? "-";
+  const needsStatusUpdate = statusUpdateNeeded(linkedWork, ticket.status);
 
   return (
     <div className="p-5">
@@ -644,6 +706,22 @@ function SimpleDetail({
         {ticket.requestDept && <Meta label="Main Subject" value={ticket.requestDept} />}
         {ticket.bodyRequestDept && <Meta label="요청부문" value={ticket.bodyRequestDept} />}
       </div>
+
+      {/* Phase A: 상태 업데이트 필요 안내 */}
+      {needsStatusUpdate && (
+        <div
+          className="rounded-lg px-3 py-2.5 mb-4 flex items-start gap-2.5"
+          style={{ background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.40)" }}
+        >
+          <span className="text-base leading-none" style={{ color: "#d97706" }}>⚠</span>
+          <div className="min-w-0">
+            <p className="text-[12px] font-semibold mb-0.5" style={{ color: "#d97706" }}>상태 업데이트 필요</p>
+            <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-primary)" }}>
+              연결된 실행 티켓이 모두 완료되었습니다. ETR 상태를 최신 상태로 업데이트해주세요.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* 메모 */}
       {memo && (

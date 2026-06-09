@@ -238,18 +238,20 @@ export function hasDocs(
 export type EtrReviewFilterKey =
   | "needsAction"      // 처리 필요: 실행 티켓 없음 AND (검토대기 OR 검토중)
   | "all"              // 전체 요청
+  | "statusUpdateNeeded" // Phase A: 실행 티켓 모두 완료 + ETR 미종결
   | "noLinkedWork"     // 실행 티켓 없음 (linkedWorkCount === 0)
   | "hasLinkedWork"    // 실행 연결됨 (linkedWorkCount > 0)
   | "reviewed"         // 검토 완료 — 검토완료-우선착수, 검토완료-백로그 등
   | "closed";          // 종결/제외 — 완료, 반려, 중단, 미진행
 
 export const ETR_REVIEW_FILTER_LABEL: Record<EtrReviewFilterKey, string> = {
-  needsAction:    "처리 필요",
-  all:            "전체 요청",
-  noLinkedWork:   "실행 티켓 없음",
-  hasLinkedWork:  "실행 연결됨",
-  reviewed:       "검토 완료",
-  closed:         "종결/제외",
+  needsAction:        "처리 필요",
+  all:                "전체 요청",
+  statusUpdateNeeded: "⚠ 상태 업데이트 필요",
+  noLinkedWork:       "실행 티켓 없음",
+  hasLinkedWork:      "실행 연결됨",
+  reviewed:           "검토 완료",
+  closed:             "종결/제외",
 };
 
 const STATUS_REVIEW_PENDING = new Set<string>([
@@ -279,6 +281,36 @@ export function isReviewed(status: string): boolean {
 }
 export function isClosed(status: string): boolean {
   return STATUS_CLOSED.has(status);
+}
+
+// ─── Phase A: ETR 상태 업데이트 필요 판정 ──────────────────────────────────
+// 실행 티켓 (TM 등) 완료 판정 — Jira statusCategory 가 코드베이스에 없으므로
+// status text 만으로 판정. HOLD / QA중 / 개발중 은 완료가 아님.
+const DONE_EXECUTION_STATUSES = new Set<string>([
+  "완료", "done", "Done", "DONE",
+  "론치완료", "배포완료",
+  "철회", "종료",
+]);
+export function isExecutionDone(status: string): boolean {
+  return DONE_EXECUTION_STATUSES.has(status);
+}
+
+/** 연결된 실행 티켓이 모두 완료 상태인지. 빈 배열은 false. */
+export function areAllLinkedWorkDone(linkedWork: LinkedWork[]): boolean {
+  if (linkedWork.length === 0) return false;
+  return linkedWork.every(w => isExecutionDone(w.status));
+}
+
+/**
+ * ETR 에 "상태 업데이트 필요" 마커를 띄울지 판정.
+ *  1) linkedWorkCount > 0
+ *  2) 연결된 실행 티켓이 모두 완료
+ *  3) ETR 자체 status 가 terminal (isClosed) 이 아님
+ */
+export function statusUpdateNeeded(linkedWork: LinkedWork[], etrStatus: string): boolean {
+  if (!areAllLinkedWorkDone(linkedWork)) return false;
+  if (isClosed(etrStatus)) return false;
+  return true;
 }
 
 // ─── Phase 4: Jira issue link 기반 ETR 연결 ────────────────────────────────
