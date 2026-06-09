@@ -6139,8 +6139,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               >
                 <option value="eta">ETA순</option>
                 <option value="default">등록순</option>
-                <option value="priority">우선순위 P1↑</option>
-                <option value="priorityDesc">우선순위 P9↓</option>
+                <option value="priority">우선순위 P1 ↑</option>
+                <option value="priorityDesc">우선순위 P1 ↓</option>
                 <option value="startDate">시작일순</option>
                 <option value="ticketNo">티켓 No순</option>
               </select>
