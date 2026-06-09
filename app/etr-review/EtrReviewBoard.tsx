@@ -673,23 +673,33 @@ function SimpleDetail({
 
   return (
     <div className="p-5">
-      {/* Header */}
+      {/* Header — Priority 1: TM detail 패턴과 통일.
+          Row 1: Key + Summary (inline, 강조).
+          Row 2: Status pill + Source chip (메타). */}
       <div className="flex items-start justify-between gap-3 mb-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-1.5 mb-1">
+        <div className="min-w-0 flex-1">
+          {/* Row 1: Key + Summary inline */}
+          <div className="flex items-start gap-2 mb-1.5 min-w-0">
             <TicketCopyButton ticketKey={ticket.key} summary={ticket.summary} size="xs" />
             <a
               href={`${JIRA_BASE}${ticket.key}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="font-mono text-xs font-semibold text-blue-500 hover:underline"
+              className="font-mono text-[13px] font-semibold text-blue-500 hover:underline shrink-0 mt-0.5"
             >{ticket.key}</a>
+            <p
+              className="text-[15px] font-semibold leading-snug min-w-0"
+              style={{ color: "var(--text-primary)", wordBreak: "break-word" }}
+              title={ticket.summary}
+            >{ticket.summary}</p>
+          </div>
+          {/* Row 2: Status + Source */}
+          <div className="flex items-center gap-1.5 flex-wrap">
             <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${chip(STATUS_PILL[ticket.status])}`}>
               {ticket.status}
             </span>
             <SourceChip source={src} isManual={ticket.isManual} sourceFilters={ticket.sourceFilters} />
           </div>
-          <h2 className="text-base font-semibold leading-snug" style={{ color: "var(--text-primary)" }}>{ticket.summary}</h2>
         </div>
         <button
           onClick={onClose}
