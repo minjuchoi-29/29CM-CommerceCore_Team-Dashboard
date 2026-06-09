@@ -528,27 +528,29 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
                     <span className="w-6 shrink-0 flex items-center justify-center">
                       <TicketCopyButton ticketKey={t.key} summary={t.summary} size="xs" />
                     </span>
-                    <a
-                      href={`${JIRA_BASE}${t.key}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      onClick={e => e.stopPropagation()}
-                      className="w-28 shrink-0 font-mono text-xs font-semibold text-blue-500 hover:underline truncate"
-                    >{t.key}</a>
-                    <span
-                      className="flex-1 min-w-0 pr-3 font-medium leading-snug flex items-start gap-2"
-                      style={{ color: "var(--text-primary)" }}
-                      title={t.summary}
-                    >
+                    {/* Phase A.1: Key + ⚠ icon-only badge. Summary cell 은 PR #15 이전 구조 (직접 -webkit-box) 로 복귀. */}
+                    <span className="w-28 shrink-0 flex items-center gap-1.5">
+                      <a
+                        href={`${JIRA_BASE}${t.key}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={e => e.stopPropagation()}
+                        className="font-mono text-xs font-semibold text-blue-500 hover:underline truncate min-w-0"
+                      >{t.key}</a>
                       {needsStatusUpdate && (
                         <span
-                          className="shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[10px] font-bold whitespace-nowrap"
+                          className="shrink-0 inline-flex items-center justify-center w-4 h-4 rounded text-[10px] font-bold"
                           style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.45)", color: "#d97706" }}
-                          title="연결된 실행 티켓이 모두 완료되었습니다. ETR 상태를 최신으로 업데이트해주세요."
-                        >⚠ 상태 업데이트</span>
+                          title="상태 업데이트 필요 — 연결된 실행 티켓이 모두 완료되었습니다."
+                          aria-label="상태 업데이트 필요"
+                        >⚠</span>
                       )}
-                      <span className="min-w-0" style={{ display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{t.summary}</span>
                     </span>
+                    <span
+                      className="flex-1 min-w-0 pr-3 font-medium leading-snug"
+                      style={{ color: "var(--text-primary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
+                      title={t.summary}
+                    >{t.summary}</span>
                     <span className="w-32 shrink-0 flex justify-center">
                       <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${chip(STATUS_PILL[t.status])}`}>
                         {t.status}
@@ -714,11 +716,20 @@ function SimpleDetail({
           style={{ background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.40)" }}
         >
           <span className="text-base leading-none" style={{ color: "#d97706" }}>⚠</span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="text-[12px] font-semibold mb-0.5" style={{ color: "#d97706" }}>상태 업데이트 필요</p>
-            <p className="text-[11px] leading-relaxed" style={{ color: "var(--text-primary)" }}>
+            <p className="text-[11px] leading-relaxed mb-2" style={{ color: "var(--text-primary)" }}>
               연결된 실행 티켓이 모두 완료되었습니다. ETR 상태를 최신 상태로 업데이트해주세요.
             </p>
+            <a
+              href={`${JIRA_BASE}${ticket.key}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors"
+              style={{ background: "rgba(245,158,11,0.20)", border: "1px solid rgba(245,158,11,0.45)", color: "#d97706" }}
+            >
+              Jira 에서 열기 ↗
+            </a>
           </div>
         </div>
       )}
