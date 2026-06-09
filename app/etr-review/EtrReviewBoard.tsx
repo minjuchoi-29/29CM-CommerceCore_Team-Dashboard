@@ -486,30 +486,32 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
             </div>
           ) : (
             <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-              {/* Header row — sortable */}
+              {/* Header row — sortable.
+                  Fix: Summary min-w-[200px] 로 collapse 방지.
+                  Detail open 시 보조 column (ETA / Linked Work / Docs / Source) 숨김 → Summary 폭 확보.
+                  보고자 column 은 list 에서 완전 제거 (detail 메타에 노출됨). */}
               <div className="flex items-center px-4 py-2.5 text-[11px] font-semibold uppercase tracking-wider sticky top-0 z-10"
                 style={{ background: "var(--bg-item)", color: "var(--text-subtle)", borderBottom: "1px solid var(--border)" }}>
                 <span className="w-6 shrink-0" />
-                <SortHead col="key"     label="Key"     className="w-28 shrink-0"        align="left" />
-                <SortHead col="summary" label="Summary" className="flex-1 min-w-0 pr-3" align="left" />
+                <SortHead col="key"     label="Key"     className="w-28 shrink-0"            align="left" />
+                <SortHead col="summary" label="Summary" className="flex-1 min-w-[200px] pr-3" align="left" />
                 <SortHead col="status"     label="Status"      className="w-32 shrink-0" />
                 <SortHead col="assignee"   label="담당자"       className="w-24 shrink-0" />
-                <SortHead col="reporter"   label="보고자"       className="w-24 shrink-0" />
-                <SortHead col="eta"        label="ETA"          className="w-24 shrink-0" />
+                {!selected && <SortHead col="eta"        label="ETA"          className="w-24 shrink-0" />}
                 <SortHead col="priority"   label="우선순위"      className="w-16 shrink-0" />
-                <SortHead col="linkedWork" label="Linked Work"  className="w-24 shrink-0" />
-                <SortHead col="docs"       label="Docs"         className="w-14 shrink-0" />
-                <SortHead col="source"     label="Source"       className="w-28 shrink-0" />
+                {!selected && <SortHead col="linkedWork" label="Linked Work"  className="w-24 shrink-0" />}
+                {!selected && <SortHead col="docs"       label="Docs"         className="w-14 shrink-0" />}
+                {!selected && <SortHead col="source"     label="Source"       className="w-28 shrink-0" />}
                 <span className="w-8 shrink-0" />
               </div>
 
               {/* Rows */}
               {filtered.map(t => {
                 const isSelected = selectedKey === t.key;
-                const lwSum = deriveLinkedWorkSummary(etrReverseMap.get(t.key) ?? []);
-                const docsExist = hasDocs(t.key, etrReverseMap, etrMap, ticketByKey);
-                const src = deriveSource(t);
-                const reporter = t.requestMeta?.reporter ?? "-";
+                // Detail open 시 보조 column 숨김 → 일부 derive 는 그때만 필요. 호출 비용 절약.
+                const lwSum = !selected ? deriveLinkedWorkSummary(etrReverseMap.get(t.key) ?? []) : { count: 0, representativeStatus: null as string | null };
+                const docsExist = !selected ? hasDocs(t.key, etrReverseMap, etrMap, ticketByKey) : false;
+                const src = !selected ? deriveSource(t) : "manual" as const;
                 const priority = t.requestPriority ?? "-";
                 const needsStatusUpdate = statusUpdateNeededSet.has(t.key);
                 return (
@@ -547,7 +549,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
                       )}
                     </span>
                     <span
-                      className="flex-1 min-w-0 pr-3 font-medium leading-snug"
+                      className="flex-1 min-w-[200px] pr-3 font-medium leading-snug"
                       style={{ color: "var(--text-primary)", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
                       title={t.summary}
                     >{t.summary}</span>
@@ -557,31 +559,38 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
                       </span>
                     </span>
                     <span className="w-24 shrink-0 text-xs text-center truncate" style={{ color: "var(--text-secondary)" }}>{t.assignee || "-"}</span>
-                    <span className="w-24 shrink-0 text-xs text-center truncate" style={{ color: "var(--text-secondary)" }}>{reporter}</span>
-                    <span className="w-24 shrink-0 text-xs text-center" style={{ color: t.eta && t.eta !== "-" ? "var(--text-primary)" : "var(--text-subtle)" }}>
-                      {t.eta && t.eta !== "-" ? t.eta : "—"}
-                    </span>
+                    {!selected && (
+                      <span className="w-24 shrink-0 text-xs text-center" style={{ color: t.eta && t.eta !== "-" ? "var(--text-primary)" : "var(--text-subtle)" }}>
+                        {t.eta && t.eta !== "-" ? t.eta : "—"}
+                      </span>
+                    )}
                     <span className="w-16 shrink-0 text-xs text-center" style={{ color: "var(--text-secondary)" }}>{priority}</span>
-                    <span className="w-24 shrink-0 flex justify-center">
-                      {lwSum.count === 0 ? (
-                        <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>—</span>
-                      ) : (
-                        <span className="flex items-center gap-1">
-                          <span className="text-[11px] font-mono font-semibold" style={{ color: "#34d399" }}>{lwSum.count}</span>
-                          {lwSum.representativeStatus && (
-                            <span className={`text-[10px] px-1 py-0.5 rounded ${chip(STATUS_PILL[lwSum.representativeStatus])}`}>
-                              {lwSum.representativeStatus}
-                            </span>
-                          )}
-                        </span>
-                      )}
-                    </span>
-                    <span className="w-14 shrink-0 text-center text-[11px]" style={{ color: docsExist ? "#a78bfa" : "var(--text-subtle)" }}>
-                      {docsExist ? "✓" : "—"}
-                    </span>
-                    <span className="w-28 shrink-0 flex justify-center">
-                      <SourceChip source={src} isManual={t.isManual} sourceFilters={t.sourceFilters} />
-                    </span>
+                    {!selected && (
+                      <span className="w-24 shrink-0 flex justify-center">
+                        {lwSum.count === 0 ? (
+                          <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>—</span>
+                        ) : (
+                          <span className="flex items-center gap-1">
+                            <span className="text-[11px] font-mono font-semibold" style={{ color: "#34d399" }}>{lwSum.count}</span>
+                            {lwSum.representativeStatus && (
+                              <span className={`text-[10px] px-1 py-0.5 rounded ${chip(STATUS_PILL[lwSum.representativeStatus])}`}>
+                                {lwSum.representativeStatus}
+                              </span>
+                            )}
+                          </span>
+                        )}
+                      </span>
+                    )}
+                    {!selected && (
+                      <span className="w-14 shrink-0 text-center text-[11px]" style={{ color: docsExist ? "#a78bfa" : "var(--text-subtle)" }}>
+                        {docsExist ? "✓" : "—"}
+                      </span>
+                    )}
+                    {!selected && (
+                      <span className="w-28 shrink-0 flex justify-center">
+                        <SourceChip source={src} isManual={t.isManual} sourceFilters={t.sourceFilters} />
+                      </span>
+                    )}
                     <span className="w-8 shrink-0" />
                   </div>
                 );
