@@ -23,7 +23,11 @@ export type LinkedDoc = {
   url: string;
   title: string;
   type: DocType;
-  source: { kind: "self" } | { kind: "tm"; tmKey: string };
+  // PR-B: source 에 "remotelink" 추가 — Jira API 의 remotelink endpoint 에서 가져온 web link.
+  source:
+    | { kind: "self" }
+    | { kind: "tm"; tmKey: string }
+    | { kind: "remotelink" };
 };
 
 type EtrInfoLike = {
@@ -96,6 +100,20 @@ function normalizeUrl(url: string): string {
   return url.trim().replace(/\/+$/, "").toLowerCase();
 }
 
+/**
+ * URL 기준 dedupe. 같은 URL 이 여러 source 에서 잡히면 우선순위로 한 항목만 남김.
+ *
+ * 우선순위 (높음 → 낮음):
+ *   1. self        — ETR/TM 자체에 사용자가 명시적으로 등록 (가장 신뢰)
+ *   2. remotelink  — Jira 가 공식 관리하는 web link
+ *   3. tm          — linked execution ticket 경유 (reverse 추적)
+ */
+const SOURCE_PRIORITY: Record<LinkedDoc["source"]["kind"], number> = {
+  self: 3,
+  remotelink: 2,
+  tm: 1,
+};
+
 export function dedupeDocsByUrl(docs: LinkedDoc[]): LinkedDoc[] {
   const seen = new Map<string, LinkedDoc>();
   for (const d of docs) {
@@ -106,19 +124,24 @@ export function dedupeDocsByUrl(docs: LinkedDoc[]): LinkedDoc[] {
       seen.set(key, d);
       continue;
     }
-    // self 우선 — ETR 자체에 등록된 문서가 TM 경유 중복보다 신뢰도 높음
-    if (existing.source.kind !== "self" && d.source.kind === "self") {
+    if (SOURCE_PRIORITY[d.source.kind] > SOURCE_PRIORITY[existing.source.kind]) {
       seen.set(key, d);
     }
   }
   return Array.from(seen.values());
 }
 
+/**
+ * PR-B: remoteLinks 옵션 파라미터 — /api/jira/remote-links 의 lazy fetch 결과를
+ * source.kind="remotelink" 로 LinkedDoc 에 편입. 호출자가 전달하지 않으면
+ * 기존 동작과 동일 (self + tm 만 수집).
+ */
 export function collectLinkedDocs(
   etrKey: string,
   reverseMap: Map<string, LinkedWork[]>,
   etrMap: Record<string, EtrInfoLike>,
   ticketByKey: Map<string, TicketLike>,
+  remoteLinks?: { url: string; title: string }[],
 ): LinkedDoc[] {
   const docs: LinkedDoc[] = [];
 
@@ -152,6 +175,11 @@ export function collectLinkedDocs(
     for (const w of etrMap[lw.tmKey]?.wikiLinks ?? []) {
       pushDoc(w?.url, w?.title ?? "", { kind: "tm", tmKey: lw.tmKey });
     }
+  }
+
+  // 3) Jira remote links (lazy fetched)
+  for (const rl of remoteLinks ?? []) {
+    pushDoc(rl?.url, rl?.title ?? "", { kind: "remotelink" });
   }
 
   return dedupeDocsByUrl(docs);

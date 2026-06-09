@@ -7387,7 +7387,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <div className="space-y-1">
                               {allDocsFm.map(d => {
                                 const meta = DOC_TYPE_META[d.type];
-                                const srcLabel = d.source.kind === "self" ? "self" : d.source.tmKey;
+                                // PR-B: TM detail 은 PR-C 에서 본격 통합. 여기서는 narrowing 만 보존.
+                                const srcLabel = d.source.kind === "self" ? "self" : d.source.kind === "tm" ? d.source.tmKey : "Jira Web";
                                 return (
                                   <a
                                     key={d.url}
@@ -8052,7 +8053,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <div className="space-y-1">
                       {allDocs.map(d => {
                         const meta = DOC_TYPE_META[d.type];
-                        const sourceLabel = d.source.kind === "self" ? "self" : d.source.tmKey;
+                        // PR-B: TM detail 은 PR-C 에서 본격 통합. 여기서는 narrowing 만 보존.
+                        const sourceLabel = d.source.kind === "self" ? "self" : d.source.kind === "tm" ? d.source.tmKey : "Jira Web";
                         return (
                           <a
                             key={d.url}
@@ -8468,7 +8470,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       <div className="space-y-1.5">
                         {linkedDocs.map(d => {
                           const meta = DOC_TYPE_META[d.type];
-                          const sourceLabel = d.source.kind === "self" ? "self" : d.source.tmKey;
+                          // PR-B: TM detail 은 PR-C 에서 본격 통합. 여기서는 narrowing 만 보존.
+                          const sourceLabel = d.source.kind === "self" ? "self" : d.source.kind === "tm" ? d.source.tmKey : "Jira Web";
                           return (
                             <div key={d.url} className="rounded-lg px-3 py-2 flex items-start gap-2" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
                               <span className="shrink-0 text-[14px] leading-none mt-0.5" aria-hidden>{meta.icon}</span>

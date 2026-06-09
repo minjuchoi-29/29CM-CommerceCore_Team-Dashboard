@@ -102,6 +102,10 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   // Phase B: 댓글 작성 진행 중인 etrKey
   const [commentingKey, setCommentingKey] = useState<string | null>(null);
 
+  // PR-B: Jira Remote Links lazy fetch — detail open 시점에만 호출, 같은 ticket 재open 은 in-memory cache 우선.
+  type RemoteLink = { url: string; title: string };
+  const [remoteLinksByKey, setRemoteLinksByKey] = useState<Record<string, RemoteLink[]>>({});
+
   // Phase 3: ?key= 딥링크 — URL 에 key 가 있으면 해당 ETR 자동 선택
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -264,6 +268,29 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   }, [allEtrTickets, filter, statusFilter, statusUpdateNeededSet, search, etrReverseMap, sort, etrMap, ticketByKey]);
 
   const selected = selectedKey ? ticketByKey.get(selectedKey) ?? null : null;
+
+  // PR-B: selected ETR detail open 시 Jira Remote Links lazy fetch.
+  //  - in-memory cache hit 시 skip
+  //  - 백엔드 (/api/jira/remote-links) 가 KV 1h TTL 로 추가 캐싱
+  //  - 실패해도 detail 표시는 계속 (links 만 빈 배열)
+  useEffect(() => {
+    if (!selectedKey) return;
+    if (selectedKey in remoteLinksByKey) return; // 이미 fetch 한 ticket
+    let cancelled = false;
+    fetch(`/api/jira/remote-links?issueKey=${encodeURIComponent(selectedKey)}`)
+      .then(r => r.ok ? r.json() as Promise<{ links?: RemoteLink[] }> : Promise.reject(new Error(`status ${r.status}`)))
+      .then(data => {
+        if (cancelled) return;
+        setRemoteLinksByKey(prev => ({ ...prev, [selectedKey]: data.links ?? [] }));
+      })
+      .catch(e => {
+        if (cancelled) return;
+        console.warn("[remote-links lazy fetch]", selectedKey, e);
+        // 빈 배열로 cache → 같은 detail 재open 시 재시도 안 함 (사용자가 새로고침 시점에 재시도)
+        setRemoteLinksByKey(prev => ({ ...prev, [selectedKey]: [] }));
+      });
+    return () => { cancelled = true; };
+  }, [selectedKey, remoteLinksByKey]);
 
   // ── actions ───────────────────────────────────────────────────────────
   function showToast(msg: string) {
@@ -731,6 +758,7 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
             commentedMeta={commentedMap[selected.key]}
             onComment={() => handleStatusUpdateComment(selected)}
             commenting={commentingKey === selected.key}
+            remoteLinks={remoteLinksByKey[selected.key]}
           />
         </aside>
       )}
@@ -779,6 +807,7 @@ function SimpleDetail({
   commentedMeta,
   onComment,
   commenting,
+  remoteLinks,
 }: {
   ticket: Ticket;
   etrMap: Record<string, EtrInfoEntry>;
@@ -793,9 +822,10 @@ function SimpleDetail({
   commentedMeta?: { lastCommentedAt: string; linkedWorkSnapshot: string[] };
   onComment: () => void;
   commenting: boolean;
+  remoteLinks?: { url: string; title: string }[];
 }) {
   const linkedWork: LinkedWork[] = etrReverseMap.get(ticket.key) ?? [];
-  const linkedDocs: LinkedDoc[] = collectLinkedDocs(ticket.key, etrReverseMap, etrMap, ticketByKey);
+  const linkedDocs: LinkedDoc[] = collectLinkedDocs(ticket.key, etrReverseMap, etrMap, ticketByKey, remoteLinks);
   const src = deriveSource(ticket);
   const reporter = ticket.requestMeta?.reporter ?? "-";
   const needsStatusUpdate = statusUpdateNeeded(linkedWork, ticket.status);
@@ -975,7 +1005,12 @@ function SimpleDetail({
           <div className="space-y-1.5">
             {linkedDocs.map(d => {
               const meta = DOC_TYPE_META[d.type];
-              const sourceLabel = d.source.kind === "self" ? "self" : d.source.tmKey;
+              // PR-B: source kind 별 라벨. remotelink 는 "Jira Web" chip 표시.
+              const sourceLabel =
+                d.source.kind === "self" ? "self"
+                : d.source.kind === "tm" ? d.source.tmKey
+                : "Jira Web";
+              const isRemoteLink = d.source.kind === "remotelink";
               return (
                 <div key={d.url} className="rounded-lg px-3 py-2 flex items-start gap-2" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
                   <span className="shrink-0 text-[14px] leading-none mt-0.5" aria-hidden>{meta.icon}</span>
@@ -991,7 +1026,15 @@ function SimpleDetail({
                     <div className="flex items-center gap-1.5 mt-0.5 text-[11px]" style={{ color: "var(--text-subtle)" }}>
                       <span style={{ color: meta.color }}>{meta.label}</span>
                       <span>·</span>
-                      <span>{sourceLabel}</span>
+                      {isRemoteLink ? (
+                        <span
+                          className="inline-flex items-center gap-0.5 px-1.5 py-px rounded text-[10px] font-medium"
+                          style={{ background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.40)", color: "#3b82f6" }}
+                          title="Jira ticket 의 Web Link"
+                        >🔗 Jira Web</span>
+                      ) : (
+                        <span>{sourceLabel}</span>
+                      )}
                     </div>
                   </div>
                 </div>
