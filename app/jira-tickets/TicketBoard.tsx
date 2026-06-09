@@ -1651,6 +1651,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 시트 우선순위 (key → priority 문자열)
   const [priorities, setPriorities] = useState<Record<string, string>>({});
+  // PR-C: Jira Remote Links (Web Links) lazy fetch — selected ticket 마다 1회. 같은 ticket 재open 은 in-memory cache 사용.
+  type RemoteLink = { url: string; title: string };
+  const [remoteLinksByKey, setRemoteLinksByKey] = useState<Record<string, RemoteLink[]>>({});
   const [priorityError, setPriorityError] = useState<string | null>(null);
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState, reviewNeeded?: boolean })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
@@ -3355,6 +3358,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     //   .catch(() => {})
     //   .finally(() => setActivityLoading(false));
   }, [selected?.key, detailTab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // PR-C: selected ticket detail open 시 Jira Remote Links lazy fetch.
+  //  - in-memory cache hit (이미 fetch 한 key) → skip
+  //  - 백엔드 /api/jira/remote-links 가 KV 1h TTL 로 추가 캐싱 (PR-A)
+  //  - 실패해도 detail 표시는 계속, 빈 배열로 cache → 같은 ticket 재진입 시 재시도 안 함
+  useEffect(() => {
+    const key = selected?.key;
+    if (!key) return;
+    if (key in remoteLinksByKey) return;
+    let cancelled = false;
+    fetch(`/api/jira/remote-links?issueKey=${encodeURIComponent(key)}`)
+      .then(r => r.ok ? r.json() as Promise<{ links?: RemoteLink[] }> : Promise.reject(new Error(`status ${r.status}`)))
+      .then(data => {
+        if (cancelled) return;
+        setRemoteLinksByKey(prev => ({ ...prev, [key]: data.links ?? [] }));
+      })
+      .catch(e => {
+        if (cancelled) return;
+        console.warn("[remote-links lazy fetch]", key, e);
+        setRemoteLinksByKey(prev => ({ ...prev, [key]: [] }));
+      });
+    return () => { cancelled = true; };
+  }, [selected?.key, remoteLinksByKey]);
 
   // ESC → 집중 보기 해제
   useEffect(() => {
@@ -7333,7 +7359,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           linkedDocsFm.push({ url: w.url, title: w.title || w.url, type: classifyDoc(w.url, w.title), source: { kind: "tm", tmKey: me.key } });
                         }
                       }
-                      const allDocsFm = dedupeDocsByUrl([...selfDocsFm, ...linkedDocsFm]);
+                      // PR-C: Jira Remote Links 통합 (lazy fetch via remoteLinksByKey)
+                      const remoteLinksFm: LinkedDoc[] = (remoteLinksByKey[selected.key] ?? []).map(rl => ({
+                        url: rl.url, title: rl.title || rl.url, type: classifyDoc(rl.url, rl.title),
+                        source: { kind: "remotelink" } as const,
+                      }));
+                      const allDocsFm = dedupeDocsByUrl([...selfDocsFm, ...linkedDocsFm, ...remoteLinksFm]);
                       return (
                         <div>
                           <div className="flex items-center justify-between mb-2 gap-2">
@@ -7387,7 +7418,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <div className="space-y-1">
                               {allDocsFm.map(d => {
                                 const meta = DOC_TYPE_META[d.type];
-                                // PR-B: TM detail 은 PR-C 에서 본격 통합. 여기서는 narrowing 만 보존.
+                                // PR-C: source.kind 별 라벨. remotelink → 🔗 Jira Web chip.
+                                const isRemoteLink = d.source.kind === "remotelink";
                                 const srcLabel = d.source.kind === "self" ? "self" : d.source.kind === "tm" ? d.source.tmKey : "Jira Web";
                                 return (
                                   <a
@@ -7402,7 +7434,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     <span className="shrink-0 text-[13px] leading-none" aria-hidden>{meta.icon}</span>
                                     <span className="flex-1 min-w-0 truncate">{d.title}</span>
                                     <span className="shrink-0 text-[10px]" style={{ color: meta.color }}>{meta.label}</span>
-                                    <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {srcLabel}</span>
+                                    {isRemoteLink ? (
+                                      <span
+                                        className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-px rounded text-[10px] font-medium"
+                                        style={{ background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.40)", color: "#3b82f6" }}
+                                        title="Jira ticket 의 Web Link"
+                                      >🔗 Jira Web</span>
+                                    ) : (
+                                      <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {srcLabel}</span>
+                                    )}
                                   </a>
                                 );
                               })}
@@ -7991,7 +8031,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   linkedDocs.push({ url: w.url, title: w.title || w.url, type: classifyDoc(w.url, w.title), source: { kind: "tm", tmKey: me.key } });
                 }
               }
-              const allDocs = dedupeDocsByUrl([...selfDocs, ...linkedDocs]);
+              // PR-C: Jira Remote Links 통합
+              const remoteLinksTm: LinkedDoc[] = (remoteLinksByKey[selected.key] ?? []).map(rl => ({
+                url: rl.url, title: rl.title || rl.url, type: classifyDoc(rl.url, rl.title),
+                source: { kind: "remotelink" } as const,
+              }));
+              const allDocs = dedupeDocsByUrl([...selfDocs, ...linkedDocs, ...remoteLinksTm]);
               return (
                 <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid rgba(168,85,247,0.20)" }}>
                   <div className="flex items-center justify-between mb-2 gap-2">
@@ -8053,7 +8098,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <div className="space-y-1">
                       {allDocs.map(d => {
                         const meta = DOC_TYPE_META[d.type];
-                        // PR-B: TM detail 은 PR-C 에서 본격 통합. 여기서는 narrowing 만 보존.
+                        // PR-C: source.kind 별 라벨. remotelink → 🔗 Jira Web chip.
+                        const isRemoteLink = d.source.kind === "remotelink";
                         const sourceLabel = d.source.kind === "self" ? "self" : d.source.kind === "tm" ? d.source.tmKey : "Jira Web";
                         return (
                           <a
@@ -8068,7 +8114,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <span className="shrink-0 text-[13px] leading-none" aria-hidden>{meta.icon}</span>
                             <span className="flex-1 min-w-0 truncate" style={{ color: "var(--text-primary)" }}>{d.title}</span>
                             <span className="shrink-0 text-[10px]" style={{ color: meta.color }}>{meta.label}</span>
-                            <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {sourceLabel}</span>
+                            {isRemoteLink ? (
+                              <span
+                                className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-px rounded text-[10px] font-medium"
+                                style={{ background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.40)", color: "#3b82f6" }}
+                                title="Jira ticket 의 Web Link"
+                              >🔗 Jira Web</span>
+                            ) : (
+                              <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>· {sourceLabel}</span>
+                            )}
                           </a>
                         );
                       })}
@@ -8390,7 +8444,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {/* ─── ETR Linked Work + Linked Docs (Phase 1) — collapsible 밖, ETR overview에서 항상 visible ─── */}
             {detailTab === "overview" && selected.key.startsWith("ETR-") && (() => {
               const linkedWork: LinkedWork[] = etrReverseMap.get(selected.key) ?? [];
-              const linkedDocs: LinkedDoc[] = collectLinkedDocs(selected.key, etrReverseMap, etrMap, ticketByKey);
+              const linkedDocs: LinkedDoc[] = collectLinkedDocs(selected.key, etrReverseMap, etrMap, ticketByKey, remoteLinksByKey[selected.key]);
               return (
                 <div className="rounded-lg px-3 py-2.5 mb-4" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
                   {/* Linked Work 섹션 헤더 */}
@@ -8470,7 +8524,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       <div className="space-y-1.5">
                         {linkedDocs.map(d => {
                           const meta = DOC_TYPE_META[d.type];
-                          // PR-B: TM detail 은 PR-C 에서 본격 통합. 여기서는 narrowing 만 보존.
+                          // PR-C: source.kind 별 라벨. remotelink → 🔗 Jira Web chip.
+                          const isRemoteLink = d.source.kind === "remotelink";
                           const sourceLabel = d.source.kind === "self" ? "self" : d.source.kind === "tm" ? d.source.tmKey : "Jira Web";
                           return (
                             <div key={d.url} className="rounded-lg px-3 py-2 flex items-start gap-2" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
@@ -8487,7 +8542,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 <div className="flex items-center gap-1.5 mt-0.5 text-[11px]" style={{ color: "var(--text-subtle)" }}>
                                   <span style={{ color: meta.color }}>{meta.label}</span>
                                   <span>·</span>
-                                  <span>{sourceLabel}</span>
+                                  {isRemoteLink ? (
+                                    <span
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-px rounded text-[10px] font-medium"
+                                      style={{ background: "rgba(96,165,250,0.15)", border: "1px solid rgba(96,165,250,0.40)", color: "#3b82f6" }}
+                                      title="Jira ticket 의 Web Link"
+                                    >🔗 Jira Web</span>
+                                  ) : (
+                                    <span>{sourceLabel}</span>
+                                  )}
                                 </div>
                               </div>
                             </div>
