@@ -63,6 +63,9 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const [etrMap, setEtrMap]         = useState<Record<string, EtrInfoEntry>>({});
   const [memos, setMemos]           = useState<Record<string, Memo>>({});
+  // Phase B: 이미 댓글 작성된 ETR 추적 — { etrKey: { lastCommentedAt, linkedWorkSnapshot } }
+  type CommentedMeta = { lastCommentedAt: string; linkedWorkSnapshot: string[] };
+  const [commentedMap, setCommentedMap] = useState<Record<string, CommentedMeta>>({});
   const [filter, setFilter]         = useState<EtrReviewFilterKey>("needsAction");
   // Phase A: ETR Jira status 기준 dropdown 필터 ("" = 전체)
   const ETR_STATUS_FILTER_KEY = "cc-etr-status-filter";
@@ -96,6 +99,8 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   // 액션 상태
   const [unManaging, setUnManaging] = useState<string | null>(null);
   const [hidingKey, setHidingKey]   = useState<string | null>(null);
+  // Phase B: 댓글 작성 진행 중인 etrKey
+  const [commentingKey, setCommentingKey] = useState<string | null>(null);
 
   // Phase 3: ?key= 딥링크 — URL 에 key 가 있으면 해당 ETR 자동 선택
   useEffect(() => {
@@ -117,7 +122,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
         const [ticketsRes, kvRes] = await Promise.all([
           fetch("/api/jira-tickets").then(r => r.ok ? r.json() : Promise.reject(new Error(`tickets ${r.status}`))),
           // /api/kv 는 keys= (복수) 받고 { "cc-etr": {...}, "cc-memos-v2": {...}, ... } 형태로 반환
-          fetch("/api/kv?keys=cc-etr,cc-memos-v2,cc-hidden-keys").then(r => r.ok ? r.json() as Promise<Record<string, unknown>> : ({} as Record<string, unknown>)),
+          fetch("/api/kv?keys=cc-etr,cc-memos-v2,cc-hidden-keys,cc-etr-status-commented").then(r => r.ok ? r.json() as Promise<Record<string, unknown>> : ({} as Record<string, unknown>)),
         ]);
         if (cancelled) return;
         setTickets(Array.isArray(ticketsRes?.tickets) ? ticketsRes.tickets : []);
@@ -127,6 +132,8 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
         setMemos(m && typeof m === "object" && !Array.isArray(m) ? (m as Record<string, Memo>) : {});
         const h = kvRes?.["cc-hidden-keys"];
         setHiddenKeys(new Set(Array.isArray(h) ? (h as string[]) : []));
+        const commented = kvRes?.["cc-etr-status-commented"];
+        setCommentedMap(commented && typeof commented === "object" && !Array.isArray(commented) ? (commented as Record<string, CommentedMeta>) : {});
         setLoading(false);
       } catch (e) {
         if (cancelled) return;
@@ -356,6 +363,110 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
       showToast(`${key} 숨김 처리됨`);
     } finally {
       setHidingKey(null);
+    }
+  }
+
+  /**
+   * Phase B: ETR 에 "상태 업데이트 필요" 댓글 작성.
+   *
+   * 1. KV check: 동일 snapshot 이면 skip
+   * 2. Jira marker fallback (KV miss 시): 발견 시 KV 백필 후 skip
+   * 3. POST /api/jira/comment
+   * 4. 성공 시 KV 저장 (snapshot 갱신)
+   *
+   * dry-run 응답 시에도 동일하게 KV 저장 → 검증 단계에서도 UX 정상 동작.
+   */
+  const STATUS_COMMENT_MARKER = "cc-dashboard-status-update-needed";
+  async function handleStatusUpdateComment(ticket: Ticket) {
+    const etrKey = ticket.key;
+    const linkedWork = etrReverseMap.get(etrKey) ?? [];
+    const doneTmKeys = linkedWork
+      .filter(w => {
+        // isExecutionDone 의 SAFE 리스트와 같은 로직 — 추후 분리 가능
+        const DONE = new Set(["완료", "done", "Done", "DONE", "론치완료", "배포완료", "철회", "종료"]);
+        return DONE.has(w.status);
+      })
+      .map(w => w.tmKey)
+      .sort();
+
+    if (doneTmKeys.length === 0) {
+      showToast("완료된 실행 티켓이 없습니다.");
+      return;
+    }
+
+    // 1. KV dedupe
+    const existing = commentedMap[etrKey];
+    if (existing && JSON.stringify(existing.linkedWorkSnapshot) === JSON.stringify(doneTmKeys)) {
+      showToast(`이미 댓글 작성됨 (${existing.lastCommentedAt.slice(0, 10)})`);
+      return;
+    }
+
+    setCommentingKey(etrKey);
+    try {
+      // 2. KV miss → Jira marker fallback
+      if (!existing) {
+        try {
+          const checkRes = await fetch(`/api/jira/comment?issueKey=${encodeURIComponent(etrKey)}&marker=${encodeURIComponent(STATUS_COMMENT_MARKER)}`);
+          if (checkRes.ok) {
+            const checkData = await checkRes.json() as { exists?: boolean; lastCommentedAt?: string };
+            if (checkData.exists) {
+              // marker 발견 — snapshot 불명이라 안전하게 abort. KV 백필 (이번 snapshot 으로 기록).
+              const meta: CommentedMeta = {
+                lastCommentedAt: checkData.lastCommentedAt ?? new Date().toISOString(),
+                linkedWorkSnapshot: doneTmKeys,
+              };
+              const nextMap = { ...commentedMap, [etrKey]: meta };
+              setCommentedMap(nextMap);
+              fetch("/api/kv", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ key: "cc-etr-status-commented", value: nextMap }),
+              }).catch(() => {});
+              showToast("Jira 에 이미 댓글 marker 가 있습니다. 작성 생략.");
+              return;
+            }
+          }
+        } catch (e) {
+          console.warn("[comment dedupe check]", e);
+          // network 오류는 무시하고 진행 (POST 에서 실패하면 거기서 에러 처리)
+        }
+      }
+
+      // 3. POST
+      const bullets = doneTmKeys.map(k => `- ${k}`).join("\n");
+      const text = `연결된 실행 티켓이 모두 완료 상태로 확인되었습니다.
+
+완료된 실행 티켓:
+${bullets}
+
+ETR 상태를 최신 상태로 업데이트해주세요.`;
+      const postRes = await fetch("/api/jira/comment", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ issueKey: etrKey, text, marker: STATUS_COMMENT_MARKER }),
+      });
+      const data = await postRes.json() as { ok?: boolean; commentId?: string; createdAt?: string; dryRun?: boolean; error?: string };
+      if (!postRes.ok || !data.ok) {
+        showToast(data.error ?? `댓글 작성 실패: status ${postRes.status}`);
+        return;
+      }
+
+      // 4. KV 저장
+      const meta: CommentedMeta = {
+        lastCommentedAt: data.createdAt ?? new Date().toISOString(),
+        linkedWorkSnapshot: doneTmKeys,
+      };
+      const nextMap = { ...commentedMap, [etrKey]: meta };
+      setCommentedMap(nextMap);
+      fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-etr-status-commented", value: nextMap }),
+      }).catch(e => console.error("[kv save commented]", e));
+
+      showToast(data.dryRun ? "댓글 작성 (dry-run) — 실제 Jira 댓글은 없습니다." : "댓글 작성 완료");
+    } finally {
+      setCommentingKey(null);
     }
   }
 
@@ -617,6 +728,9 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
             onHide={handleHide}
             unManaging={unManaging === selected.key}
             hiding={hidingKey === selected.key}
+            commentedMeta={commentedMap[selected.key]}
+            onComment={() => handleStatusUpdateComment(selected)}
+            commenting={commentingKey === selected.key}
           />
         </aside>
       )}
@@ -662,6 +776,9 @@ function SimpleDetail({
   onHide,
   unManaging,
   hiding,
+  commentedMeta,
+  onComment,
+  commenting,
 }: {
   ticket: Ticket;
   etrMap: Record<string, EtrInfoEntry>;
@@ -673,6 +790,9 @@ function SimpleDetail({
   onHide: (key: string) => void;
   unManaging: boolean;
   hiding: boolean;
+  commentedMeta?: { lastCommentedAt: string; linkedWorkSnapshot: string[] };
+  onComment: () => void;
+  commenting: boolean;
 }) {
   const linkedWork: LinkedWork[] = etrReverseMap.get(ticket.key) ?? [];
   const linkedDocs: LinkedDoc[] = collectLinkedDocs(ticket.key, etrReverseMap, etrMap, ticketByKey);
@@ -740,15 +860,36 @@ function SimpleDetail({
             <p className="text-[11px] leading-relaxed mb-2" style={{ color: "var(--text-primary)" }}>
               연결된 실행 티켓이 모두 완료되었습니다. ETR 상태를 최신 상태로 업데이트해주세요.
             </p>
-            <a
-              href={`${JIRA_BASE}${ticket.key}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors"
-              style={{ background: "rgba(245,158,11,0.20)", border: "1px solid rgba(245,158,11,0.45)", color: "#d97706" }}
-            >
-              Jira 에서 열기 ↗
-            </a>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <a
+                href={`${JIRA_BASE}${ticket.key}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors"
+                style={{ background: "rgba(245,158,11,0.20)", border: "1px solid rgba(245,158,11,0.45)", color: "#d97706" }}
+              >
+                Jira 에서 열기 ↗
+              </a>
+              {/* Phase B: Jira 댓글 작성 — 이미 작성됐으면 disabled + "작성됨 (date)" 표시 */}
+              {commentedMeta ? (
+                <span
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium"
+                  style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.40)", color: "#059669" }}
+                  title={`댓글 작성 시점 완료 ticket: ${commentedMeta.linkedWorkSnapshot.join(", ") || "—"}`}
+                >
+                  ✓ 댓글 작성됨 ({commentedMeta.lastCommentedAt.slice(0, 10)})
+                </span>
+              ) : (
+                <button
+                  onClick={onComment}
+                  disabled={commenting}
+                  className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  style={{ background: "rgba(245,158,11,0.20)", border: "1px solid rgba(245,158,11,0.45)", color: "#d97706" }}
+                >
+                  {commenting ? "작성 중…" : "💬 댓글 작성"}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}
