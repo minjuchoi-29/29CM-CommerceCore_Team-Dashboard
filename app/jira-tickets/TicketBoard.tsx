@@ -4189,6 +4189,51 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return result;
   }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  /**
+   * 검색 UX — Cross-tab hint memo.
+   *
+   * 현재 statusTab 의 결과가 비어있을 때, 검색어를 다른 statusTab 에서 찾으면
+   * 어느 탭에 몇 건 있는지 안내. preFiltered (statusTab 만 미적용) 를 그대로
+   * 재사용하므로 추가 fetch / 무거운 계산 없음.
+   *
+   *  - 검색어가 ticket key 패턴 (CMALL-784 등) 이면 정확 매칭 카운트도 함께 반환
+   *  - 현재 탭은 제외, 0건 탭도 제외
+   */
+  const crossTabHints = useMemo(() => {
+    const q = search.trim();
+    if (!q) return null;
+    if (statusTab === "전체") return null;
+    if (filtered.length > 0) return null;
+
+    const isTicketKeyForm = /^[A-Z][A-Z0-9]+-\d+$/i.test(q);
+    const exactKey = q.toUpperCase();
+
+    type TabId = Exclude<typeof statusTab, "전체">;
+    const tabMatchers: Array<{ tab: TabId; matcher: (t: Ticket) => boolean }> = [
+      { tab: "완료",       matcher: (t) => DONE_STATUSES.includes(t.status) },
+      { tab: "진행중",     matcher: (t) => INPROGRESS_STATUSES.includes(t.status) },
+      { tab: "계획/대기",  matcher: (t) => PLANNED_STATUSES.includes(t.status) },
+      { tab: "기획",       matcher: (t) => ["기획중", "기획완료"].includes(t.status) },
+      { tab: "디자인",     matcher: (t) => ["디자인중", "디자인완료"].includes(t.status) },
+      { tab: "준비중",     matcher: (t) => t.status === "준비중" },
+      { tab: "개발",       matcher: (t) => ["개발중", "In Progress"].includes(t.status) },
+      { tab: "QA",         matcher: (t) => t.status === "QA중" },
+    ];
+
+    const hints: { tab: TabId; count: number; exactCount: number }[] = [];
+    for (const { tab, matcher } of tabMatchers) {
+      if (tab === statusTab) continue;
+      const inTab = preFiltered.filter(matcher);
+      const count = inTab.length;
+      if (count === 0) continue;
+      const exactCount = isTicketKeyForm
+        ? inTab.filter(t => t.key.toUpperCase() === exactKey).length
+        : 0;
+      hints.push({ tab, count, exactCount });
+    }
+    return hints.length > 0 ? { hints, isTicketKeyForm } : null;
+  }, [search, statusTab, filtered.length, preFiltered]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Focus Mini Rail: owner_dashboard source 진입 시 Action 우선순위 기반 정렬
   // focusForKey !== null = owner_dashboard source 진입 신호 (state이므로 reactive ✅)
   // status → phase 매핑 (Focus Mode rail에서 현재 phase 표시용)
@@ -6370,7 +6415,53 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
 
           {filtered.length === 0 ? (
-            <div className="py-12 text-center text-sm" style={{ color: "var(--text-subtle)" }}>검색 결과가 없습니다.</div>
+            <div className="py-12 text-center text-sm" style={{ color: "var(--text-subtle)" }}>
+              <p>검색 결과가 없습니다.</p>
+              {search.trim() && (
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-subtle)" }}>
+                  현재 탭: <span style={{ color: "var(--text-muted)" }}>{statusTab}</span>
+                  {" · "}
+                  검색어: <span className="font-mono" style={{ color: "var(--text-muted)" }}>“{search.trim()}”</span>
+                </p>
+              )}
+              {crossTabHints && (
+                <div className="mt-4 inline-flex flex-col items-center gap-2">
+                  <p className="text-[11.5px] font-semibold" style={{ color: "var(--text-secondary)" }}>
+                    ▼ 다른 탭에서 검색 결과 발견
+                  </p>
+                  <div className="flex items-center justify-center gap-1.5 flex-wrap">
+                    {crossTabHints.hints.map(h => (
+                      <button
+                        key={h.tab}
+                        onClick={() => setStatusTab(h.tab)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11.5px] font-medium border transition-colors hover:opacity-80"
+                        style={{
+                          background: "rgba(99,102,241,0.12)",
+                          color: "#a5b4fc",
+                          borderColor: "rgba(99,102,241,0.35)",
+                        }}
+                        title={
+                          crossTabHints.isTicketKeyForm && h.exactCount > 0
+                            ? `${h.tab} 탭으로 이동 (정확 매칭 ${h.exactCount}건 포함)`
+                            : `${h.tab} 탭으로 이동`
+                        }
+                      >
+                        <span>{h.tab}</span>
+                        <span className="font-mono text-[10px] opacity-80">{h.count}건</span>
+                        {crossTabHints.isTicketKeyForm && h.exactCount > 0 && (
+                          <span
+                            className="font-mono text-[10px] px-1 py-px rounded ml-0.5"
+                            style={{ background: "rgba(245,158,11,0.18)", color: "#fbbf24" }}
+                            title={`정확 매칭 ${h.exactCount}건`}
+                          >정확 {h.exactCount}</span>
+                        )}
+                        <span aria-hidden>→</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
           ) : (
             displayItems.map((item, idx) => {
               const { ticket: t, topAction: railTopAction } = item;
