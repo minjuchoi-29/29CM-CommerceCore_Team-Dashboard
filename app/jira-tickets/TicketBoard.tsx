@@ -1654,6 +1654,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // PR-C: Jira Remote Links (Web Links) lazy fetch — selected ticket 마다 1회. 같은 ticket 재open 은 in-memory cache 사용.
   type RemoteLink = { url: string; title: string };
   const [remoteLinksByKey, setRemoteLinksByKey] = useState<Record<string, RemoteLink[]>>({});
+
+  // PR-Z: ELT F/U Wiki 검색 결과 in-memory cache — source==="ELT" ticket 마다 1회 fetch.
+  //  matchedKeys 는 UI 노출 안 하지만 추후 "관련 ELT 이력 N건" 확장 대비 보존.
+  const ELT_FU_PAGE_ID = "410847151";
+  const ELT_FU_WIKI_URL = "https://musinsa-oneteam.atlassian.net/wiki/spaces/29PRODUCT/pages/410847151";
+  type EltWikiState =
+    | { status: "loading" }
+    | { status: "ok"; title: string; exists: boolean; snippet?: string; matchedKeys: string[] }
+    | { status: "error"; message: string };
+  const [eltWikiByKey, setEltWikiByKey] = useState<Record<string, EltWikiState>>({});
   const [priorityError, setPriorityError] = useState<string | null>(null);
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState, reviewNeeded?: boolean })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
@@ -3383,6 +3393,45 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       });
     return () => { cancelled = true; };
   }, [selected?.key, remoteLinksByKey]);
+
+  // PR-Z: ELT 출처 ticket 일 때만 ELT F/U Wiki 검색 — lazy fetch + in-memory cache.
+  //  Backend (/api/confluence/page) 가 KV 2h TTL 추가 캐싱 (PR-Y).
+  //  source 가 ETR/자체발의/미설정 인 ticket 은 fetch 안 함 (불필요한 호출 방지).
+  useEffect(() => {
+    const key = selected?.key;
+    if (!key) return;
+    if (etrMap[key]?.source !== "ELT") return;
+    if (key in eltWikiByKey) return;
+    let cancelled = false;
+    setEltWikiByKey(prev => ({ ...prev, [key]: { status: "loading" } }));
+    fetch(`/api/confluence/page?pageId=${ELT_FU_PAGE_ID}&ticketKey=${encodeURIComponent(key)}`)
+      .then(r => r.ok
+        ? r.json() as Promise<{ title?: string; exists?: boolean; snippet?: string; matchedKeys?: string[]; error?: string }>
+        : r.json().then(j => Promise.reject(new Error(j?.error ?? `status ${r.status}`)))
+      )
+      .then(data => {
+        if (cancelled) return;
+        setEltWikiByKey(prev => ({
+          ...prev,
+          [key]: {
+            status: "ok",
+            title: data.title ?? "",
+            exists: !!data.exists,
+            snippet: data.snippet,
+            matchedKeys: data.matchedKeys ?? [],
+          },
+        }));
+      })
+      .catch(e => {
+        if (cancelled) return;
+        console.warn("[elt-wiki lazy fetch]", key, e);
+        setEltWikiByKey(prev => ({
+          ...prev,
+          [key]: { status: "error", message: e instanceof Error ? e.message : "Wiki 조회 실패" },
+        }));
+      });
+    return () => { cancelled = true; };
+  }, [selected?.key, etrMap, eltWikiByKey]);
 
   // ESC → 집중 보기 해제
   useEffect(() => {
@@ -7348,23 +7397,51 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         );
                       })()}
 
-                      {/* PR-X: Focus Mode source-aware cards */}
-                      {fmEtr?.source === "ELT" && (
-                        <div className="mt-2 rounded-lg px-2.5 py-2" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.30)" }}>
-                          <div className="flex items-center gap-1.5 mb-1">
-                            <span className="text-[12px]" aria-hidden>📘</span>
-                            <p className="text-[11px] font-semibold" style={{ color: "#fbbf24" }}>90. ELT F/U</p>
+                      {/* PR-Z: Focus Mode ELT F/U Wiki 검색 결과 */}
+                      {fmEtr?.source === "ELT" && (() => {
+                        const state = eltWikiByKey[selected.key];
+                        return (
+                          <div className="mt-2 rounded-lg px-2.5 py-2" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.30)" }}>
+                            <div className="flex items-center gap-1.5 mb-1">
+                              <span className="text-[12px]" aria-hidden>📘</span>
+                              <p className="text-[11px] font-semibold" style={{ color: "#fbbf24" }}>
+                                {state?.status === "ok" && state.title ? state.title : "90. ELT F/U"}
+                              </p>
+                            </div>
+                            {!state || state.status === "loading" ? (
+                              <p className="text-[10.5px] mb-1.5" style={{ color: "var(--text-muted)" }}>ELT F/U 확인 중…</p>
+                            ) : state.status === "error" ? (
+                              <p className="text-[10.5px] mb-1.5" style={{ color: "#f87171" }}>Wiki 조회 실패</p>
+                            ) : state.exists ? (
+                              <>
+                                <p className="text-[10.5px] font-medium mb-1" style={{ color: "#fbbf24" }}>✓ 관련 이력 존재</p>
+                                {state.snippet && (
+                                  <p
+                                    className="text-[10px] leading-relaxed mb-1.5 whitespace-pre-wrap"
+                                    style={{
+                                      color: "var(--text-secondary)",
+                                      display: "-webkit-box",
+                                      WebkitLineClamp: 2,
+                                      WebkitBoxOrient: "vertical",
+                                      overflow: "hidden",
+                                    }}
+                                    title={state.snippet}
+                                  >{state.snippet}</p>
+                                )}
+                              </>
+                            ) : (
+                              <p className="text-[10.5px] mb-1.5" style={{ color: "var(--text-muted)" }}>현재 Wiki 에 등록되지 않음</p>
+                            )}
+                            <a
+                              href={ELT_FU_WIKI_URL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 text-[10.5px] font-medium px-1.5 py-0.5 rounded transition-colors"
+                              style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.40)", color: "#fbbf24" }}
+                            >Wiki 열기 ↗</a>
                           </div>
-                          <p className="text-[10.5px] mb-1.5" style={{ color: "var(--text-muted)" }}>Wiki 연동 준비 중</p>
-                          <a
-                            href="https://musinsa-oneteam.atlassian.net/wiki/spaces/29PRODUCT/pages/410847151"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-[10.5px] font-medium px-1.5 py-0.5 rounded transition-colors"
-                            style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.40)", color: "#fbbf24" }}
-                          >Wiki 열기 ↗</a>
-                        </div>
-                      )}
+                        );
+                      })()}
                       {fmEtr?.source === "자체발의" && (
                         <p className="mt-2 text-[10.5px] italic px-1" style={{ color: "var(--text-subtle)" }}>
                           외부 요청 없이 내부에서 발의된 과제입니다.
@@ -8888,27 +8965,65 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </>
               )}
 
-              {/* PR-X: ELT 선택 시 — Wiki 연동 placeholder. PR-Z 에서 실제 ELT F/U 페이지 검색 결과로 교체. */}
-              {etrMap[selected.key]?.source === "ELT" && (
-                <div className="rounded-lg px-3 py-3" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.30)" }}>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-[16px]" aria-hidden>📘</span>
-                    <p className="text-[12.5px] font-semibold" style={{ color: "#fbbf24" }}>90. ELT F/U</p>
+              {/* PR-Z: ELT 선택 시 — ELT F/U Wiki 에서 ticket key 검색 결과 표시. */}
+              {etrMap[selected.key]?.source === "ELT" && (() => {
+                const state = eltWikiByKey[selected.key];
+                return (
+                  <div className="rounded-lg px-3 py-3" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.30)" }}>
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-[16px]" aria-hidden>📘</span>
+                      <p className="text-[12.5px] font-semibold" style={{ color: "#fbbf24" }}>
+                        {state?.status === "ok" && state.title ? state.title : "90. ELT F/U"}
+                      </p>
+                    </div>
+
+                    {/* 상태별 본문 */}
+                    {!state || state.status === "loading" ? (
+                      <p className="text-[11.5px] leading-relaxed mb-2" style={{ color: "var(--text-muted)" }}>
+                        ELT F/U 확인 중…
+                      </p>
+                    ) : state.status === "error" ? (
+                      <p className="text-[11.5px] leading-relaxed mb-2" style={{ color: "#f87171" }}>
+                        Wiki 조회 실패 — 잠시 후 다시 시도해주세요.
+                      </p>
+                    ) : state.exists ? (
+                      <>
+                        <p className="text-[11.5px] font-medium mb-1.5" style={{ color: "#fbbf24" }}>
+                          ✓ 관련 이력 존재
+                        </p>
+                        {state.snippet && (
+                          <p
+                            className="text-[11px] leading-relaxed mb-2 whitespace-pre-wrap"
+                            style={{
+                              color: "var(--text-secondary)",
+                              maxHeight: "5.4em",          // ≈ 3줄
+                              overflow: "hidden",
+                              display: "-webkit-box",
+                              WebkitLineClamp: 3,
+                              WebkitBoxOrient: "vertical",
+                            }}
+                            title={state.snippet}
+                          >{state.snippet}</p>
+                        )}
+                      </>
+                    ) : (
+                      <p className="text-[11.5px] leading-relaxed mb-2" style={{ color: "var(--text-muted)" }}>
+                        현재 Wiki 에 등록되지 않음
+                      </p>
+                    )}
+
+                    <a
+                      href={ELT_FU_WIKI_URL}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-1 rounded transition-colors"
+                      style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.40)", color: "#fbbf24" }}
+                    >
+                      Wiki 열기 ↗
+                    </a>
                   </div>
-                  <p className="text-[11.5px] leading-relaxed mb-2" style={{ color: "var(--text-secondary)" }}>
-                    Wiki 연동 준비 중입니다. 다음 PR 에서 ticket 관련 이력을 ELT F/U 문서에서 자동 검색합니다.
-                  </p>
-                  <a
-                    href="https://musinsa-oneteam.atlassian.net/wiki/spaces/29PRODUCT/pages/410847151"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-1 rounded transition-colors"
-                    style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.40)", color: "#fbbf24" }}
-                  >
-                    Wiki 열기 ↗
-                  </a>
-                </div>
-              )}
+                );
+              })()}
 
               {/* PR-X: 자체발의 — 외부 요청 없음 안내. */}
               {etrMap[selected.key]?.source === "자체발의" && (
