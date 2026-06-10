@@ -6414,55 +6414,87 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
           </div>
 
-          {filtered.length === 0 ? (
-            <div className="py-12 text-center text-sm" style={{ color: "var(--text-subtle)" }}>
-              <p>검색 결과가 없습니다.</p>
-              {search.trim() && (
-                <p className="text-[11px] mt-1" style={{ color: "var(--text-subtle)" }}>
-                  현재 탭: <span style={{ color: "var(--text-muted)" }}>{statusTab}</span>
-                  {" · "}
-                  검색어: <span className="font-mono" style={{ color: "var(--text-muted)" }}>“{search.trim()}”</span>
+          {filtered.length === 0 ? (() => {
+            // PR follow-up: empty state 재구성.
+            //  분기:
+            //    1) 검색어 없음        → 일반 "결과가 없습니다"
+            //    2) crossTabHints 있음 → bordered card + CTA 버튼
+            //    3) 그 외 (전체 탭 또는 다른 탭에도 0건) → "전체 티켓에서 ... 찾지 못했습니다"
+            const q = search.trim();
+            const hasQuery = q.length > 0;
+            const hasCrossTab = !!crossTabHints && crossTabHints.hints.length > 0;
+            return (
+              <div className="py-12 flex flex-col items-center">
+                <p className="text-base font-semibold mb-2" style={{ color: "var(--text-secondary)" }}>
+                  검색 결과가 없습니다
                 </p>
-              )}
-              {crossTabHints && (
-                <div className="mt-4 inline-flex flex-col items-center gap-2">
-                  <p className="text-[11.5px] font-semibold" style={{ color: "var(--text-secondary)" }}>
-                    ▼ 다른 탭에서 검색 결과 발견
+                {!hasQuery ? (
+                  <p className="text-[12.5px]" style={{ color: "var(--text-subtle)" }}>
+                    필터를 조정하거나 다른 키워드로 검색해주세요.
                   </p>
-                  <div className="flex items-center justify-center gap-1.5 flex-wrap">
-                    {crossTabHints.hints.map(h => (
-                      <button
-                        key={h.tab}
-                        onClick={() => setStatusTab(h.tab)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11.5px] font-medium border transition-colors hover:opacity-80"
-                        style={{
-                          background: "rgba(99,102,241,0.12)",
-                          color: "#a5b4fc",
-                          borderColor: "rgba(99,102,241,0.35)",
-                        }}
-                        title={
-                          crossTabHints.isTicketKeyForm && h.exactCount > 0
-                            ? `${h.tab} 탭으로 이동 (정확 매칭 ${h.exactCount}건 포함)`
-                            : `${h.tab} 탭으로 이동`
-                        }
-                      >
-                        <span>{h.tab}</span>
-                        <span className="font-mono text-[10px] opacity-80">{h.count}건</span>
-                        {crossTabHints.isTicketKeyForm && h.exactCount > 0 && (
-                          <span
-                            className="font-mono text-[10px] px-1 py-px rounded ml-0.5"
-                            style={{ background: "rgba(245,158,11,0.18)", color: "#fbbf24" }}
-                            title={`정확 매칭 ${h.exactCount}건`}
-                          >정확 {h.exactCount}</span>
-                        )}
-                        <span aria-hidden>→</span>
-                      </button>
-                    ))}
+                ) : hasCrossTab ? (
+                  <p className="text-[12.5px]" style={{ color: "var(--text-subtle)" }}>
+                    현재 탭에서는 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>“{q}”</span> 결과가 없습니다.
+                  </p>
+                ) : (
+                  <>
+                    <p className="text-[12.5px]" style={{ color: "var(--text-subtle)" }}>
+                      전체 티켓에서 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>“{q}”</span> 검색 결과를 찾지 못했습니다.
+                    </p>
+                    <p className="text-[11.5px] mt-1" style={{ color: "var(--text-subtle)" }}>
+                      티켓 번호나 키워드를 다시 확인해주세요.
+                    </p>
+                  </>
+                )}
+
+                {hasCrossTab && (
+                  <div
+                    className="mt-5 px-5 py-4 rounded-xl max-w-md w-full"
+                    style={{
+                      background: "rgba(99,102,241,0.06)",
+                      border: "1px solid rgba(99,102,241,0.35)",
+                    }}
+                  >
+                    <div className="flex items-center justify-center gap-1.5 mb-3">
+                      <span className="text-[14px]" aria-hidden>🔎</span>
+                      <p className="text-[12.5px] font-semibold" style={{ color: "#a5b4fc" }}>
+                        다른 탭에서 검색 결과를 찾았습니다
+                      </p>
+                    </div>
+                    <div className="flex items-center justify-center gap-2 flex-wrap">
+                      {crossTabHints!.hints.map(h => (
+                        <button
+                          key={h.tab}
+                          onClick={() => setStatusTab(h.tab)}
+                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-semibold border transition-all hover:scale-[1.03]"
+                          style={{
+                            background: "rgba(99,102,241,0.18)",
+                            color: "#c7d2fe",
+                            borderColor: "rgba(99,102,241,0.55)",
+                          }}
+                          title={
+                            crossTabHints!.isTicketKeyForm && h.exactCount > 0
+                              ? `${h.tab} 탭으로 이동 (정확 매칭 ${h.exactCount}건 포함)`
+                              : `${h.tab} 탭으로 이동`
+                          }
+                        >
+                          <span>{h.tab}</span>
+                          <span className="font-mono text-[11.5px] opacity-90">{h.count}건</span>
+                          {crossTabHints!.isTicketKeyForm && h.exactCount > 0 && (
+                            <span
+                              className="font-mono text-[10.5px] px-1.5 py-px rounded"
+                              style={{ background: "rgba(245,158,11,0.22)", color: "#fbbf24", border: "1px solid rgba(245,158,11,0.40)" }}
+                            >정확 {h.exactCount}</span>
+                          )}
+                          <span className="text-[12px]" aria-hidden>보기 →</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          ) : (
+                )}
+              </div>
+            );
+          })() : (
             displayItems.map((item, idx) => {
               const { ticket: t, topAction: railTopAction } = item;
               const indicators = "indicators" in item ? item.indicators : undefined;
