@@ -3,6 +3,7 @@ import { redis } from "@/lib/redis";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 import type { StoredSnapshots, SnapshotSet } from "@/lib/transitions";
 import { buildTicketSnapshot, snapshotLabel, MAX_SNAPSHOTS } from "@/lib/transitions";
+import { JIRA_BATCH_FIELDS_STR } from "@/lib/jira-fields";
 import { syncAllJiraFilters } from "@/lib/filter-sync";
 import { TICKET_KEYS } from "@/app/jira-tickets/tickets-data";
 
@@ -81,15 +82,9 @@ export async function GET(request: Request) {
 
       const authBase64 = Buffer.from(`${email}:${token}`).toString("base64");
       const headers = { Authorization: `Basic ${authBase64}`, Accept: "application/json" };
-      const FIELDS = [
-        "summary", "status", "assignee", "issuetype", "project", "duedate",
-        "priority", "parent",
-        "customfield_10015",
-        "customfield_10036",
-        "customfield_10070",
-        "customfield_10071",
-        "customfield_14402",
-      ].join(",");
+      // β-1: Jira FIELDS 공통 상수 (lib/jira-fields.ts) 사용 — drift 정리
+      // (기존 누락: reporter / issuelinks / customfield_10067 → 공통 상수로 자동 포함)
+      const FIELDS = JIRA_BATCH_FIELDS_STR;
 
       const freshByKey = new Map<string, Ticket>();
       const failedKeys: string[] = [];
@@ -115,6 +110,7 @@ export async function GET(request: Request) {
               status:        (f.status as Record<string, unknown>).name as string,
               assignee:      (((f.assignee as Record<string, unknown> | null)?.displayName as string) ?? "-").split("/")[0].trim() || "-",
               eta:           (f.duedate as string | undefined) ?? "-",
+              resolutionDate: (f.resolutiondate as string | null | undefined) ?? undefined, // β-1: Done ticket 완료일
               type:          (f.issuetype as Record<string, unknown>).name as string,
               project:       (f.project as Record<string, unknown>).key as string,
               startDate:     getField<string>("customfield_10015"),

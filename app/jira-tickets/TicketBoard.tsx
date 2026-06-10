@@ -232,6 +232,7 @@ export type Ticket = {
   status: string;
   assignee: string;
   startDate?: string;
+  resolutionDate?: string; // β-1: Jira resolutiondate (ISO) — Done 시점 자동 입력
   eta: string;
   type: string;
   project: string;
