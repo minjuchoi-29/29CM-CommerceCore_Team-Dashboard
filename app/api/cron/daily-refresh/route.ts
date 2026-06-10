@@ -110,6 +110,7 @@ export async function GET(request: Request) {
               status:        (f.status as Record<string, unknown>).name as string,
               assignee:      (((f.assignee as Record<string, unknown> | null)?.displayName as string) ?? "-").split("/")[0].trim() || "-",
               eta:           (f.duedate as string | undefined) ?? "-",
+              resolutionDate: (f.resolutiondate as string | null | undefined) ?? undefined, // β-1: Done ticket 완료일
               type:          (f.issuetype as Record<string, unknown>).name as string,
               project:       (f.project as Record<string, unknown>).key as string,
               startDate:     getField<string>("customfield_10015"),

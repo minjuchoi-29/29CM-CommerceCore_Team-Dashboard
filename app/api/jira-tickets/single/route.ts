@@ -152,6 +152,7 @@ export async function GET(request: Request) {
         reporter: (f.reporter?.displayName ?? "").split("/")[0].trim() || undefined,
       },
       eta: f.duedate ?? "-",
+      resolutionDate: f.resolutiondate ?? undefined, // β-1: Done ticket 완료일 (Jira auto)
       type: f.issuetype.name,
       project: f.project.key,
       startDate: f.customfield_10015 ?? undefined,

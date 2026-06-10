@@ -15,6 +15,7 @@ export const JIRA_BATCH_FIELDS = [
   "issuetype",
   "project",
   "duedate",
+  "resolutiondate", // β-1: Done ticket 의 완료일 (ISO 또는 null) — Ticket.resolutionDate 로 매핑
   "priority",
   "parent",
   "issuelinks",

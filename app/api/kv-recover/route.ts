@@ -99,6 +99,7 @@ async function fetchJiraTicket(key: string): Promise<Ticket | null> {
       status: f.status.name,
       assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
       eta: f.duedate ?? "-",
+      resolutionDate: f.resolutiondate ?? undefined, // β-1: Done ticket 완료일 (Jira auto)
       type: f.issuetype.name,
       project: f.project.key,
       startDate: f.customfield_10015 ?? undefined,
