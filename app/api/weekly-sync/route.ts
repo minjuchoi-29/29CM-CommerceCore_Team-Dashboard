@@ -73,12 +73,32 @@ export async function POST(request: Request) {
     const mergedCandidates = [...allCandidates, ...freshCandidates];
     await redis.set("cc-update-candidates", mergedCandidates);
 
-    // 7. cc-weekly-sync-meta 갱신
+    // 7. cc-weekly-sync-meta 갱신 + PR #39: trace summary 저장 (UI visibility 용)
     const allMeta = await redis.get<Record<string, WeeklySyncMeta>>("cc-weekly-sync-meta") ?? {};
+
+    // PR #39: outcome 별 카운트 + 항목 메타 추출 (mergeTrace 가 있을 때만).
+    const trace = result.mergeTrace ?? [];
+    const lastTraceSummary = {
+      appended:    trace.filter(t => t.outcome === "appended").length,
+      updated:     trace.filter(t => t.outcome === "updated").length,
+      candidates:  trace.filter(t => t.outcome === "candidates_only").length,
+      idempotent:  trace.filter(t => t.outcome === "idempotent").length,
+      manualGuard: trace.filter(t => t.outcome === "manual_guard").length,
+    };
+    const lastTraceItems = trace.map(t => ({
+      outcome:   t.outcome,
+      itemText:  t.itemRawText,
+      phase:     t.phase,
+      startDate: t.startDate,
+      endDate:   t.endDate,
+    }));
+
     allMeta[ticketKey] = {
       ticketKey,
       lastSyncAt: new Date().toISOString(),
       lastSourceWeek: parsed.sourceWeek,
+      lastTraceSummary,
+      lastTraceItems,
     };
     await redis.set("cc-weekly-sync-meta", allMeta);
 

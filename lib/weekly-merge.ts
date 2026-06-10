@@ -51,6 +51,13 @@ export interface MergeTraceEntry {
   statusTransitionAdded?: boolean;
   /** 흡수된 row의 source (manual_guard 판단에 사용) */
   matchedRowSource?: ScheduleSourceMeta["source"];
+  // PR #39 — Weekly Sync Visibility UI 용 부가 메타.
+  /** parsed phase (예: "개발", "QA", "Launch") */
+  phase?: string;
+  /** parsed start date (ISO) */
+  startDate?: string;
+  /** parsed end date (ISO) */
+  endDate?: string;
 }
 
 export interface MergeResult {
@@ -184,6 +191,10 @@ export function mergeWeeklySync(
       itemStableTaskId: item.stableTaskId,
       rowKey: key,
       outcome: "appended",
+      // PR #39 — visibility 용 메타 보존
+      phase: item.phase,
+      startDate: item.startDate ?? undefined,
+      endDate: item.endDate ?? undefined,
       matchedRowSource: existing?.source,
     };
 
