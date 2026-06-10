@@ -4,6 +4,7 @@ import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 import { redis } from "@/lib/redis";
 import { mergeTicketKeyLists, buildSourceFiltersMap } from "@/lib/ticket-sources";
 import type { FilterTicketsStore, JiraFiltersStore } from "@/lib/filter-types";
+import { JIRA_BATCH_FIELDS_STR } from "@/lib/jira-fields";
 
 export const dynamic = "force-dynamic";
 
@@ -162,16 +163,8 @@ export async function GET() {
   const auth = Buffer.from(`${email}:${token}`).toString("base64");
   const headers = { Authorization: `Basic ${auth}`, Accept: "application/json" };
 
-  const FIELDS = [
-    "summary", "status", "assignee", "reporter", "issuetype", "project", "duedate",
-    "priority", "parent", "issuelinks",
-    "customfield_10015", // Start date
-    "customfield_10036", // Story Points
-    "customfield_10067", // 요청부문 (multiselect)
-    "customfield_10070", // 2-Pager/PRD Link
-    "customfield_10071", // Health Check
-    "customfield_14402", // Main Subject
-  ].join(",");
+  // β-1: Jira FIELDS 공통 상수 (lib/jira-fields.ts) 사용 — 4 routes 간 drift 방지
+  const FIELDS = JIRA_BATCH_FIELDS_STR;
 
   // ── KV 로드: cc-filter-tickets + cc-jira-filters + cc-custom-keys ──
   let filterTickets: FilterTicketsStore = {};
