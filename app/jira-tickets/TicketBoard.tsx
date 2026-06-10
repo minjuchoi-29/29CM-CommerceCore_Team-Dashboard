@@ -6448,56 +6448,78 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
 
           {filtered.length === 0 ? (() => {
-            // PR follow-up: empty state 재구성.
-            //  분기:
-            //    1) 검색어 없음        → 일반 "결과가 없습니다"
-            //    2) crossTabHints 있음 → bordered card + CTA 버튼
-            //    3) 그 외 (전체 탭 또는 다른 탭에도 0건) → "전체 티켓에서 ... 찾지 못했습니다"
+            // empty state 시각적 위계 (PR-fix 후속 polish):
+            //   [1] "검색 결과가 없습니다"       — text-primary, 가장 강함
+            //   [2] 현재 탭/검색어 안내           — text-secondary, 검색어 강조
+            //   [3] (조건부) Hint Card           — bordered + bg + shadow, 카드 인지
+            //         [3-1] 🔍 헤더 (text-primary 톤)
+            //         [3-2] 보조 설명 (text-secondary)
+            //         [3-3] CTA 버튼 (primary 스타일)
             const q = search.trim();
             const hasQuery = q.length > 0;
             const hasCrossTab = !!crossTabHints && crossTabHints.hints.length > 0;
             return (
-              <div className="py-12 flex flex-col items-center">
-                <p className="text-base font-semibold mb-2" style={{ color: "var(--text-secondary)" }}>
+              <div className="py-12 flex flex-col items-center px-4">
+                {/* [1] Empty state 헤더 — 가장 강한 hierarchy */}
+                <p className="text-lg font-bold mb-2.5" style={{ color: "var(--text-primary)" }}>
                   검색 결과가 없습니다
                 </p>
+
+                {/* [2] 컨텍스트 안내 */}
                 {!hasQuery ? (
-                  <p className="text-[12.5px]" style={{ color: "var(--text-subtle)" }}>
+                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
                     필터를 조정하거나 다른 키워드로 검색해주세요.
                   </p>
                 ) : hasCrossTab ? (
-                  <p className="text-[12.5px]" style={{ color: "var(--text-subtle)" }}>
-                    현재 탭·필터에서는 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>“{q}”</span> 결과가 없습니다.
+                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                    현재 탭·필터에서는{" "}
+                    <span className="font-mono font-semibold" style={{ color: "#a5b4fc" }}>“{q}”</span>
+                    {" "}결과가 없습니다.
                   </p>
                 ) : (
                   <>
-                    <p className="text-[12.5px]" style={{ color: "var(--text-subtle)" }}>
-                      전체 티켓에서 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>“{q}”</span> 검색 결과를 찾지 못했습니다.
+                    <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                      전체 티켓에서{" "}
+                      <span className="font-mono font-semibold" style={{ color: "#a5b4fc" }}>“{q}”</span>
+                      {" "}검색 결과를 찾지 못했습니다.
                     </p>
-                    <p className="text-[11.5px] mt-1" style={{ color: "var(--text-subtle)" }}>
+                    <p className="text-[12.5px] mt-1.5" style={{ color: "var(--text-subtle)" }}>
                       티켓 번호나 키워드를 다시 확인해주세요.
                     </p>
                   </>
                 )}
 
+                {/* [3] Hint Card */}
                 {hasCrossTab && (
                   <div
-                    className="mt-5 px-5 py-4 rounded-xl max-w-md w-full"
+                    className="mt-6 px-5 py-5 rounded-2xl max-w-lg w-full"
                     style={{
-                      background: "rgba(99,102,241,0.06)",
-                      border: "1px solid rgba(99,102,241,0.35)",
+                      background: "rgba(99,102,241,0.10)",
+                      border: "1.5px solid rgba(99,102,241,0.60)",
+                      boxShadow: "0 4px 16px rgba(99,102,241,0.12), 0 1px 2px rgba(0,0,0,0.10)",
                     }}
+                    role="region"
+                    aria-label="다른 탭의 검색 결과"
                   >
-                    <div className="flex items-center justify-center gap-1.5 mb-1">
-                      <span className="text-[14px]" aria-hidden>🔎</span>
-                      <p className="text-[12.5px] font-semibold" style={{ color: "#a5b4fc" }}>
+                    {/* [3-1] 헤더 — 아이콘 원형 + 강한 타이틀 */}
+                    <div className="flex items-center gap-2.5 mb-1">
+                      <span
+                        className="shrink-0 inline-flex items-center justify-center w-8 h-8 rounded-full text-[16px]"
+                        style={{ background: "rgba(99,102,241,0.25)", border: "1px solid rgba(99,102,241,0.55)" }}
+                        aria-hidden
+                      >🔍</span>
+                      <p className="text-[14px] font-bold leading-snug" style={{ color: "#c7d2fe" }}>
                         현재 탭·필터 밖에서 검색 결과를 찾았습니다
                       </p>
                     </div>
-                    <p className="text-[10.5px] text-center mb-3" style={{ color: "var(--text-subtle)" }}>
+
+                    {/* [3-2] 보조 설명 */}
+                    <p className="text-[12px] mb-4 pl-[42px]" style={{ color: "var(--text-secondary)" }}>
                       클릭하면 현재 필터가 해제되고 해당 탭으로 이동합니다.
                     </p>
-                    <div className="flex items-center justify-center gap-2 flex-wrap">
+
+                    {/* [3-3] CTA 버튼 그룹 */}
+                    <div className="flex items-center gap-2 flex-wrap">
                       {crossTabHints!.hints.map(h => (
                         <button
                           key={h.tab}
@@ -6509,12 +6531,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             setPlanningTab(h.tab);
                             if (statusTab !== "전체") setStatusTab("전체");
                           }}
-                          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-semibold border transition-all hover:scale-[1.03]"
+                          type="button"
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13.5px] font-semibold border-2 cursor-pointer transition-all hover:scale-[1.02] active:scale-[0.98]"
                           style={{
-                            background: "rgba(99,102,241,0.18)",
-                            color: "#c7d2fe",
-                            borderColor: "rgba(99,102,241,0.55)",
+                            background: "#6366f1",
+                            color: "#ffffff",
+                            borderColor: "#818cf8",
+                            boxShadow: "0 2px 6px rgba(99,102,241,0.40)",
                           }}
+                          onMouseEnter={(e) => { e.currentTarget.style.background = "#7c7feb"; }}
+                          onMouseLeave={(e) => { e.currentTarget.style.background = "#6366f1"; }}
                           title={
                             crossTabHints!.isTicketKeyForm && h.exactCount > 0
                               ? `${h.tab} 탭으로 이동 (정확 매칭 ${h.exactCount}건 포함, 현재 필터 해제됨)`
@@ -6522,14 +6548,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           }
                         >
                           <span>{h.tab}</span>
-                          <span className="font-mono text-[11.5px] opacity-90">{h.count}건</span>
+                          <span
+                            className="font-mono text-[12px] px-1.5 py-px rounded"
+                            style={{ background: "rgba(255,255,255,0.20)", color: "#ffffff" }}
+                          >{h.count}건</span>
                           {crossTabHints!.isTicketKeyForm && h.exactCount > 0 && (
                             <span
-                              className="font-mono text-[10.5px] px-1.5 py-px rounded"
-                              style={{ background: "rgba(245,158,11,0.22)", color: "#fbbf24", border: "1px solid rgba(245,158,11,0.40)" }}
+                              className="font-mono text-[11px] px-1.5 py-px rounded font-bold"
+                              style={{ background: "#fbbf24", color: "#451a03" }}
                             >정확 {h.exactCount}</span>
                           )}
-                          <span className="text-[12px]" aria-hidden>보기 →</span>
+                          <span className="text-[14px]" aria-hidden>→</span>
                         </button>
                       ))}
                     </div>
