@@ -4190,11 +4190,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
+   * Cross-tab hint dataset — search 만 적용. planningTab / quarters / levels 등
+   * 다른 filter 영향 받지 않음.
+   *
+   * 도입 배경: preFiltered 가 planningTab 단계에서 active ticket 을 미리 제거하면
+   * (예: planningTab="플래닝 대기·검토" 일 때 isJiraActive ticket 제외) cross-tab
+   * hint 가 "검색 결과 없음" 으로 잘못 판단됨. searchOnlyHits 로 우회.
+   *
+   * ETR 페이지 ticket 은 전체 과제 현황에서 항상 제외 (별도 페이지로 이관됨).
+   */
+  const searchOnlyHits = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return [];
+    return dedupedTickets.filter((t: Ticket) => {
+      if (t.key.startsWith("ETR-")) return false;
+      return (
+        t.summary.toLowerCase().includes(q) ||
+        t.key.toLowerCase().includes(q) ||
+        t.assignee.includes(search.trim())
+      );
+    });
+  }, [dedupedTickets, search]);
+
+  /**
    * 검색 UX — Cross-tab hint memo.
    *
-   * 현재 statusTab 의 결과가 비어있을 때, 검색어를 다른 statusTab 에서 찾으면
-   * 어느 탭에 몇 건 있는지 안내. preFiltered (statusTab 만 미적용) 를 그대로
-   * 재사용하므로 추가 fetch / 무거운 계산 없음.
+   * 현재 filtered 결과가 비어있을 때, 검색어를 다른 statusTab 에서 찾으면
+   * 어느 탭에 몇 건 있는지 안내. searchOnlyHits 기반 (planningTab/quarters/levels
+   * 등의 영향 없이 search 만 적용).
    *
    *  - 검색어가 ticket key 패턴 (CMALL-784 등) 이면 정확 매칭 카운트도 함께 반환
    *  - 현재 탭은 제외, 0건 탭도 제외
@@ -4204,6 +4227,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (!q) return null;
     if (statusTab === "전체") return null;
     if (filtered.length > 0) return null;
+    if (searchOnlyHits.length === 0) return null;
 
     const isTicketKeyForm = /^[A-Z][A-Z0-9]+-\d+$/i.test(q);
     const exactKey = q.toUpperCase();
@@ -4223,7 +4247,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const hints: { tab: TabId; count: number; exactCount: number }[] = [];
     for (const { tab, matcher } of tabMatchers) {
       if (tab === statusTab) continue;
-      const inTab = preFiltered.filter(matcher);
+      const inTab = searchOnlyHits.filter(matcher);
       const count = inTab.length;
       if (count === 0) continue;
       const exactCount = isTicketKeyForm
@@ -4232,7 +4256,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       hints.push({ tab, count, exactCount });
     }
     return hints.length > 0 ? { hints, isTicketKeyForm } : null;
-  }, [search, statusTab, filtered.length, preFiltered]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [search, statusTab, filtered.length, searchOnlyHits]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Focus Mini Rail: owner_dashboard source 진입 시 Action 우선순위 기반 정렬
   // focusForKey !== null = owner_dashboard source 진입 신호 (state이므로 reactive ✅)
@@ -6434,7 +6458,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </p>
                 ) : hasCrossTab ? (
                   <p className="text-[12.5px]" style={{ color: "var(--text-subtle)" }}>
-                    현재 탭에서는 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>“{q}”</span> 결과가 없습니다.
+                    현재 탭·필터에서는 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>“{q}”</span> 결과가 없습니다.
                   </p>
                 ) : (
                   <>
@@ -6455,17 +6479,26 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       border: "1px solid rgba(99,102,241,0.35)",
                     }}
                   >
-                    <div className="flex items-center justify-center gap-1.5 mb-3">
+                    <div className="flex items-center justify-center gap-1.5 mb-1">
                       <span className="text-[14px]" aria-hidden>🔎</span>
                       <p className="text-[12.5px] font-semibold" style={{ color: "#a5b4fc" }}>
-                        다른 탭에서 검색 결과를 찾았습니다
+                        현재 탭·필터 밖에서 검색 결과를 찾았습니다
                       </p>
                     </div>
+                    <p className="text-[10.5px] text-center mb-3" style={{ color: "var(--text-subtle)" }}>
+                      클릭하면 현재 필터가 해제되고 해당 탭으로 이동합니다.
+                    </p>
                     <div className="flex items-center justify-center gap-2 flex-wrap">
                       {crossTabHints!.hints.map(h => (
                         <button
                           key={h.tab}
-                          onClick={() => setStatusTab(h.tab)}
+                          onClick={() => {
+                            // PR-fix: planningTab 이 search 결과를 미리 잘라낼 수 있어
+                            //   target tab 으로 이동 시 자동으로 planningTab="전체" 해제.
+                            //   search 는 유지 (별도 state).
+                            if (planningTab !== "전체") setPlanningTab("전체");
+                            setStatusTab(h.tab);
+                          }}
                           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-semibold border transition-all hover:scale-[1.03]"
                           style={{
                             background: "rgba(99,102,241,0.18)",
@@ -6474,8 +6507,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           }}
                           title={
                             crossTabHints!.isTicketKeyForm && h.exactCount > 0
-                              ? `${h.tab} 탭으로 이동 (정확 매칭 ${h.exactCount}건 포함)`
-                              : `${h.tab} 탭으로 이동`
+                              ? `${h.tab} 탭으로 이동 (정확 매칭 ${h.exactCount}건 포함, 현재 필터 해제됨)`
+                              : `${h.tab} 탭으로 이동 (현재 필터 해제됨)`
                           }
                         >
                           <span>{h.tab}</span>
