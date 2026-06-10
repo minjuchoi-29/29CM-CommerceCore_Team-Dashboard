@@ -20,6 +20,7 @@ import {
 } from "@/lib/transitions";
 import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
+import { isTicketPastRolePhase } from "@/lib/derived/phase-order";
 import {
   getExecutionPriority as getExecPriority,
   priorityNumOf,
@@ -467,13 +468,14 @@ const PLACEHOLDER_SEVERITY_STYLE = {
   gray:  { dot: "#64748b", color: "#94a3b8", bg: "rgba(100,116,139,0.08)", border: "rgba(100,116,139,0.3)" },
 } as const;
 
-function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, ticketActive, onEditRow, highlightRowKey }: {
+function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, ticketActive, ticketStatus, onEditRow, highlightRowKey }: {
   roles?: RoleSchedule[];
   forceShowPastDone?: boolean;   // 외부 강제 노출: showCompleted=true와 동일 동작 (api 호환)
   extendedView?: boolean;        // 펼치기: 과거 6개월 + 미래 2개월
   fitToContent?: boolean;        // 론치완료 요약: viewStart = 최초 role 시작일
   ticketDone?: boolean;          // 완료 티켓: 완료 일정 토글 없이 항상 노출
   ticketActive?: boolean;        // 진행중·완료 티켓: Kick-Off 미입력 시 "확인필요", Release/Launch 미입력 시 "미정"
+  ticketStatus?: string;         // Schedule Reconciliation Phase 1: Jira status — overdue suppression 판정
   onEditRow?: (r: RoleSchedule) => void;
   highlightRowKey?: string | null; // PlaceholderSummary 클릭으로 강조될 placeholder row의 stable key
 }) {
@@ -722,8 +724,14 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
         {confirmedRoles.length > 0 ? confirmedRoles.map((r, i) => {
           const endMs   = r.end   ? new Date(r.end).getTime()   : null;
           const startMs = r.start ? new Date(r.start).getTime() : null;
-          const overdue   = endMs   !== null && endMs   < TODAY_MS && r.status !== "완료";
-          const notStarted = startMs !== null && startMs < TODAY_MS && r.status === "예정";
+          // Schedule Reconciliation Phase 1: Jira status 가 이미 후속 phase 면 stale overdue suppress.
+          //   예: ticket.status="QA중" + role.phase="개발" → 개발은 이미 통과 → overdue 표시 안 함
+          //   동일 phase, Pre-planning (HOLD 등), unknown 은 suppress 안 함 (lib/derived/phase-order.ts 정책)
+          const rolePhaseForCheck = r.phase ?? inferPhase(r.role) ?? "기타";
+          const phasePassed = !!ticketStatus
+            && isTicketPastRolePhase(ticketStatus, rolePhaseForCheck);
+          const overdue   = endMs   !== null && endMs   < TODAY_MS && r.status !== "완료" && !phasePassed;
+          const notStarted = startMs !== null && startMs < TODAY_MS && r.status === "예정" && !phasePassed;
           const phase = r.phase ?? inferPhase(r.role);
           const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
           const primary = phase ? PHASE_LABEL[phase] : r.role;
@@ -8129,6 +8137,31 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >편집</button>
                         )}
                       </div>
+                      {/* Schedule Reconciliation Phase 1: Focus Mode 미적용 candidate 배지 */}
+                      {(() => {
+                        const fmPending = updateCandidates.filter(
+                          c => c.ticketKey === selected.key && !c.resolved
+                        ).length;
+                        if (fmPending === 0) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setCandidatePanelOpen(true)}
+                            className="mb-2 w-full flex items-center justify-between rounded-lg px-3 py-2 transition hover:brightness-110 active:scale-[0.99] cursor-pointer"
+                            style={{
+                              background: "rgba(99,102,241,0.10)",
+                              border: "1.5px solid rgba(99,102,241,0.45)",
+                            }}
+                            title="클릭하여 Weekly 에서 추출된 미적용 일정 후보를 확인 / 적용"
+                          >
+                            <span className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: "#a5b4fc" }}>
+                              <span aria-hidden>✨</span>
+                              <span>미적용 Weekly 일정 신호 <span className="font-mono">{fmPending}</span>건</span>
+                            </span>
+                            <span className="text-[11px] font-medium" style={{ color: "#a5b4fc" }}>확인 →</span>
+                          </button>
+                        );
+                      })()}
                       {fmRoles.length > 0 ? (
                         <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
                           <GanttChart
@@ -8138,6 +8171,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             fitToContent={true}
                             ticketDone={["론치완료","완료","배포완료"].includes(selected.status)}
                             ticketActive={!["론치완료","완료","배포완료"].includes(selected.status)}
+                            ticketStatus={selected.status}
                             onEditRow={undefined}
                             highlightRowKey={highlightedScheduleRow}
                           />
@@ -10217,8 +10251,33 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const displayRoles = isSummary
                       ? allRoles.filter(r => MILESTONE_ROLES.includes(r.role))
                       : allRoles;
+                    // Schedule Reconciliation Phase 1: 현재 ticket 의 미적용 UpdateCandidate 카운트
+                    const ticketPendingCandidates = updateCandidates.filter(
+                      c => c.ticketKey === selected.key && !c.resolved
+                    ).length;
                     return (
                       <>
+                        {ticketPendingCandidates > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setCandidatePanelOpen(true)}
+                            className="mb-2 w-full flex items-center justify-between rounded-lg px-3 py-2 transition hover:brightness-110 active:scale-[0.99] cursor-pointer"
+                            style={{
+                              background: "rgba(99,102,241,0.10)",
+                              border: "1.5px solid rgba(99,102,241,0.45)",
+                              boxShadow: "0 2px 8px rgba(99,102,241,0.10)",
+                            }}
+                            title="클릭하여 Weekly 에서 추출된 미적용 일정 후보를 확인 / 적용"
+                          >
+                            <span className="flex items-center gap-2 text-[12.5px] font-semibold" style={{ color: "#a5b4fc" }}>
+                              <span aria-hidden>✨</span>
+                              <span>미적용 Weekly 일정 신호 <span className="font-mono">{ticketPendingCandidates}</span>건</span>
+                            </span>
+                            <span className="text-[11.5px] font-medium" style={{ color: "#a5b4fc" }}>
+                              확인 →
+                            </span>
+                          </button>
+                        )}
                         {isDone && allRoles.length > 0 && (
                           <div className="mb-2 flex items-center justify-between rounded-lg px-3 py-1.5" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
                             <span className="text-xs" style={{ color: "var(--text-muted)" }}>
@@ -10239,6 +10298,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           fitToContent={isDone && !isDetailExpanded}
                           ticketDone={isDone}
                           ticketActive={INPROGRESS_STATUSES.includes(selected.status) || isDone}
+                          ticketStatus={selected.status}
                           onEditRow={r => startEdit(makeEditFocusKey(r))}
                         />
                       </>
