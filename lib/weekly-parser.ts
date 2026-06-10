@@ -198,13 +198,30 @@ function matchesAny(text: string, keywords: string[]): boolean {
 export function normalizeStatus(raw: string): ScheduleStatus {
   const s = raw.trim();
   if (!s) return "확인필요";
-  if (/^(진행\s*중|in\s*progress)$/i.test(s)) return "진행중";
-  if (/^(완료\s*됨?|done|completed)$/i.test(s)) return "완료";
-  if (/^(예정대로|예정)$/i.test(s)) return "예정";
-  if (/^(미정|tbd|unknown)$/i.test(s)) return "확인필요";
-  if (/^(확인\s*필요)$/i.test(s)) return "확인필요";
-  if (/^(지연\s*중?|delayed)$/i.test(s)) return "지연";
+
+  // 진행중 — 진행 중 / in progress / 작업 중 / 잔여 / 착수 / 진입 / 시작 / 킥오프
+  // (작업 시작/진행 의미하는 verb 들은 모두 active 상태로 정규화)
+  if (/^(진행\s*중|in\s*progress|작업\s*중)$/i.test(s)) return "진행중";
+  if (/(잔여|착수|진입|시작|킥\s*오프)/i.test(s))         return "진행중";
+
+  // 완료 — 완료 / 종료 / 마감 / done
+  if (/^(완료\s*됨?|done|completed|종료|마감)$/i.test(s)) return "완료";
+
+  // 예정 — 예정 / 대기
+  if (/^(예정대로|예정|대기)$/i.test(s)) return "예정";
+
+  // 미정 / 확인필요
+  if (/^(미정|tbd|unknown)$/i.test(s))   return "확인필요";
+  if (/^(확인\s*필요)$/i.test(s))         return "확인필요";
+
+  // 지연 — 지연 / delayed / 일정 재조정 / 재조정 / 기한 초과
+  if (/^(지연\s*중?|delayed)$/i.test(s))  return "지연";
+  if (/(일정\s*재조정|재조정|기한\s*초과)/i.test(s)) return "지연";
+
+  // 보류
   if (/^(보류|on\s*hold|hold)$/i.test(s)) return "보류";
+
+  // 기존 substring map (back-compat)
   const map: Record<string, ScheduleStatus> = {
     "진행중": "진행중", "완료": "완료", "예정": "예정",
     "미정": "확인필요", "확인필요": "확인필요", "지연": "지연", "보류": "보류",
@@ -243,7 +260,12 @@ export function normalizeRole(raw: string): string {
   return s;
 }
 
-const CANCEL_KEYWORDS = ["취소", "제외", "보류", "중단", "범위 제외", "진행 안 함", "대상 아님"];
+// β-Schedule Signal Extraction MVP-1: scope-out / 철회 류 신호 인식 확장.
+const CANCEL_KEYWORDS = [
+  "취소", "제외", "보류", "중단", "범위 제외", "진행 안 함", "대상 아님",
+  // MVP-1 추가
+  "철회", "스펙 아웃", "스펙아웃", "scope out", "out of scope",
+];
 
 // ─── 날짜 파싱 ─────────────────────────────────────────────────
 // 지원: YYYY-MM-DD, YYYY/MM/DD, M/D, M/D(요일), MM-DD
@@ -383,9 +405,29 @@ function extractBullets(section: string): string[] {
 // 패턴 2 (자연어): "{role}: {date} {status}" 또는 "{free text} {date} {status}"
 //                  status/날짜 키워드 추출
 
+// β-Schedule Signal Extraction MVP-1: Korean action verb 인식 확장.
+//   순서 = findStatusKeyword(text) 의 substring 우선순위.
+//   더 긴 / 더 specific 한 keyword 가 먼저 와야 정확히 매칭됨 (예: "일정 재조정" before "재조정").
 const STATUS_KEYWORDS = [
-  "완료됨", "완료", "진행 중", "진행중", "지연 중", "지연",
-  "보류", "예정대로", "예정", "미정", "확인필요", "확인 필요",
+  // 완료 (longest first)
+  "완료됨", "완료",
+  // 진행 (작업 중 / 진행 중 변형 + 잔여)
+  "진행 중", "진행중", "작업 중", "작업중", "잔여 작업", "잔여",
+  // 시작 신호 (착수 / 진입 / 킥오프 / 시작)
+  // ※ "시작" 은 다른 단어 일부일 수 있어 마지막에 (예: "QA 시작 예정")
+  "킥오프", "킥 오프", "착수", "진입",
+  // 지연 / 위험 (specific 먼저)
+  "일정 재조정 필요", "일정 재조정", "재조정 필요", "기한 초과", "지연 중", "지연", "재조정",
+  // 예정 / 대기
+  "예정대로", "예정", "대기",
+  // 종료 / 마감 (완료 의미 변형)
+  "종료", "마감",
+  // 미정 / 확인필요
+  "미정", "확인 필요", "확인필요",
+  // 보류
+  "보류",
+  // 시작 (마지막 — 다른 패턴 후보 다 보고 fallback)
+  "시작",
 ];
 
 function findStatusKeyword(text: string): { kw: string; index: number } | null {
