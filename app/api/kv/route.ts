@@ -3,7 +3,7 @@ import { redis } from "@/lib/redis";
 
 export const dynamic = "force-dynamic";
 
-const VALID_KEYS = ["cc-planning", "cc-schedules", "cc-memos", "cc-memos-v2", "cc-custom-keys", "cc-custom-tickets", "cc-planning-notes", "cc-ticket-notes", "cc-etr", "cc-agenda", "cc-hidden-keys", "cc-hidden-meta", "cc-ticket-added-dates", "cc-roadmap-initiatives", "cc-weekly-notes", "cc-update-candidates", "cc-weekly-sync-meta", "cc-jira-filters", "cc-filter-tickets", "cc-ticket-sources", "cc-weekly-source-text", "cc-planning-priorities", "cc-etr-status-commented", "cc-remote-links-cache", "cc-confluence-page-cache"] as const;
+const VALID_KEYS = ["cc-planning", "cc-schedules", "cc-memos", "cc-memos-v2", "cc-custom-keys", "cc-custom-tickets", "cc-planning-notes", "cc-ticket-notes", "cc-etr", "cc-agenda", "cc-hidden-keys", "cc-hidden-meta", "cc-ticket-added-dates", "cc-roadmap-initiatives", "cc-weekly-notes", "cc-update-candidates", "cc-weekly-sync-meta", "cc-jira-filters", "cc-filter-tickets", "cc-ticket-sources", "cc-weekly-source-text", "cc-planning-priorities", "cc-execution-priorities", "cc-etr-status-commented", "cc-remote-links-cache", "cc-confluence-page-cache"] as const;
 type ValidKey = (typeof VALID_KEYS)[number];
 
 function isValidKey(k: string): k is ValidKey {
