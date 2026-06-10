@@ -20,6 +20,8 @@ export type RoleScheduleMin = {
 };
 
 export type EtrInfoMin = {
+  // PR-X: source 일반화 — ETR / ELT / 자체발의 모두 동등 처리.
+  source?: "자체발의" | "ELT" | "ETR";
   etrTickets?: { key: string }[];
   wikiLinks?: { url: string; title: string }[];
 };
@@ -153,13 +155,25 @@ export function getActionItems(
     });
   }
 
-  // 6. 요구사항 출처(ETR) 미연결 (info) — neutral: 즉각 조치보다 참고 수준
-  if (!etrEntry?.etrTickets?.length) {
+  // 6. 요청사항 출처 (info) — PR-X: source 별 분기.
+  //  - source 미설정 → "요청사항 출처 미선택" (참고)
+  //  - source="ETR" 인데 etrTickets 비어있음 → "ETR 미연결" (참고)
+  //  - source="ELT" → action 없음 (ELT F/U Wiki 는 PR-Z 에서 별도 안내)
+  //  - source="자체발의" → action 없음 (외부 출처 없음)
+  const src = etrEntry?.source;
+  if (!src) {
+    items.push({
+      id: "no-source",
+      priority: 6,
+      level: "info",
+      label: "요청사항 출처 미선택",
+    });
+  } else if (src === "ETR" && !etrEntry?.etrTickets?.length) {
     items.push({
       id: "no-etr",
       priority: 6,
       level: "info",
-      label: "요구사항 출처(ETR) 미연결",
+      label: "요청사항 출처(ETR) 미연결",
     });
   }
 

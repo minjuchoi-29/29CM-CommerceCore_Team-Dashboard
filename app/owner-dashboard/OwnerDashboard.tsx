@@ -73,6 +73,7 @@ const ACTION_TAB: Record<string, "ops" | "overview"> = {
   "no-launch":          "ops",
   "planning-reviewing": "ops",
   "no-etr":             "overview",
+  "no-source":          "overview",
   "no-docs":            "overview",
 };
 const ACTION_FOCUS: Record<string, string> = {
@@ -81,7 +82,8 @@ const ACTION_FOCUS: Record<string, string> = {
   "no-schedule":        "schedule",   // ops 탭 > Schedule 섹션
   "no-launch":          "schedule",   // ops 탭 > Schedule 섹션 (Launch row)
   "planning-reviewing": "planning",   // ops 탭 > 플래닝 상태 섹션
-  "no-etr":             "etr",        // overview 탭 > 요구사항 출처 섹션
+  "no-etr":             "etr",        // overview 탭 > 요청사항 출처 섹션
+  "no-source":          "source",     // overview 탭 > 요청사항 출처 섹션 (source 미선택)
   "no-docs":            "docs",       // overview 탭 > 관련 문서 섹션
 };
 /**
@@ -139,7 +141,8 @@ const ACTION_TEXT: Record<string, string> = {
   "no-schedule":        "세부 작업 일정을 입력해주세요",
   "no-launch":          "Launch / Release 일정을 지정해주세요",
   "planning-reviewing": "팀 플래닝 검토 중 — 완료를 독려하거나 상태를 확인하세요",
-  "no-etr":             "ETR 티켓을 연결해 요구사항 출처를 남겨주세요",
+  "no-etr":             "ETR 티켓을 연결해 요청사항 출처를 남겨주세요",
+  "no-source":          "요청사항 출처를 선택해주세요 (자체발의 / ELT / ETR)",
   "no-docs":            "PRD 또는 관련 문서를 연결해주세요",
 };
 
@@ -166,6 +169,7 @@ function calcScore(ticket: Ticket, actions: ActionItem[]): number {
   if (ids.has("no-schedule"))                          s += 30;
   if (ids.has("planning-reviewing"))                   s += 20;
   if (ids.has("no-etr"))                               s +=  8;
+  if (ids.has("no-source"))                            s +=  6;
   if (ids.has("no-docs"))                              s +=  5;
   if (["SUGGESTED", "Backlog"].includes(ticket.status)) s -= 20;
   return Math.max(s, 0);
