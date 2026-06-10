@@ -3331,9 +3331,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         focusContext === "planning" || focusContext === "review-needed" ? "planning" :
         focusContext === "schedule" || focusContext === "no-schedule" || focusContext === "no-launch" ? "schedule" :
         null;
+      // PR-X: "source" focus key → 기존 "etr" 섹션으로 매핑 (두 액션이 같은 카드 공유).
+      const focusKey = focusContext === "source" ? "etr" : focusContext;
       const el =
         (fmKey && document.querySelector<HTMLElement>(`[data-fm-section="${fmKey}"]`)) ??
-        document.querySelector<HTMLElement>(`[data-focus-section="${focusContext}"]`);
+        document.querySelector<HTMLElement>(`[data-focus-section="${focusKey}"]`);
       if (el) {
         el.scrollIntoView({ behavior: "smooth", block: "start" });
         setSectionHighlight(focusContext);
@@ -7101,7 +7103,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               "no-schedule":      { icon: "⚠", text: "세부 작업 일정을 입력해주세요",              color: "#fbbf24", bg: "rgba(245,158,11,0.08)",  border: "rgba(251,191,36,0.35)"  },
               "no-launch":        { icon: "⚠", text: "Launch / Release 일정을 지정해주세요",      color: "#fbbf24", bg: "rgba(245,158,11,0.08)",  border: "rgba(251,191,36,0.35)"  },
               "planning-reviewing":{ icon: "ℹ", text: "팀 플래닝 검토 중 — 완료를 독려하거나 상태를 확인하세요", color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
-              "no-etr":           { icon: "ℹ", text: "ETR 티켓을 연결해 요구사항 출처를 남겨주세요", color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+              "no-etr":           { icon: "ℹ", text: "ETR 티켓을 연결해 요청사항 출처를 남겨주세요", color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+              "no-source":        { icon: "ℹ", text: "요청사항 출처를 선택해주세요 (자체발의 / ELT / ETR)", color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
               "no-docs":          { icon: "ℹ", text: "PRD 또는 관련 문서를 연결해주세요",          color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
             };
 
@@ -7256,10 +7259,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </div>
                     </div>
 
-                    {/* 요구사항 출처 (ETR) */}
+                    {/* 요청사항 출처 (Source) — Focus Mode */}
                     <div data-fm-section="etr">
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
-                        요구사항 출처
+                        요청사항 출처
                       </p>
                       {/* Phase 3: Focus Mode 에도 source 선택 버튼 추가 (관리용) */}
                       <div className="flex gap-1 mb-2">
@@ -7294,11 +7297,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium"
                                 style={
                                   fmEtr?.source === "자체발의" ? { background: "rgba(99,102,241,0.12)", border: "1px solid rgba(99,102,241,0.35)", color: "#818cf8" } :
-                                  fmEtr?.source === "ELT"     ? { background: "rgba(245,158,11,0.12)",  border: "1px solid rgba(245,158,11,0.35)",  color: "#fbbf24" } :
-                                                                { background: "rgba(59,130,246,0.12)",  border: "1px solid rgba(59,130,246,0.35)",  color: "#60a5fa" }
+                                  fmEtr?.source === "ELT"     ? { background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.35)",  color: "#fbbf24" } :
+                                  fmEtr?.source === "ETR"     ? { background: "rgba(59,130,246,0.12)", border: "1px solid rgba(59,130,246,0.35)",  color: "#60a5fa" } :
+                                                                { background: "rgba(100,116,139,0.10)", border: "1px solid rgba(100,116,139,0.35)", color: "var(--text-muted)" }
                                 }
                               >
-                                {fmEtr?.source === "자체발의" ? "자체발의" : fmEtr?.source === "ELT" ? "ELT 요구사항" : "외부 부서 요청 (ETR)"}
+                                {fmEtr?.source === "자체발의" ? "자체발의" : fmEtr?.source === "ELT" ? "ELT 요구사항" : fmEtr?.source === "ETR" ? "외부 부서 요청 (ETR)" : "출처 미선택"}
                               </div>
                               <button
                                 onClick={() => syncJiraLinks(selected.key)}
@@ -7330,12 +7334,47 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   </div>
                                 );
                               })
-                            ) : (
-                              <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>현재 연결된 요청이 없습니다. 우측 "연결된 티켓 가져오기" 로 Jira issue link 를 확인할 수 있습니다.</p>
-                            )}
+                            ) : (() => {
+                              // PR-X: source-aware empty state — Focus Mode.
+                              const src = fmEtr?.source;
+                              const msg =
+                                src === "ELT"      ? "ELT 요구사항 출처 (ETR 티켓 연결은 선택사항)." :
+                                src === "자체발의" ? "외부 요청 없이 내부에서 발의된 과제입니다." :
+                                src === "ETR"      ? "연결된 ETR 티켓이 없습니다. 우측 \"연결된 티켓 가져오기\" 로 Jira 링크를 확인할 수 있습니다." :
+                                                     "요청사항 출처가 선택되지 않았습니다. 위에서 출처를 선택해주세요.";
+                              return <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>{msg}</p>;
+                            })()}
                           </div>
                         );
                       })()}
+
+                      {/* PR-X: Focus Mode source-aware cards */}
+                      {fmEtr?.source === "ELT" && (
+                        <div className="mt-2 rounded-lg px-2.5 py-2" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.30)" }}>
+                          <div className="flex items-center gap-1.5 mb-1">
+                            <span className="text-[12px]" aria-hidden>📘</span>
+                            <p className="text-[11px] font-semibold" style={{ color: "#fbbf24" }}>90. ELT F/U</p>
+                          </div>
+                          <p className="text-[10.5px] mb-1.5" style={{ color: "var(--text-muted)" }}>Wiki 연동 준비 중</p>
+                          <a
+                            href="https://musinsa-oneteam.atlassian.net/wiki/spaces/29PRODUCT/pages/410847151"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="inline-flex items-center gap-1 text-[10.5px] font-medium px-1.5 py-0.5 rounded transition-colors"
+                            style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.40)", color: "#fbbf24" }}
+                          >Wiki 열기 ↗</a>
+                        </div>
+                      )}
+                      {fmEtr?.source === "자체발의" && (
+                        <p className="mt-2 text-[10.5px] italic px-1" style={{ color: "var(--text-subtle)" }}>
+                          외부 요청 없이 내부에서 발의된 과제입니다.
+                        </p>
+                      )}
+                      {!fmEtr?.source && (
+                        <p className="mt-2 text-[10.5px] italic px-1" style={{ color: "var(--text-subtle)" }}>
+                          ⚠ 출처 미선택 — 위에서 선택해주세요.
+                        </p>
+                      )}
                     </div>
 
                     {/* Phase 5: 관련 문서 카드 (Focus Mode) — self + linked ETR docs 통합 + 빠른 추가 */}
@@ -7777,7 +7816,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const REMINDER: Record<string, { icon: string; text: string; color: string; bg: string; border: string }> = {
                 "schedule": { icon: "⚠", text: "세부 작업 일정을 입력해주세요",          color: "#fbbf24", bg: "rgba(245,158,11,0.08)",   border: "rgba(251,191,36,0.38)"  },
                 "planning": { icon: "⚡", text: "플래닝 검토 상태를 확인·해제해주세요",    color: "#f87171", bg: "rgba(239,68,68,0.08)",    border: "rgba(248,113,113,0.38)" },
-                "etr":      { icon: "ℹ", text: "요구사항 출처(ETR)를 연결해주세요",        color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+                "etr":      { icon: "ℹ", text: "요청사항 출처(ETR)를 연결해주세요",        color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
+                "source":   { icon: "ℹ", text: "요청사항 출처를 선택해주세요",              color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
                 "docs":     { icon: "ℹ", text: "관련 문서(PRD)를 연결해주세요",            color: "#94a3b8", bg: "rgba(100,116,139,0.06)", border: "rgba(100,116,139,0.28)" },
               };
               const r = REMINDER[focusContext];
@@ -7881,7 +7921,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       <path d="M9 13l2 2 4-4" />
                     </svg>
                     <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#60a5fa" }}>
-                      Origin Request
+                      요청사항 출처
                     </p>
                     {merged.length > 0 && (
                       <span className="text-[10px] font-mono opacity-70" style={{ color: "#60a5fa" }}>{merged.length}건</span>
@@ -7911,9 +7951,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
 
                 <div className="space-y-2">
-                  {merged.length === 0 ? (
-                    <p className="text-[11.5px] italic px-1 py-1" style={{ color: "var(--text-subtle)" }}>현재 연결된 요청이 없습니다. 우측 "연결된 티켓 가져오기" 로 Jira issue link 를 확인할 수 있습니다.</p>
-                  ) : merged.map(et => {
+                  {merged.length === 0 ? (() => {
+                    // PR-X: source-aware 빈 상태 메시지
+                    const src = etrMap[selected.key]?.source;
+                    const msg =
+                      src === "ELT"      ? "ELT 요구사항 출처 (ETR 티켓 연결은 선택사항)." :
+                      src === "자체발의" ? "외부 요청 없이 내부에서 발의된 과제입니다." :
+                      src === "ETR"      ? "연결된 ETR 티켓이 없습니다. 우측 \"연결된 티켓 가져오기\" 로 Jira issue link 를 확인할 수 있습니다." :
+                                           "요청사항 출처가 선택되지 않았습니다. 아래 \"출처 변경\" 으로 출처를 지정해주세요.";
+                    return <p className="text-[11.5px] italic px-1 py-1" style={{ color: "var(--text-subtle)" }}>{msg}</p>;
+                  })() : merged.map(et => {
                     const live = ticketByKey.get(et.key);
                     const status = live?.status ?? et.status ?? "-";
                     const summary = live?.summary ?? et.summary ?? "";
@@ -8711,7 +8758,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   <div className="space-y-3">
             {detailTab === "overview" && (<>
 
-            {/* 요구사항 출처 — data-focus-section="etr" */}
+            {/* 요청사항 출처 — data-focus-section="etr" (no-source 도 같은 섹션으로 deep-link) */}
             <div
               data-focus-section="etr"
               className="rounded-lg px-3 py-2.5 mb-4"
@@ -8724,7 +8771,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             >
               {/* 섹션 헤더 */}
               <div className="flex items-center gap-1.5 mb-2.5">
-                <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>요구사항 출처</p>
+                <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>요청사항 출처</p>
                 <Tooltip
                   content={"이 과제가 어디서 시작됐는지 분류합니다.\n자체발의: CC팀 주도 기획\nELT: 경영진 요구사항\nETR: 타 부서 공식 요청"}
                   side="bottom"
@@ -8839,6 +8886,54 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
                   {etrError && <p className="mt-1 text-red-500">{etrError}</p>}
                 </>
+              )}
+
+              {/* PR-X: ELT 선택 시 — Wiki 연동 placeholder. PR-Z 에서 실제 ELT F/U 페이지 검색 결과로 교체. */}
+              {etrMap[selected.key]?.source === "ELT" && (
+                <div className="rounded-lg px-3 py-3" style={{ background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.30)" }}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-[16px]" aria-hidden>📘</span>
+                    <p className="text-[12.5px] font-semibold" style={{ color: "#fbbf24" }}>90. ELT F/U</p>
+                  </div>
+                  <p className="text-[11.5px] leading-relaxed mb-2" style={{ color: "var(--text-secondary)" }}>
+                    Wiki 연동 준비 중입니다. 다음 PR 에서 ticket 관련 이력을 ELT F/U 문서에서 자동 검색합니다.
+                  </p>
+                  <a
+                    href="https://musinsa-oneteam.atlassian.net/wiki/spaces/29PRODUCT/pages/410847151"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1 text-[11.5px] font-medium px-2 py-1 rounded transition-colors"
+                    style={{ background: "rgba(245,158,11,0.15)", border: "1px solid rgba(245,158,11,0.40)", color: "#fbbf24" }}
+                  >
+                    Wiki 열기 ↗
+                  </a>
+                </div>
+              )}
+
+              {/* PR-X: 자체발의 — 외부 요청 없음 안내. */}
+              {etrMap[selected.key]?.source === "자체발의" && (
+                <div className="rounded-lg px-3 py-3" style={{ background: "rgba(99,102,241,0.06)", border: "1px solid rgba(99,102,241,0.30)" }}>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <span className="text-[14px]" aria-hidden>💡</span>
+                    <p className="text-[12.5px] font-semibold" style={{ color: "#818cf8" }}>자체발의</p>
+                  </div>
+                  <p className="text-[11.5px] leading-relaxed" style={{ color: "var(--text-secondary)" }}>
+                    외부 요청 없이 내부에서 발의된 과제입니다.
+                  </p>
+                </div>
+              )}
+
+              {/* PR-X: source 미선택 — warning + 선택 안내. */}
+              {!etrMap[selected.key]?.source && (
+                <div className="rounded-lg px-3 py-3 flex items-start gap-2.5" style={{ background: "rgba(100,116,139,0.06)", border: "1px solid rgba(100,116,139,0.35)" }}>
+                  <span className="text-[14px] leading-none mt-0.5" aria-hidden>⚠</span>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-[12.5px] font-semibold mb-0.5" style={{ color: "var(--text-secondary)" }}>출처 미선택</p>
+                    <p className="text-[11.5px] leading-relaxed" style={{ color: "var(--text-subtle)" }}>
+                      이 과제가 어디서 시작됐는지 위에서 선택해주세요. (자체발의 / ELT / ETR)
+                    </p>
+                  </div>
+                </div>
               )}
 
               {/* 관련 주요 문서 연결 섹션 — data-focus-section="docs" */}
