@@ -4215,39 +4215,48 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   /**
    * 검색 UX — Cross-tab hint memo.
    *
-   * 현재 filtered 결과가 비어있을 때, 검색어를 다른 statusTab 에서 찾으면
-   * 어느 탭에 몇 건 있는지 안내. searchOnlyHits 기반 (planningTab/quarters/levels
-   * 등의 영향 없이 search 만 적용).
+   * 사용자가 인지하는 "탭" 은 상단 planningTab (4 옵션). 그 축으로 hint 계산.
+   * dataset 은 searchOnlyHits — planningTab/quarters/levels 등의 사전 필터를
+   * 모두 우회하여 search 만 적용한 결과.
    *
+   * planningTab 분기 로직은 preFiltered (line ~4019-4027) 와 동일:
+   *   - 진행 중:           (bothDone || isJiraActive) && !isTicketDone
+   *   - 플래닝 대기·검토:   !(bothDone || isJiraActive)
+   *   - 완료:              isTicketDone
+   *
+   *  - 현재 planningTab 은 hint 에서 제외
+   *  - 0건 탭도 제외
+   *  - planningTab === "전체" 면 hint 무의미 (이미 모두 보고 있음)
    *  - 검색어가 ticket key 패턴 (CMALL-784 등) 이면 정확 매칭 카운트도 함께 반환
-   *  - 현재 탭은 제외, 0건 탭도 제외
    */
   const crossTabHints = useMemo(() => {
     const q = search.trim();
     if (!q) return null;
-    if (statusTab === "전체") return null;
+    if (planningTab === "전체") return null;
     if (filtered.length > 0) return null;
     if (searchOnlyHits.length === 0) return null;
 
     const isTicketKeyForm = /^[A-Z][A-Z0-9]+-\d+$/i.test(q);
     const exactKey = q.toUpperCase();
 
-    type TabId = Exclude<typeof statusTab, "전체">;
-    const tabMatchers: Array<{ tab: TabId; matcher: (t: Ticket) => boolean }> = [
-      { tab: "완료",       matcher: (t) => DONE_STATUSES.includes(t.status) },
-      { tab: "진행중",     matcher: (t) => INPROGRESS_STATUSES.includes(t.status) },
-      { tab: "계획/대기",  matcher: (t) => PLANNED_STATUSES.includes(t.status) },
-      { tab: "기획",       matcher: (t) => ["기획중", "기획완료"].includes(t.status) },
-      { tab: "디자인",     matcher: (t) => ["디자인중", "디자인완료"].includes(t.status) },
-      { tab: "준비중",     matcher: (t) => t.status === "준비중" },
-      { tab: "개발",       matcher: (t) => ["개발중", "In Progress"].includes(t.status) },
-      { tab: "QA",         matcher: (t) => t.status === "QA중" },
-    ];
+    type PlanningTabId = "진행 중" | "플래닝 대기·검토" | "완료";
+    const matchesPlanning = (t: Ticket, tab: PlanningTabId): boolean => {
+      const p = getPlanningVal(planning[t.key]);
+      const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
+      const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
+      const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
+      switch (tab) {
+        case "진행 중":          return (bothDone || isJiraActive) && !isTicketDone;
+        case "플래닝 대기·검토":  return !(bothDone || isJiraActive);
+        case "완료":             return isTicketDone;
+      }
+    };
 
-    const hints: { tab: TabId; count: number; exactCount: number }[] = [];
-    for (const { tab, matcher } of tabMatchers) {
-      if (tab === statusTab) continue;
-      const inTab = searchOnlyHits.filter(matcher);
+    const tabs: PlanningTabId[] = ["진행 중", "플래닝 대기·검토", "완료"];
+    const hints: { tab: PlanningTabId; count: number; exactCount: number }[] = [];
+    for (const tab of tabs) {
+      if (tab === planningTab) continue;
+      const inTab = searchOnlyHits.filter(t => matchesPlanning(t, tab));
       const count = inTab.length;
       if (count === 0) continue;
       const exactCount = isTicketKeyForm
@@ -4256,7 +4265,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       hints.push({ tab, count, exactCount });
     }
     return hints.length > 0 ? { hints, isTicketKeyForm } : null;
-  }, [search, statusTab, filtered.length, searchOnlyHits]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [search, planningTab, filtered.length, searchOnlyHits, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Focus Mini Rail: owner_dashboard source 진입 시 Action 우선순위 기반 정렬
   // focusForKey !== null = owner_dashboard source 진입 신호 (state이므로 reactive ✅)
@@ -6493,11 +6502,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <button
                           key={h.tab}
                           onClick={() => {
-                            // PR-fix: planningTab 이 search 결과를 미리 잘라낼 수 있어
-                            //   target tab 으로 이동 시 자동으로 planningTab="전체" 해제.
-                            //   search 는 유지 (별도 state).
-                            if (planningTab !== "전체") setPlanningTab("전체");
-                            setStatusTab(h.tab);
+                            // hint 는 planningTab 기준. CTA 클릭 시:
+                            //   - planningTab = target 으로 변경
+                            //   - statusTab = "전체" 로 리셋 (target planningTab 안에서 모든 상태 노출)
+                            //   - search 는 유지 (별도 state)
+                            setPlanningTab(h.tab);
+                            if (statusTab !== "전체") setStatusTab("전체");
                           }}
                           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-[13px] font-semibold border transition-all hover:scale-[1.03]"
                           style={{
