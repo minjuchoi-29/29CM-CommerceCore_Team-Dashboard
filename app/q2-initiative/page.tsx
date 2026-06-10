@@ -245,8 +245,12 @@ export default function AssigneeView() {
                         </td>
                         <td className="px-4 py-3 text-gray-800 font-medium">
                           <span className="flex items-center gap-2">
+                            {/* PR #33: q2-initiative 는 Planning 우선순위 표시. */}
                             {priorities[t.key] && (
-                              <span className="shrink-0 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono">
+                              <span
+                                className="shrink-0 px-1.5 py-0.5 rounded text-xs font-bold bg-amber-100 text-amber-700 border border-amber-200 font-mono"
+                                title={`Planning Priority P${priorities[t.key]}`}
+                              >
                                 P{priorities[t.key]}
                               </span>
                             )}

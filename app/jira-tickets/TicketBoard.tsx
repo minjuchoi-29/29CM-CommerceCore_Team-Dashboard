@@ -20,6 +20,12 @@ import {
 } from "@/lib/transitions";
 import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
+import {
+  getExecutionPriority as getExecPriority,
+  priorityNumOf,
+  countNumericDuplicates,
+  countResolvedExecutionDuplicates,
+} from "@/lib/priorities";
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
 import {
   type TrackState,
@@ -1650,7 +1656,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [showFullDoneSchedule, setShowFullDoneSchedule] = useState(false);
 
   // 시트 우선순위 (key → priority 문자열)
+  // PR #33 — Priority Model Split (planningPriority + executionPriority)
+  //   priorities:           planning priority (KV cc-planning-priorities)
+  //   executionPriorities:  execution priority (KV cc-execution-priorities, 신규)
+  //   getExecutionPriority() helper 가 execution → planning fallback 처리.
   const [priorities, setPriorities] = useState<Record<string, string>>({});
+  const [executionPriorities, setExecutionPriorities] = useState<Record<string, string>>({});
   // PR-C: Jira Remote Links (Web Links) lazy fetch — selected ticket 마다 1회. 같은 ticket 재open 은 in-memory cache 사용.
   type RemoteLink = { url: string; title: string };
   const [remoteLinksByKey, setRemoteLinksByKey] = useState<Record<string, RemoteLink[]>>({});
@@ -1777,13 +1788,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [cleanupInFlight, setCleanupInFlight] = useState<Set<string>>(new Set());
 
   // 정렬 — Phase 7.1: localStorage persist
-  type SortBy = "default" | "priority" | "priorityDesc" | "startDate" | "eta" | "ticketNo";
+  // PR #33: priority sort 옵션을 planning/execution 두 축으로 분리.
+  //  기존 "priority" / "priorityDesc" 는 localStorage 마이그레이션 (planning 으로 매핑).
+  type SortBy = "default"
+    | "planningPriority" | "planningPriorityDesc"
+    | "executionPriority" | "executionPriorityDesc"
+    | "startDate" | "eta" | "ticketNo";
   const SORT_BY_KEY = "cc-sort-by";
-  const VALID_SORT_VALUES: ReadonlySet<SortBy> = new Set<SortBy>(["default", "priority", "priorityDesc", "startDate", "eta", "ticketNo"]);
+  const VALID_SORT_VALUES: ReadonlySet<SortBy> = new Set<SortBy>([
+    "default",
+    "planningPriority", "planningPriorityDesc",
+    "executionPriority", "executionPriorityDesc",
+    "startDate", "eta", "ticketNo",
+  ]);
+  /** localStorage 의 legacy 값 (priority/priorityDesc) → 신규 키로 마이그레이션 */
+  const migrateSortBy = (raw: string | null): SortBy | null => {
+    if (!raw) return null;
+    if (raw === "priority")     return "planningPriority";
+    if (raw === "priorityDesc") return "planningPriorityDesc";
+    return VALID_SORT_VALUES.has(raw as SortBy) ? (raw as SortBy) : null;
+  };
   const [sortBy, setSortBy] = useState<SortBy>(() => {
     if (typeof window === "undefined") return "eta";
-    const raw = localStorage.getItem(SORT_BY_KEY);
-    return raw && VALID_SORT_VALUES.has(raw as SortBy) ? (raw as SortBy) : "eta";
+    return migrateSortBy(localStorage.getItem(SORT_BY_KEY)) ?? "eta";
   });
   useEffect(() => {
     try { localStorage.setItem(SORT_BY_KEY, sortBy); } catch {}
@@ -2886,55 +2913,87 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   // 사용자 추가 티켓 제거
-  // Phase 7: KV 단일 진실 소스 — Sheet 폐기. helper 함수.
-  // Phase 7.1: 저장 실패 시 호출부가 rollback 할 수 있도록 Promise<boolean> 반환.
-  async function savePrioritiesToKv(next: Record<string, string>): Promise<boolean> {
+  // PR #33 — Priority KV save helpers (planning + execution 각각).
+  //   Phase 7.1 동작 보존: 저장 실패 시 Promise<boolean> 반환 → 호출부 rollback.
+  async function saveKv(key: string, value: Record<string, string>): Promise<boolean> {
     try {
       const res = await fetch("/api/kv", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "cc-planning-priorities", value: next }),
+        body: JSON.stringify({ key, value }),
       });
       return res.ok;
     } catch {
       return false;
     }
   }
+  const savePlanningPrioritiesToKv  = (next: Record<string, string>) => saveKv("cc-planning-priorities",  next);
+  const saveExecutionPrioritiesToKv = (next: Record<string, string>) => saveKv("cc-execution-priorities", next);
+  /** Backward compat alias — Phase 7 의 savePrioritiesToKv 와 동등. */
+  const savePrioritiesToKv = savePlanningPrioritiesToKv;
 
   /**
-   * 단일 ticket priority 변경 (number) — KV 즉시 저장 + 정렬 sync.
-   * Phase 7.1: optimistic update + 저장 실패 시 rollback + toast.
+   * 단일 ticket planning priority 변경 + KV 저장 + 정렬 sync.
+   * 빈값/0/"0" → 항목 삭제. 실패 시 rollback + toast.
    */
-  async function setPriority(ticketKey: string, value: string) {
+  async function setPlanningPriority(ticketKey: string, value: string) {
     const trimmed = value.trim();
     const prev = priorities;
     const next = { ...prev };
-    if (!trimmed || trimmed === "0") {
-      delete next[ticketKey];
-    } else {
-      next[ticketKey] = trimmed;
-    }
+    if (!trimmed || trimmed === "0") delete next[ticketKey];
+    else                            next[ticketKey] = trimmed;
     setPriorities(next);
-    const ok = await savePrioritiesToKv(next);
+    const ok = await savePlanningPrioritiesToKv(next);
     if (!ok) {
       setPriorities(prev);
-      setSheetSyncMsg("우선순위 저장 실패. 잠시 후 다시 시도해 주세요.");
+      setSheetSyncMsg("Planning 우선순위 저장 실패. 잠시 후 다시 시도해 주세요.");
+      setTimeout(() => setSheetSyncMsg(null), 4000);
+    }
+  }
+  /** Backward compat alias — 기존 setPriority 호출처 그대로 동작. */
+  const setPriority = setPlanningPriority;
+
+  /**
+   * 단일 ticket execution priority 변경 + KV 저장.
+   * setPlanningPriority 와 동일 패턴 (rollback + toast).
+   */
+  async function setExecutionPriority(ticketKey: string, value: string) {
+    const trimmed = value.trim();
+    const prev = executionPriorities;
+    const next = { ...prev };
+    if (!trimmed || trimmed === "0") delete next[ticketKey];
+    else                            next[ticketKey] = trimmed;
+    setExecutionPriorities(next);
+    const ok = await saveExecutionPrioritiesToKv(next);
+    if (!ok) {
+      setExecutionPriorities(prev);
+      setSheetSyncMsg("Execution 우선순위 저장 실패. 잠시 후 다시 시도해 주세요.");
       setTimeout(() => setSheetSyncMsg(null), 4000);
     }
   }
 
   function removeTicket(key: string) {
-    // 우선순위 재정렬: 삭제 티켓 아래 번호를 -1씩 당김
-    const deletedP = parseInt(priorities[key] ?? "");
-    if (deletedP > 0) {
-      const shifted: Record<string, string> = {};
-      Object.entries(priorities).forEach(([k, v]) => {
+    // 우선순위 재정렬: 삭제 티켓 아래 번호를 -1씩 당김 (planning + execution 둘 다)
+    const shiftBelow = (map: Record<string, string>): Record<string, string> | null => {
+      const deletedP = parseInt(map[key] ?? "");
+      if (!(deletedP > 0)) return null;
+      const out: Record<string, string> = {};
+      Object.entries(map).forEach(([k, v]) => {
         if (k === key) return;
         const p = parseInt(v);
-        shifted[k] = p > deletedP ? String(p - 1) : v;
+        out[k] = p > deletedP ? String(p - 1) : v;
       });
-      setPriorities(shifted);
-      savePrioritiesToKv(shifted);
+      return out;
+    };
+    const planShifted = shiftBelow(priorities);
+    if (planShifted) {
+      setPriorities(planShifted);
+      savePlanningPrioritiesToKv(planShifted);
+    }
+    const execShifted = shiftBelow(executionPriorities);
+    if (execShifted) {
+      setExecutionPriorities(execShifted);
+      saveExecutionPrioritiesToKv(execShifted);
     }
 
     // hiddenMeta에 티켓 정보 저장 (복원용)
@@ -3080,20 +3139,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     let cancelled = false;
     async function loadPriorities() {
       try {
-        const kvRes = await fetch("/api/kv?keys=cc-planning-priorities");
+        // PR #33: planning + execution 두 KV 키를 한 번에 fetch.
+        const kvRes = await fetch("/api/kv?keys=cc-planning-priorities,cc-execution-priorities");
         if (!kvRes.ok) throw new Error(`kv ${kvRes.status}`);
         const kvData = await kvRes.json() as Record<string, unknown>;
         const fromKv = kvData["cc-planning-priorities"];
+        const fromKvExec = kvData["cc-execution-priorities"];
         if (cancelled) return;
 
+        // executionPriorities 는 항상 KV 값 그대로 (비어있으면 빈 객체).
+        if (fromKvExec && typeof fromKvExec === "object" && !Array.isArray(fromKvExec)) {
+          setExecutionPriorities(fromKvExec as Record<string, string>);
+        }
+
         if (fromKv && typeof fromKv === "object" && !Array.isArray(fromKv) && Object.keys(fromKv).length > 0) {
-          // KV 에 데이터 있음 — Source of Truth
+          // planning KV 에 데이터 있음 — Source of Truth
           setPriorities(fromKv as Record<string, string>);
           setPriorityError(null);
           return;
         }
 
-        // KV 비어있음 → Sheet 에서 1회 마이그레이션 시도
+        // planning KV 비어있음 → Sheet 에서 1회 마이그레이션 시도
         const sheetRes = await fetch("/api/sheet-priorities");
         const sheetData = await sheetRes.json();
         if (cancelled) return;
@@ -3976,6 +4042,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
 
   // 완료 티켓의 우선순위는 의미 없으므로 진행중·대기 티켓만 남김
+  /** Planning priority — 활성 ticket 만 (완료 제외) */
   const activePriorities = useMemo(() => {
     return Object.fromEntries(
       Object.entries(priorities).filter(([key]) => {
@@ -3985,19 +4052,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     );
   }, [priorities, tickets]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Phase 7.1: numeric priority 값별 중복 카운트 (활성 ticket 기준)
-  // 예: { "1": 2, "3": 1 } → P1 이 2개 있음 (운영자가 정렬 후 직접 조정)
-  const priorityDuplicateCount = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const v of Object.values(activePriorities)) {
-      const n = parseInt(v, 10);
-      if (Number.isFinite(n) && n > 0) {
-        const key = String(n);
-        counts[key] = (counts[key] ?? 0) + 1;
-      }
-    }
-    return counts;
-  }, [activePriorities]);
+  /** Execution priority — 활성 ticket 만 (완료 제외) */
+  const activeExecutionPriorities = useMemo(() => {
+    return Object.fromEntries(
+      Object.entries(executionPriorities).filter(([key]) => {
+        const t = tickets.find(t => t.key === key);
+        return !t || !DONE_PRIORITY_STATUSES.has(t.status);
+      })
+    );
+  }, [executionPriorities, tickets]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Planning duplicate count — countNumericDuplicates helper 활용
+  const priorityDuplicateCount = useMemo(
+    () => countNumericDuplicates(activePriorities),
+    [activePriorities],
+  );
+
+  // Execution duplicate count — resolved 값 (planning fallback 포함) 기준
+  const executionPriorityDuplicateCount = useMemo(() => {
+    const activeKeys = tickets
+      .filter(t => !DONE_PRIORITY_STATUSES.has(t.status))
+      .map(t => t.key);
+    return countResolvedExecutionDuplicates(activeKeys, priorities, executionPriorities);
+  }, [tickets, priorities, executionPriorities]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // statusTab 제외한 필터 (카운트 계산용)
   const preFiltered = useMemo(() => {
@@ -4143,42 +4220,48 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // 신규 필터
     if (newFilter) result = result.filter(t => isRecentTicket(t.key));
     const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
-    // Phase 7.1: numeric priority sort 안정화
+    // Phase 7.1 + PR #33: numeric priority sort 안정화
     //  - "완료" / 빈값 / non-numeric → Infinity (항상 마지막)
     //  - secondary: ETA 빠른 순 → key numeric 순
+    //  - planning vs execution 분기 (PR #33)
     const ticketNum = (key: string) => {
       const m = key.match(/(\d+)$/);
       return m ? parseInt(m[1], 10) : 0;
     };
-    const priorityNum = (key: string) => {
-      const raw = activePriorities[key];
-      if (!raw) return Infinity;
-      const n = parseInt(raw, 10);
-      return Number.isFinite(n) && n > 0 ? n : Infinity;
-    };
+    const planningPriorityNum = (key: string) => priorityNumOf(activePriorities[key]);
+    const executionPriorityNum = (key: string) =>
+      priorityNumOf(getExecPriority(priorities, executionPriorities, key));
     const prioritySecondary = (a: Ticket, b: Ticket) => {
       const etaDelta = dateVal(a.eta) - dateVal(b.eta);
       if (etaDelta !== 0) return etaDelta;
       return ticketNum(a.key) - ticketNum(b.key);
     };
-    if (sortBy === "priority") {
-      result.sort((a: Ticket, b: Ticket) => {
-        const pa = priorityNum(a.key);
-        const pb = priorityNum(b.key);
+    const sortAscBy = (numOf: (k: string) => number) =>
+      (a: Ticket, b: Ticket) => {
+        const pa = numOf(a.key);
+        const pb = numOf(b.key);
         if (pa !== pb) return pa - pb;
         return prioritySecondary(a, b);
-      });
-    } else if (sortBy === "priorityDesc") {
-      result.sort((a: Ticket, b: Ticket) => {
-        const pa = priorityNum(a.key);
-        const pb = priorityNum(b.key);
+      };
+    const sortDescBy = (numOf: (k: string) => number) =>
+      (a: Ticket, b: Ticket) => {
+        const pa = numOf(a.key);
+        const pb = numOf(b.key);
         // 미지정(Infinity)은 desc 에서도 마지막
         if (pa === Infinity && pb === Infinity) return prioritySecondary(a, b);
         if (pa === Infinity) return 1;
         if (pb === Infinity) return -1;
         if (pa !== pb) return pb - pa;
         return prioritySecondary(a, b);
-      });
+      };
+    if (sortBy === "planningPriority") {
+      result.sort(sortAscBy(planningPriorityNum));
+    } else if (sortBy === "planningPriorityDesc") {
+      result.sort(sortDescBy(planningPriorityNum));
+    } else if (sortBy === "executionPriority") {
+      result.sort(sortAscBy(executionPriorityNum));
+    } else if (sortBy === "executionPriorityDesc") {
+      result.sort(sortDescBy(executionPriorityNum));
     } else if (sortBy === "startDate") {
       result.sort((a: Ticket, b: Ticket) => dateVal(a.startDate) - dateVal(b.startDate));
     } else if (sortBy === "eta") {
@@ -4187,7 +4270,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       result.sort((a: Ticket, b: Ticket) => ticketNum(a.key) - ticketNum(b.key));
     }
     return result;
-  }, [preFiltered, statusTab, sortBy, priorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [preFiltered, statusTab, sortBy, priorities, executionPriorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Cross-tab hint dataset — search 만 적용. planningTab / quarters / levels 등
@@ -6294,8 +6377,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               >
                 <option value="eta">ETA순</option>
                 <option value="default">등록순</option>
-                <option value="priority">우선순위 P1 ↑</option>
-                <option value="priorityDesc">우선순위 P1 ↓</option>
+                <option value="planningPriority">Planning P1 ↑</option>
+                <option value="planningPriorityDesc">Planning P1 ↓</option>
+                <option value="executionPriority">Execution P1 ↑</option>
+                <option value="executionPriorityDesc">Execution P1 ↓</option>
                 <option value="startDate">시작일순</option>
                 <option value="ticketNo">티켓 No순</option>
               </select>
@@ -6802,13 +6887,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     추가됨
                                   </span>
                                 )}
-                                {/* Phase 7: inline 우선순위 input — 클릭/입력 즉시 KV 저장 */}
-                                <PriorityInput
-                                  value={priorities[t.key] ?? ""}
-                                  onChange={v => setPriority(t.key, v)}
-                                  active={!!activePriorities[t.key]}
-                                  dupCount={priorityDuplicateCount[priorities[t.key] ?? ""] ?? 0}
-                                />
+                                {/* PR #33: planningTab 컨텍스트 기반 priority input.
+                                    "진행 중" 탭 → execution / 그 외 → planning. */}
+                                {planningTab === "진행 중" ? (
+                                  <PriorityInput
+                                    value={getExecPriority(priorities, executionPriorities, t.key) ?? ""}
+                                    onChange={v => setExecutionPriority(t.key, v)}
+                                    active={!!activeExecutionPriorities[t.key] || !!activePriorities[t.key]}
+                                    dupCount={executionPriorityDuplicateCount[getExecPriority(priorities, executionPriorities, t.key) ?? ""] ?? 0}
+                                    contextLabel="Exec"
+                                  />
+                                ) : (
+                                  <PriorityInput
+                                    value={priorities[t.key] ?? ""}
+                                    onChange={v => setPlanningPriority(t.key, v)}
+                                    active={!!activePriorities[t.key]}
+                                    dupCount={priorityDuplicateCount[priorities[t.key] ?? ""] ?? 0}
+                                    contextLabel="Plan"
+                                  />
+                                )}
                                 <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
                                   {t.type}
                                 </span>
@@ -8526,13 +8623,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     {selected.startDate ? formatDateWithDay(selected.startDate) : "미정"}
                   </p>
                 </div>
-                {/* 요청 우선순위 */}
+                {/* 요청 우선순위 — Jira native (read-only). PR #33 의 planning/execution 과 별개. */}
                 {selected.requestPriority && (
                   <div>
-                    <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>요청 우선순위</p>
+                    <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>요청 우선순위 (Jira)</p>
                     <p className="text-sm font-medium leading-snug" style={{ color: "var(--text-primary)" }}>{selected.requestPriority}</p>
                   </div>
                 )}
+                {/* PR #33: Planning Priority — Dashboard user-managed */}
+                <div>
+                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>Planning Priority</p>
+                  <PriorityInput
+                    value={priorities[selected.key] ?? ""}
+                    onChange={v => setPlanningPriority(selected.key, v)}
+                    active={!!activePriorities[selected.key]}
+                    dupCount={priorityDuplicateCount[priorities[selected.key] ?? ""] ?? 0}
+                    contextLabel="Plan"
+                  />
+                </div>
+                {/* PR #33: Execution Priority — Dashboard user-managed (fallback: planning) */}
+                <div>
+                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>Execution Priority</p>
+                  <PriorityInput
+                    value={getExecPriority(priorities, executionPriorities, selected.key) ?? ""}
+                    onChange={v => setExecutionPriority(selected.key, v)}
+                    active={!!activeExecutionPriorities[selected.key] || !!activePriorities[selected.key]}
+                    dupCount={executionPriorityDuplicateCount[getExecPriority(priorities, executionPriorities, selected.key) ?? ""] ?? 0}
+                    contextLabel="Exec"
+                  />
+                </div>
                 {/* Story Points */}
                 {selected.storyPoints != null && (
                   <div>
@@ -10210,12 +10329,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
 // ── ActivityRow 컴포넌트 ──────────────────────────────────────
 /**
- * Phase 7: inline 우선순위 input — row 안에서 직접 number 입력.
+ * Phase 7 + PR #33: inline 우선순위 input — row 안에서 직접 number 입력.
  * 빈 값: "—" placeholder. 값 있음: amber 배지 형태. 변경 시 onBlur 또는 Enter 로 commit.
  * active=false 시 (현재 ticket 의 priority 가 sortable 정렬에 비활성) opacity 살짝 낮춤.
  * Phase 7.1: dupCount ≥ 2 면 ⚠ 표시 + tooltip (운영자가 정렬 후 직접 조정 안내).
+ * PR #33: contextLabel ("Plan" / "Exec") tooltip 표시로 어느 priority 인지 명확화.
  */
-function PriorityInput({ value, onChange, active, dupCount = 0 }: { value: string; onChange: (v: string) => void; active: boolean; dupCount?: number }) {
+function PriorityInput({ value, onChange, active, dupCount = 0, contextLabel }: { value: string; onChange: (v: string) => void; active: boolean; dupCount?: number; contextLabel?: "Plan" | "Exec" }) {
   const [local, setLocal] = useState(value);
   const [editing, setEditing] = useState(false);
   // 외부 value 변경 (KV reload 등) 시 동기화
@@ -10264,8 +10384,10 @@ function PriorityInput({ value, onChange, active, dupCount = 0 }: { value: strin
       }}
       title={
         isDup
-          ? `P${value} 우선순위가 ${dupCount}개 있습니다. 정렬 후 직접 조정해주세요. (클릭해서 변경)`
-          : (hasValue ? `우선순위 P${value} — 클릭해서 변경` : "우선순위 미설정 — 클릭해서 입력")
+          ? `${contextLabel ? contextLabel + " " : ""}P${value} 우선순위가 ${dupCount}개 있습니다. 정렬 후 직접 조정해주세요. (클릭해서 변경)`
+          : (hasValue
+              ? `${contextLabel ? contextLabel + " 우선순위 " : "우선순위 "}P${value} — 클릭해서 변경`
+              : `${contextLabel ? contextLabel + " 우선순위" : "우선순위"} 미설정 — 클릭해서 입력`)
       }
     >
       {display}
