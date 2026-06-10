@@ -191,6 +191,30 @@ export interface WeeklySyncMeta {
   ticketKey: string;
   lastSyncAt: string;
   lastSourceWeek: string;
+
+  // PR #39 — Weekly Sync Visibility:
+  //   직전 sync 의 outcome 집계 + 항목 — UI 표시용 (Read-only).
+  //   merge 동작 변경 없음 — trace 결과만 추가 저장.
+  lastTraceSummary?: WeeklySyncTraceSummary;
+  lastTraceItems?: WeeklySyncTraceItem[];
+}
+
+/** 직전 sync 의 outcome 별 카운트. */
+export interface WeeklySyncTraceSummary {
+  appended:   number; // 신규 row 생성
+  updated:    number; // autoApply (값 갱신)
+  candidates: number; // candidate 만 생성 (확인 필요)
+  idempotent: number; // 변경 없음
+  manualGuard: number; // manual row 보호
+}
+
+/** 직전 sync 의 각 항목 — UI 의 detail expand 용. */
+export interface WeeklySyncTraceItem {
+  outcome:    "appended" | "updated" | "candidates_only" | "idempotent" | "manual_guard";
+  itemText:   string;             // weekly 원문 line
+  phase?:     string;              // parsed phase (예: "개발", "QA", "Launch")
+  startDate?: string;              // parsed start date (ISO)
+  endDate?:   string;              // parsed end date (ISO)
 }
 
 /**

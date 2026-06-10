@@ -18,7 +18,7 @@ import {
   selectCompareSnapshot,
   summarizeTransitions,
 } from "@/lib/transitions";
-import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText } from "@/lib/weekly-types";
+import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText, WeeklySyncMeta } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
 import { isTicketPastRolePhase } from "@/lib/derived/phase-order";
 import {
@@ -1735,6 +1735,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const prevActionCountRef = useRef<Record<string, number>>({});
   // ── Weekly Notes (Jira Weekly 공유사항 Delta Sync) ────────────
   const [weeklyNotes,      setWeeklyNotes]      = useState<Record<string, WeeklyNote[]>>({});
+  // PR #39 — Weekly Sync Visibility: ticket 별 last trace summary
+  const [weeklySyncMeta,   setWeeklySyncMeta]   = useState<Record<string, WeeklySyncMeta>>({});
   // Phase B: ticket별 Weekly 원문 (customfield_10625 / description section / comment 중 선택된 본문)
   const [weeklySourceTexts, setWeeklySourceTexts] = useState<Record<string, WeeklySourceText>>({});
   // 우측 상세 패널 Weekly 원문 expand/collapse 상태 (ticket별)
@@ -2168,7 +2170,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         // KV reload — weekly-notes, update-candidates, schedules, source-text
         try {
-          const r = await fetch("/api/kv?keys=cc-weekly-notes,cc-update-candidates,cc-schedules,cc-weekly-source-text");
+          const r = await fetch("/api/kv?keys=cc-weekly-notes,cc-update-candidates,cc-schedules,cc-weekly-source-text,cc-weekly-sync-meta");
           const d2 = await r.json();
           if (d2["cc-weekly-notes"] && typeof d2["cc-weekly-notes"] === "object" && !Array.isArray(d2["cc-weekly-notes"]))
             setWeeklyNotes(d2["cc-weekly-notes"] as Record<string, WeeklyNote[]>);
@@ -2177,6 +2179,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           if (d2["cc-schedules"]) setSchedules(d2["cc-schedules"]);
           if (d2["cc-weekly-source-text"] && typeof d2["cc-weekly-source-text"] === "object" && !Array.isArray(d2["cc-weekly-source-text"]))
             setWeeklySourceTexts(d2["cc-weekly-source-text"] as Record<string, WeeklySourceText>);
+          // PR #39 — Weekly Sync Visibility: trace summary 로드
+          if (d2["cc-weekly-sync-meta"] && typeof d2["cc-weekly-sync-meta"] === "object" && !Array.isArray(d2["cc-weekly-sync-meta"]))
+            setWeeklySyncMeta(d2["cc-weekly-sync-meta"] as Record<string, WeeklySyncMeta>);
         } catch (e) {
           console.warn("[WeeklySync] KV reload failed:", e);
         }
@@ -3591,7 +3596,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (두 요청으로 분리 — 메인 데이터 / 커스텀 티켓)
     // 1) 메인 메타데이터 (상대적으로 작은 데이터)
-    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates,cc-weekly-notes,cc-update-candidates,cc-weekly-source-text")
+    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates,cc-weekly-notes,cc-update-candidates,cc-weekly-source-text,cc-weekly-sync-meta")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -3607,6 +3612,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           setUpdateCandidates(data["cc-update-candidates"] as UpdateCandidate[]);
         if (data["cc-weekly-source-text"] && typeof data["cc-weekly-source-text"] === "object" && !Array.isArray(data["cc-weekly-source-text"]))
           setWeeklySourceTexts(data["cc-weekly-source-text"] as Record<string, WeeklySourceText>);
+        // PR #39 — Weekly Sync Visibility
+        if (data["cc-weekly-sync-meta"] && typeof data["cc-weekly-sync-meta"] === "object" && !Array.isArray(data["cc-weekly-sync-meta"]))
+          setWeeklySyncMeta(data["cc-weekly-sync-meta"] as Record<string, WeeklySyncMeta>);
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
@@ -8162,6 +8170,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           </button>
                         );
                       })()}
+                      {/* PR #39 — Weekly Sync Visibility: Focus Mode 의 trace summary */}
+                      <WeeklySyncSummary meta={weeklySyncMeta[selected.key]} />
                       {fmRoles.length > 0 ? (
                         <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
                           <GanttChart
@@ -10278,6 +10288,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             </span>
                           </button>
                         )}
+                        {/* PR #39 — Weekly Sync Visibility: 직전 sync trace summary */}
+                        <WeeklySyncSummary meta={weeklySyncMeta[selected.key]} />
+
                         {isDone && allRoles.length > 0 && (
                           <div className="mb-2 flex items-center justify-between rounded-lg px-3 py-1.5" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
                             <span className="text-xs" style={{ color: "var(--text-muted)" }}>
@@ -10389,6 +10402,88 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 }
 
 // ── ActivityRow 컴포넌트 ──────────────────────────────────────
+/**
+ * PR #39 — Weekly Sync Visibility.
+ *
+ * 직전 weekly sync 의 outcome 집계 + 항목을 사용자에게 노출.
+ * silent append / auto-apply 처리도 "반영됨" 으로 가시화.
+ *
+ * meta 없거나 변경 항목 0 이면 미노출.
+ * appended / updated 합 > 0 → emerald "✅ 반영됨" 카드 (expandable detail)
+ *   대기 후보 (candidates_only) 는 별도 PR #38 배지가 표시.
+ */
+function WeeklySyncSummary({ meta }: { meta?: WeeklySyncMeta }) {
+  const [open, setOpen] = useState(false);
+  if (!meta?.lastTraceSummary) return null;
+  const s = meta.lastTraceSummary;
+  const appliedCount = s.appended + s.updated;
+  // 변경 0 + 후보 없음 + 보호 없음 → 표시 의미 없음.
+  if (appliedCount === 0 && s.candidates === 0 && s.manualGuard === 0) return null;
+  // candidates_only / manual_guard 가 핵심이면 PR #38 배지에 맡기고 본 summary 는 시각 압박만 줄임.
+  if (appliedCount === 0) return null;
+
+  const items = meta.lastTraceItems ?? [];
+  const appliedItems = items.filter(i => i.outcome === "appended" || i.outcome === "updated");
+
+  return (
+    <div
+      className="mb-2 rounded-lg px-3 py-2"
+      style={{ background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.35)" }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-center justify-between cursor-pointer"
+        title="Weekly sync 반영 결과 — 클릭해서 세부 항목 보기"
+      >
+        <span className="flex items-center gap-2 text-[12.5px] font-semibold" style={{ color: "#10b981" }}>
+          <span aria-hidden>✅</span>
+          <span>
+            Weekly 일정 신호 <span className="font-mono">{appliedCount}</span>건 반영됨
+            {s.candidates > 0 && (
+              <span className="ml-1 font-normal" style={{ color: "var(--text-muted)" }}>
+                · 확인 필요 {s.candidates}건
+              </span>
+            )}
+          </span>
+        </span>
+        <span className="text-[11px]" style={{ color: "#10b981" }}>{open ? "접기 ▲" : "자세히 ▼"}</span>
+      </button>
+      {open && (
+        <div className="mt-2 pt-2 space-y-1" style={{ borderTop: "1px dashed rgba(16,185,129,0.30)" }}>
+          {appliedItems.length === 0 ? (
+            <p className="text-[11px] italic" style={{ color: "var(--text-subtle)" }}>표시할 세부 항목이 없습니다.</p>
+          ) : (
+            appliedItems.map((it, idx) => {
+              const verb = it.outcome === "appended" ? "신규 추가" : "자동 반영";
+              const verbColor = it.outcome === "appended" ? "#10b981" : "#3b82f6";
+              const datePart = it.startDate
+                ? (it.endDate && it.endDate !== it.startDate ? `${it.startDate}~${it.endDate}` : it.startDate)
+                : "";
+              return (
+                <div key={idx} className="flex items-start gap-2 text-[11.5px]" style={{ color: "var(--text-secondary)" }}>
+                  <span className="shrink-0 px-1 py-px rounded font-mono text-[10px]" style={{ background: "rgba(255,255,255,0.04)", color: verbColor, border: `1px solid ${verbColor}40` }}>
+                    {verb}
+                  </span>
+                  {it.phase && it.phase !== "기타" && (
+                    <span className="shrink-0 font-medium" style={{ color: "var(--text-primary)" }}>{it.phase}</span>
+                  )}
+                  {datePart && <span className="font-mono" style={{ color: "var(--text-muted)" }}>{datePart}</span>}
+                  <span className="flex-1 truncate" title={it.itemText} style={{ color: "var(--text-subtle)" }}>· {it.itemText}</span>
+                </div>
+              );
+            })
+          )}
+          <p className="text-[10px] mt-1 pt-1" style={{ color: "var(--text-subtle)", borderTop: "1px dotted var(--border)" }}>
+            {meta.lastSourceWeek ? `${meta.lastSourceWeek} · ` : ""}
+            마지막 sync: {meta.lastSyncAt ? meta.lastSyncAt.slice(0, 16).replace("T", " ") : "—"}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * Phase 7 + PR #33: inline 우선순위 input — row 안에서 직접 number 입력.
  * 빈 값: "—" placeholder. 값 있음: amber 배지 형태. 변경 시 onBlur 또는 Enter 로 commit.
