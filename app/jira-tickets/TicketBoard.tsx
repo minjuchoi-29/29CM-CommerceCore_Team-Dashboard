@@ -8137,6 +8137,31 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >편집</button>
                         )}
                       </div>
+                      {/* Schedule Reconciliation Phase 1: Focus Mode 미적용 candidate 배지 */}
+                      {(() => {
+                        const fmPending = updateCandidates.filter(
+                          c => c.ticketKey === selected.key && !c.resolved
+                        ).length;
+                        if (fmPending === 0) return null;
+                        return (
+                          <button
+                            type="button"
+                            onClick={() => setCandidatePanelOpen(true)}
+                            className="mb-2 w-full flex items-center justify-between rounded-lg px-3 py-2 transition hover:brightness-110 active:scale-[0.99] cursor-pointer"
+                            style={{
+                              background: "rgba(99,102,241,0.10)",
+                              border: "1.5px solid rgba(99,102,241,0.45)",
+                            }}
+                            title="클릭하여 Weekly 에서 추출된 미적용 일정 후보를 확인 / 적용"
+                          >
+                            <span className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: "#a5b4fc" }}>
+                              <span aria-hidden>✨</span>
+                              <span>미적용 Weekly 일정 신호 <span className="font-mono">{fmPending}</span>건</span>
+                            </span>
+                            <span className="text-[11px] font-medium" style={{ color: "#a5b4fc" }}>확인 →</span>
+                          </button>
+                        );
+                      })()}
                       {fmRoles.length > 0 ? (
                         <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
                           <GanttChart
@@ -10226,8 +10251,33 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const displayRoles = isSummary
                       ? allRoles.filter(r => MILESTONE_ROLES.includes(r.role))
                       : allRoles;
+                    // Schedule Reconciliation Phase 1: 현재 ticket 의 미적용 UpdateCandidate 카운트
+                    const ticketPendingCandidates = updateCandidates.filter(
+                      c => c.ticketKey === selected.key && !c.resolved
+                    ).length;
                     return (
                       <>
+                        {ticketPendingCandidates > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setCandidatePanelOpen(true)}
+                            className="mb-2 w-full flex items-center justify-between rounded-lg px-3 py-2 transition hover:brightness-110 active:scale-[0.99] cursor-pointer"
+                            style={{
+                              background: "rgba(99,102,241,0.10)",
+                              border: "1.5px solid rgba(99,102,241,0.45)",
+                              boxShadow: "0 2px 8px rgba(99,102,241,0.10)",
+                            }}
+                            title="클릭하여 Weekly 에서 추출된 미적용 일정 후보를 확인 / 적용"
+                          >
+                            <span className="flex items-center gap-2 text-[12.5px] font-semibold" style={{ color: "#a5b4fc" }}>
+                              <span aria-hidden>✨</span>
+                              <span>미적용 Weekly 일정 신호 <span className="font-mono">{ticketPendingCandidates}</span>건</span>
+                            </span>
+                            <span className="text-[11.5px] font-medium" style={{ color: "#a5b4fc" }}>
+                              확인 →
+                            </span>
+                          </button>
+                        )}
                         {isDone && allRoles.length > 0 && (
                           <div className="mb-2 flex items-center justify-between rounded-lg px-3 py-1.5" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
                             <span className="text-xs" style={{ color: "var(--text-muted)" }}>
