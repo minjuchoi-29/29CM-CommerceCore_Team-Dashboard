@@ -3357,8 +3357,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       prevScrollY:         window.scrollY,
     };
 
-    // ── 3c. mode=focus 자동 진입 (owner_dashboard → Focus Mode 직행) ─────────
-    const autoFocus = sourceParam === "owner_dashboard" && modeParam === "focus";
+    // ── 3c. Focus Mode 자동 진입 분기 ─────────
+    //   (1) owner_dashboard 진입: source=owner_dashboard + mode=focus  (기존)
+    //   (2) Global Search 진입:   focus=1                                 (신규)
+    const autoFocus =
+      (sourceParam === "owner_dashboard" && modeParam === "focus")
+      || focusParam === "1";
 
     // ── 4. selected 설정 + scroll ────────────────────────────────────────────
     // deepLinkProcessedRef = true: match를 찾아 처리에 진입했으므로 중복 실행 차단
@@ -4107,7 +4111,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [tickets, priorities, executionPriorities]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // statusTab 제외한 필터 (카운트 계산용)
-  const preFiltered = useMemo(() => {
+  /**
+   * planningTabBase — KPI cards 계산용 base.
+   * 모든 일반 filter (quarters / planningTab / levels / assignee / domain / target /
+   * projects / statuses / search) 는 적용. **planningKpiFilter 만 미적용** —
+   * KPI cards 가 자기 자신의 선택으로 인해 사라지는 현상 차단.
+   */
+  const planningTabBase = useMemo(() => {
     return dedupedTickets.filter((t: Ticket) => {
       if (quarters.size > 0) {
         const isQ2   = Q2_KEYS.has(t.key);
@@ -4142,24 +4152,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const q = search.toLowerCase();
         if (!t.summary.toLowerCase().includes(q) && !t.key.toLowerCase().includes(q) && !t.assignee.includes(search)) return false;
       }
-      // planning KPI 클릭 필터 (플래닝 대기·검토 탭에서만 적용)
-      // status undefined = "팀 전체" (해당 트랙이 존재하기만 하면 통과)
-      if (planningKpiFilter && planningTab === "플래닝 대기·검토") {
-        const kp = getPlanningVal(planning[t.key]);
-        const wantedStatus = planningKpiFilter.status;
-        if (planningKpiFilter.team === "디자인") {
-          if (wantedStatus ? kp.design !== wantedStatus : !kp.design) return false;
-        } else if (planningKpiFilter.team === "Dev(전체)") {
-          if (Object.keys(kp.devTracks).length > 0) return false;
-          if (wantedStatus ? kp.dev !== wantedStatus : !kp.dev) return false;
-        } else {
-          const trackVal = kp.devTracks[planningKpiFilter.team as DevTrackKey];
-          if (wantedStatus ? trackVal !== wantedStatus : !trackVal) return false;
-        }
-      }
       return true;
     });
-  }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning, planningKpiFilter]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * preFiltered — 하단 ticket 목록용. planningTabBase 위에 KPI 카드 클릭 필터만 추가 적용.
+   */
+  const preFiltered = useMemo(() => {
+    if (!planningKpiFilter || planningTab !== "플래닝 대기·검토") return planningTabBase;
+    return planningTabBase.filter((t: Ticket) => {
+      const kp = getPlanningVal(planning[t.key]);
+      const wantedStatus = planningKpiFilter.status;
+      if (planningKpiFilter.team === "디자인") {
+        return wantedStatus ? kp.design === wantedStatus : !!kp.design;
+      }
+      if (planningKpiFilter.team === "Dev(전체)") {
+        if (Object.keys(kp.devTracks).length > 0) return false;
+        return wantedStatus ? kp.dev === wantedStatus : !!kp.dev;
+      }
+      const trackVal = kp.devTracks[planningKpiFilter.team as DevTrackKey];
+      return wantedStatus ? trackVal === wantedStatus : !!trackVal;
+    });
+  }, [planningTabBase, planningKpiFilter, planningTab, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 요약 카드 — 현재 planningTab 기준(preFiltered) 집계, statusTab 무관
   const totalAll        = preFiltered.length;
@@ -4179,7 +4194,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const inProgress = totalInProgress;
   const planned    = totalPlanned;
 
-  // 플래닝 대기·검토 탭 전용 — 팀별(Design / SP / PP / CFE / 기타) 상태 집계
+  // 플래닝 대기·검토 탭 전용 — 팀별(Design / SP / PP / CFE / 기타) 상태 집계.
+  //
+  // ⚠ planningKpiFilter 미적용 base 사용 — KPI 카드가 자기 자신의 클릭으로
+  //    축소되거나 사라지는 현상 차단. 카드 세트와 카운트는 한 planningTab 안에서
+  //    안정적으로 유지 (다른 filter 변경 시에는 자연스럽게 재계산됨).
   const planningTeamCounts = useMemo(() => {
     type Bucket = { 대기중: number; 검토중: number; 완료: number; 대상아님: number };
     const empty = (): Bucket => ({ 대기중: 0, 검토중: 0, 완료: 0, 대상아님: 0 });
@@ -4193,7 +4212,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const etc: Bucket    = empty();
     const devLegacy: Bucket = empty(); // devTracks 없는 구형 dev 필드
 
-    for (const t of preFiltered) {
+    for (const t of planningTabBase) {
       const p = getPlanningVal(planning[t.key]);
       // 디자인 트랙
       design[p.design]++;
@@ -4228,7 +4247,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       { label: "기타 Dev", color: "#94a3b8", bucket: etc,    hide: !hasData(etc) },
       { label: "Dev(전체)", color: "#818cf8", bucket: devLegacy, hide: !hasData(devLegacy) },
     ].filter(r => !r.hide);
-  }, [preFiltered, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [planningTabBase, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 최근 2주 기준 날짜
   const TWO_WEEKS_AGO = useMemo(() => {

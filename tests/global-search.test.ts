@@ -28,10 +28,10 @@ const tickets: GlobalSearchSourceTicket[] = [
 ];
 
 describe("getSearchDestination", () => {
-  it("ticket → /jira-tickets?q=&ticket=", () => {
+  it("ticket → /jira-tickets?q=&ticket=&focus=1", () => {
     assert.equal(
       getSearchDestination("ticket", "TM-100", "TM-100"),
-      "/jira-tickets?q=TM-100&ticket=TM-100",
+      "/jira-tickets?q=TM-100&ticket=TM-100&focus=1",
     );
   });
   it("etr → /etr-review?q=&key=", () => {
@@ -43,6 +43,14 @@ describe("getSearchDestination", () => {
   it("query 에 공백 / 한글 → encodeURIComponent", () => {
     const url = getSearchDestination("ticket", "TM-1", "주문 확인");
     assert.ok(url.includes("q=%EC%A3%BC%EB%AC%B8%20%ED%99%95%EC%9D%B8"));
+  });
+  it("ticket destination 은 항상 focus=1 포함 (Focus Mode 자동 진입)", () => {
+    const url = getSearchDestination("ticket", "CMALL-791", "CMALL");
+    assert.ok(url.endsWith("&focus=1"), "ticket 도착지는 Focus Mode 진입 보장");
+  });
+  it("etr destination 은 focus=1 없음 (detail panel 만 표시)", () => {
+    const url = getSearchDestination("etr", "ETR-3855", "ETR");
+    assert.ok(!url.includes("focus=1"), "ETR 측은 focus param 없이 자연스러운 detail open");
   });
 });
 
@@ -60,7 +68,7 @@ describe("buildGlobalSearchResults — kind / location 분기", () => {
     assert.equal(r[0].kind, "ticket");
     assert.equal(r[0].location, "전체 과제 현황");
     assert.equal(r[0].key, "TM-100");
-    assert.equal(r[0].destination, "/jira-tickets?q=TM-100&ticket=TM-100");
+    assert.equal(r[0].destination, "/jira-tickets?q=TM-100&ticket=TM-100&focus=1");
   });
 
   it("ETR key 검색 → kind=etr, location=ETR 검토", () => {

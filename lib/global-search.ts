@@ -7,8 +7,8 @@
  * 동일 ticket 소스 1개 (/api/jira-tickets) 에서 split.
  *
  * Routing:
- *   - ticket → /jira-tickets?q=<q>&ticket=<key>
- *   - etr    → /etr-review?q=<q>&key=<key>
+ *   - ticket → /jira-tickets?q=<q>&ticket=<key>&focus=1   (focus=1 → Focus Mode 자동 진입)
+ *   - etr    → /etr-review?q=<q>&key=<key>                  (도착 시 detail panel 자동 표시)
  */
 
 export type GlobalSearchSourceTicket = {
@@ -47,7 +47,7 @@ export function getSearchDestination(
   const k = encodeURIComponent(key);
   return kind === "etr"
     ? `/etr-review?q=${q}&key=${k}`
-    : `/jira-tickets?q=${q}&ticket=${k}`;
+    : `/jira-tickets?q=${q}&ticket=${k}&focus=1`;
 }
 
 /**
