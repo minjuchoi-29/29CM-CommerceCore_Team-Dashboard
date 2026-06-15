@@ -74,6 +74,80 @@ export function buildEtrReverseMap(
   return result;
 }
 
+/**
+ * ETR ticket 자체의 jiraLinks 도 함께 활용하여 reverse map 보강.
+ *
+ * 기존 buildEtrReverseMap 은 cc-etr KV 의 수동 등록 (TM 측이 ETR 추가) 만 봄.
+ * 따라서 TM 측에서 ETR 을 등록한 적 없으면 reverse map 이 비어있음.
+ *
+ * 본 helper 는 ETR ticket 의 issuelinks (Jira API 의 직접 연결) 도 활용:
+ *   1. buildEtrReverseMap 결과부터 시작 (manual 우선)
+ *   2. 각 ETR 의 jiraLinks 순회 (in/out 모두 — parseIssuelinks 가 이미 양방향 추출)
+ *   3. linked key 가 ETR-* 가 아니면 LinkedWork 추가 (project key 필터 없음)
+ *   4. key 기준 중복 제거 — manual 우선, jiraLinks 가 보조 metadata
+ *
+ * 사용자 정책:
+ *   - Project key 필터 없음 (TM / CMALL / M29CMOD 등 모두 허용)
+ *   - 판단 기준: "Jira Issue Link 로 연결된 실제 Jira Issue 인가"
+ *   - 제외: ETR-* (자기 자신 또는 다른 ETR — execution 아님)
+ */
+export type EtrTicketLike = {
+  key: string;
+  jiraLinks?: Array<{
+    key: string;
+    linkType: string;
+    direction: "in" | "out";
+    summary?: string;
+    status?: string;
+    type?: string;
+  }>;
+};
+
+export function buildEtrReverseMapAll(
+  etrMap: Record<string, EtrInfoLike>,
+  ticketByKey: Map<string, TicketLike>,
+  etrTickets: EtrTicketLike[],
+): Map<string, LinkedWork[]> {
+  // 1. 기존 manual reverse map 으로 시작 (cc-etr 수동 등록 우선)
+  const result = buildEtrReverseMap(etrMap, ticketByKey);
+
+  // 2. 각 ETR ticket 의 jiraLinks 흡수
+  for (const etr of etrTickets) {
+    const etrKey = etr.key;
+    if (!etrKey) continue;
+    const links = etr.jiraLinks ?? [];
+    if (links.length === 0) continue;
+
+    const existing = result.get(etrKey) ?? [];
+    const seen = new Set(existing.map(w => w.tmKey));
+
+    for (const link of links) {
+      const linkedKey = link.key?.trim();
+      if (!linkedKey) continue;
+      // ETR-* 제외 (자기 자신 / 다른 ETR — execution 아님)
+      if (linkedKey.startsWith("ETR-")) continue;
+      // 중복 제거 — manual 또는 다른 ETR 의 jiraLinks 에서 이미 추가됨
+      if (seen.has(linkedKey)) continue;
+      seen.add(linkedKey);
+
+      // ticketByKey 우선 (rich metadata: assignee 등) → 없으면 jiraLinks 메타 사용
+      const rich = ticketByKey.get(linkedKey);
+      existing.push({
+        tmKey: linkedKey,
+        summary: rich?.summary ?? link.summary ?? "",
+        status: rich?.status ?? link.status ?? "",
+        level: rich?.type ?? link.type ?? "",
+        assignee: rich?.assignee || undefined,
+        confidence: "high",
+      });
+    }
+
+    if (existing.length > 0) result.set(etrKey, existing);
+  }
+
+  return result;
+}
+
 export function classifyDoc(url: string, title?: string): DocType {
   const u = (url ?? "").toLowerCase();
   const t = (title ?? "").toLowerCase();
