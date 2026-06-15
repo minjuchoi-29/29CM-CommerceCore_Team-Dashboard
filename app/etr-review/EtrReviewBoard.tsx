@@ -80,23 +80,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Ctrl/Cmd+F → 검색창 focus + 텍스트 select. input/textarea/contenteditable 안에서는 가로채지 않음.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "f" && e.key !== "F") return;
-      if (!(e.ctrlKey || e.metaKey)) return;
-      const tgt = e.target as HTMLElement | null;
-      const tag = tgt?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || tgt?.isContentEditable) return;
-      const el = searchInputRef.current;
-      if (!el) return;
-      e.preventDefault();
-      el.focus();
-      el.select();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // Ctrl/Cmd+F 는 Global Search Overlay (app/components/GlobalSearchOverlay.tsx) 가 전역 처리.
 
   // 정렬
   type SortCol = "key" | "summary" | "status" | "assignee" | "reporter" | "eta" | "priority" | "source" | "linkedWork" | "docs";
@@ -637,7 +621,7 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
             <input
               ref={searchInputRef}
               type="text"
-              placeholder="검색…  (Ctrl+F)"
+              placeholder="검색…"
               value={search}
               onChange={e => setSearch(e.target.value)}
               onKeyDown={e => {

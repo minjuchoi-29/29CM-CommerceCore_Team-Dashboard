@@ -3,6 +3,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { auth, signOut } from "@/auth";
 import SidebarNav from "@/app/components/SidebarNav";
 import ThemeProvider from "@/app/components/ThemeProvider";
+import GlobalSearchOverlay from "@/app/components/GlobalSearchOverlay";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -57,6 +58,7 @@ export default async function RootLayout({
           <div className="flex-1 min-w-0">
             {children}
           </div>
+          <GlobalSearchOverlay />
         </ThemeProvider>
       </body>
     </html>

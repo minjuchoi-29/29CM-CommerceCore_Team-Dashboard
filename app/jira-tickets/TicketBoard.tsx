@@ -3537,23 +3537,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => window.removeEventListener("keydown", handler);
   }, [isDetailExpanded, selected]);
 
-  // Ctrl/Cmd+F → 검색창 focus + 텍스트 select. input/textarea/contenteditable 안에서는 가로채지 않음.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "f" && e.key !== "F") return;
-      if (!(e.ctrlKey || e.metaKey)) return;
-      const tgt = e.target as HTMLElement | null;
-      const tag = tgt?.tagName?.toLowerCase();
-      if (tag === "input" || tag === "textarea" || tgt?.isContentEditable) return;
-      const el = searchInputRef.current;
-      if (!el) return;
-      e.preventDefault();
-      el.focus();
-      el.select();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  // Ctrl/Cmd+F 는 Global Search Overlay (app/components/GlobalSearchOverlay.tsx) 가 전역 처리.
+  // 화면 검색창은 직접 타이핑 시 기존 local filtering 그대로 유지.
 
   // Cross-screen: ETR 검토 → 전체 과제 현황 이동 시 ?q= seed
   useEffect(() => {
@@ -6295,6 +6280,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   // 같은 카드 재클릭 (team-only 활성 상태) → 해제. 다른 카드/상태별 활성 → team-only 로 전환.
                   setPlanningKpiFilter(isTeamOnly ? null : { team: label });
                 };
+                // UI Fix: 카드 크기는 선택 여부와 무관하게 동일. border-width 고정 (border-2),
+                //   active 시 borderColor 만 변경. 카드 컨테이너에 min-height 로 grid 정렬 유지.
+                //   내부 상태 button 도 outline 대신 inset box-shadow → layout shift 없음.
                 return (
                   <div
                     key={label}
@@ -6303,28 +6291,30 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     onClick={toggleTeamOnly}
                     onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTeamOnly(); } }}
                     title={isTeamOnly ? `${label} 팀 전체 (해제)` : `${label} 팀 전체 필터`}
-                    className="rounded-xl border px-4 py-3 transition-all cursor-pointer"
+                    className="rounded-xl border-2 px-4 py-3 transition-colors cursor-pointer"
                     style={{
                       background: isCardActive ? "var(--bg-item)" : "var(--bg-overlay)",
-                      borderColor: isCardActive ? `${color}80` : "var(--border)",
-                      outline: isTeamOnly ? `1px solid ${color}` : "none",
+                      borderColor: isCardActive ? color : "var(--border)",
+                      minHeight: 86,
+                      boxSizing: "border-box",
                     }}
                   >
                     <div className="flex items-center justify-between mb-2.5">
-                      <div className="flex items-center gap-1.5">
+                      <div className="flex items-center gap-1.5 min-w-0">
                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                        <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>{label}</p>
+                        <p className="text-xs font-semibold truncate" style={{ color: "var(--text-secondary)" }}>{label}</p>
                       </div>
                       {isCardActive && (
                         <button
                           onClick={e => { e.stopPropagation(); setPlanningKpiFilter(null); }}
-                          className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
+                          className="text-[10px] px-1.5 py-0.5 rounded transition-colors shrink-0"
                           style={{ color: color, background: `${color}20`, border: `1px solid ${color}50` }}
                           title="필터 해제"
+                          aria-label={`${label} 필터 해제`}
                         >✕</button>
                       )}
                     </div>
-                    <div className="flex items-center gap-2 flex-wrap">
+                    <div className="flex items-center gap-2 flex-nowrap">
                       {([
                         { key: "대기중"  as TrackState, kColor: "#fbbf24" },
                         { key: "검토중"  as TrackState, kColor: "#818cf8" },
@@ -6337,14 +6327,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           const count = bucket[s.key];
                           return (
                             <Fragment key={s.key}>
-                              {si > 0 && <div className="w-px self-stretch" style={{ background: "var(--border)" }} />}
+                              {si > 0 && <div className="w-px self-stretch shrink-0" style={{ background: "var(--border)" }} />}
                               <button
                                 onClick={e => { e.stopPropagation(); setPlanningKpiFilter(isActive ? null : { team: label, status: s.key }); }}
                                 title={`${label} · ${s.key} 필터${isActive ? " (해제)": ""}`}
-                                className="flex flex-col items-center rounded px-1.5 py-1 transition-all"
+                                className="flex flex-col items-center rounded px-1.5 py-1 transition-colors shrink-0"
                                 style={{
                                   background: isActive ? `${s.kColor}25` : "transparent",
-                                  outline: isActive ? `1px solid ${s.kColor}70` : "none",
+                                  // outline 은 layout 에 영향 주지 않지만, 카드 가장자리에 가까울 때 시각적
+                                  //   확장처럼 보일 수 있어 inset box-shadow 로 변경.
+                                  boxShadow: isActive ? `inset 0 0 0 1px ${s.kColor}90` : "none",
                                   cursor: "pointer",
                                 }}
                               >
@@ -6463,7 +6455,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder="티켓 번호 · 제목 · 담당자  (Ctrl+F)"
+                placeholder="티켓 번호 · 제목 · 담당자"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 onKeyDown={e => {
