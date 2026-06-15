@@ -1633,6 +1633,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [targetFilter, setTargetFilter] = useState<Set<string>>(new Set());
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
   const [search, setSearch]         = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // localStorage 기반 일정 데이터
   const [schedules, setSchedules]   = useState<Record<string, RoleSchedule[]>>({});
@@ -1689,7 +1690,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
   const [reviewFilter, setReviewFilter] = useState(false); // 검토필요 티켓만 필터
   const [newFilter, setNewFilter]       = useState(false); // 최근 2주 신규 티켓만 필터
-  const [planningKpiFilter, setPlanningKpiFilter] = useState<{ team: string; status: TrackState } | null>(null); // 상단 KPI 카드 클릭 필터
+  // status 가 undefined 면 "팀 전체" — 카드 wrapper 클릭으로 진입.
+  const [planningKpiFilter, setPlanningKpiFilter] = useState<{ team: string; status?: TrackState } | null>(null); // 상단 KPI 카드 클릭 필터
   const [ticketAddedDates, setTicketAddedDates] = useState<Record<string, string>>({}); // key → "YYYY-MM-DD"
   // Phase 3: 마지막 탭 / 선택 티켓 localStorage 복원
   // 최초 진입 = 기본 "진행 중", 이후 마지막 상태 복원. invalid 값은 fallback.
@@ -3535,6 +3537,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => window.removeEventListener("keydown", handler);
   }, [isDetailExpanded, selected]);
 
+  // Ctrl/Cmd+F → 검색창 focus + 텍스트 select. input/textarea/contenteditable 안에서는 가로채지 않음.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "f" && e.key !== "F") return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const tgt = e.target as HTMLElement | null;
+      const tag = tgt?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tgt?.isContentEditable) return;
+      const el = searchInputRef.current;
+      if (!el) return;
+      e.preventDefault();
+      el.focus();
+      el.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Cross-screen: ETR 검토 → 전체 과제 현황 이동 시 ?q= seed
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get("q");
+    if (q) setSearch(q);
+  }, []);
+
   // Action Resolve 감지 — Focus Mode에서 selected ticket의 action 수 감소 시 toast
   useEffect(() => {
     if (!selected || !isDetailExpanded) return;
@@ -4130,14 +4158,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         if (!t.summary.toLowerCase().includes(q) && !t.key.toLowerCase().includes(q) && !t.assignee.includes(search)) return false;
       }
       // planning KPI 클릭 필터 (플래닝 대기·검토 탭에서만 적용)
+      // status undefined = "팀 전체" (해당 트랙이 존재하기만 하면 통과)
       if (planningKpiFilter && planningTab === "플래닝 대기·검토") {
         const kp = getPlanningVal(planning[t.key]);
+        const wantedStatus = planningKpiFilter.status;
         if (planningKpiFilter.team === "디자인") {
-          if (kp.design !== planningKpiFilter.status) return false;
+          if (wantedStatus ? kp.design !== wantedStatus : !kp.design) return false;
         } else if (planningKpiFilter.team === "Dev(전체)") {
-          if (Object.keys(kp.devTracks).length > 0 || kp.dev !== planningKpiFilter.status) return false;
+          if (Object.keys(kp.devTracks).length > 0) return false;
+          if (wantedStatus ? kp.dev !== wantedStatus : !kp.dev) return false;
         } else {
-          if (kp.devTracks[planningKpiFilter.team as DevTrackKey] !== planningKpiFilter.status) return false;
+          const trackVal = kp.devTracks[planningKpiFilter.team as DevTrackKey];
+          if (wantedStatus ? trackVal !== wantedStatus : !trackVal) return false;
         }
       }
       return true;
@@ -4396,9 +4428,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // schedule rows에서 가장 활성 phase (없으면 status 기반 fallback)
       const rows = schedules[t.key] ?? [];
       const activeSched = rows.find(r => r.status === "진행중") ?? rows.find(r => r.status === "예정");
+      const fromSched = activeSched?.phase ?? (activeSched ? inferPhase(activeSched.role) : null);
+      const fromStatus = statusToPhase(t.status);
+      // Kick-Off lingering 차단: schedule 상 "예정"인 Kick-Off milestone 이 남아도, Jira status
+      //   가 이미 후속 단계 (개발중 / QA중 / 완료 등) 면 status 기반 phase 우선.
+      //   기존 상태 chip 과 중복되지 않도록 — statusToPhase 가 Kick-Off 이상으로 진행된 phase 를
+      //   반환하는 경우에만 override.
+      const schedIsStaleKickoff =
+        fromSched === "Kick-Off" && !!fromStatus && fromStatus !== "Kick-Off";
       const phase: NonNullable<RoleSchedule["phase"]> | null =
-        (activeSched?.phase ?? (activeSched ? inferPhase(activeSched.role) : null))
-        ?? statusToPhase(t.status);
+        schedIsStaleKickoff ? fromStatus : (fromSched ?? fromStatus);
       // candidate / action / risk / cleanup 카운트
       const candidateCount = updateCandidates.filter(c => c.ticketKey === t.key && !c.resolved).length;
       const notes = (weeklyNotes[t.key] ?? []).filter(n => n.status === "open");
@@ -6251,13 +6290,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <div className="grid gap-2.5" style={{ gridTemplateColumns: `repeat(${planningTeamCounts.length}, minmax(0, 1fr))` }}>
               {planningTeamCounts.map(({ label, color, bucket }) => {
                 const isCardActive = planningKpiFilter?.team === label;
+                const isTeamOnly   = isCardActive && !planningKpiFilter?.status;
+                const toggleTeamOnly = () => {
+                  // 같은 카드 재클릭 (team-only 활성 상태) → 해제. 다른 카드/상태별 활성 → team-only 로 전환.
+                  setPlanningKpiFilter(isTeamOnly ? null : { team: label });
+                };
                 return (
                   <div
                     key={label}
-                    className="rounded-xl border px-4 py-3 transition-all"
+                    role="button"
+                    tabIndex={0}
+                    onClick={toggleTeamOnly}
+                    onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTeamOnly(); } }}
+                    title={isTeamOnly ? `${label} 팀 전체 (해제)` : `${label} 팀 전체 필터`}
+                    className="rounded-xl border px-4 py-3 transition-all cursor-pointer"
                     style={{
                       background: isCardActive ? "var(--bg-item)" : "var(--bg-overlay)",
                       borderColor: isCardActive ? `${color}80` : "var(--border)",
+                      outline: isTeamOnly ? `1px solid ${color}` : "none",
                     }}
                   >
                     <div className="flex items-center justify-between mb-2.5">
@@ -6267,7 +6317,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       </div>
                       {isCardActive && (
                         <button
-                          onClick={() => setPlanningKpiFilter(null)}
+                          onClick={e => { e.stopPropagation(); setPlanningKpiFilter(null); }}
                           className="text-[10px] px-1.5 py-0.5 rounded transition-colors"
                           style={{ color: color, background: `${color}20`, border: `1px solid ${color}50` }}
                           title="필터 해제"
@@ -6289,7 +6339,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <Fragment key={s.key}>
                               {si > 0 && <div className="w-px self-stretch" style={{ background: "var(--border)" }} />}
                               <button
-                                onClick={() => setPlanningKpiFilter(isActive ? null : { team: label, status: s.key })}
+                                onClick={e => { e.stopPropagation(); setPlanningKpiFilter(isActive ? null : { team: label, status: s.key }); }}
                                 title={`${label} · ${s.key} 필터${isActive ? " (해제)": ""}`}
                                 className="flex flex-col items-center rounded px-1.5 py-1 transition-all"
                                 style={{
@@ -6361,7 +6411,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 color: "#818cf8",
               }}
             >
-              {planningKpiFilter.team} · {planningKpiFilter.status}
+              {planningKpiFilter.team}{planningKpiFilter.status ? ` · ${planningKpiFilter.status}` : " · 팀 전체"}
               <span className="ml-0.5 opacity-70">✕</span>
             </button>
           </div>
@@ -6411,13 +6461,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <div className="relative">
               <svg className="absolute left-2.5 top-1/2 -translate-y-1/2" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
               <input
+                ref={searchInputRef}
                 type="text"
-                placeholder="티켓 번호 · 제목 · 담당자"
+                placeholder="티켓 번호 · 제목 · 담당자  (Ctrl+F)"
                 value={search}
                 onChange={e => setSearch(e.target.value)}
-                className="pl-7 pr-3 py-1.5 rounded-lg text-xs border transition-all"
-                style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none", width: "190px" }}
+                onKeyDown={e => {
+                  if (e.key === "Escape") {
+                    if (search) { setSearch(""); }
+                    else { (e.currentTarget as HTMLInputElement).blur(); }
+                  }
+                }}
+                className="pl-7 pr-7 py-1.5 rounded-lg text-xs border transition-all"
+                style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none", width: "210px" }}
               />
+              {search && (
+                <button
+                  type="button"
+                  onClick={() => { setSearch(""); searchInputRef.current?.focus(); }}
+                  title="검색어 지우기 (Esc)"
+                  aria-label="검색어 지우기"
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold transition-colors"
+                  style={{ color: "var(--text-muted)", background: "var(--border-2)" }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-primary)"; (e.currentTarget as HTMLElement).style.background = "var(--text-subtle)"; }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; (e.currentTarget as HTMLElement).style.background = "var(--border-2)"; }}
+                >×</button>
+              )}
             </div>
           </div>
 
@@ -6590,6 +6659,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </p>
                   </>
                 )}
+
+                {/* Cross-screen hint — ETR key 검색 시 ETR 검토로 이동 제안 */}
+                {(() => {
+                  if (!/^ETR-\d+$/i.test(q)) return null;
+                  const upper = q.toUpperCase();
+                  const href = `/etr-review?key=${encodeURIComponent(upper)}&q=${encodeURIComponent(upper)}`;
+                  return (
+                    <Link
+                      href={href}
+                      className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold border-2 transition-all hover:scale-[1.02]"
+                      style={{ background: "#6366f1", color: "#ffffff", borderColor: "#818cf8", boxShadow: "0 2px 6px rgba(99,102,241,0.40)" }}
+                    >
+                      <span>ETR 검토에서 <span className="font-mono">{upper}</span> 보기</span>
+                      <span aria-hidden>→</span>
+                    </Link>
+                  );
+                })()}
 
                 {/* [3] Hint Card */}
                 {hasCrossTab && (

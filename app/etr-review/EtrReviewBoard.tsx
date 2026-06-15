@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useRef } from "react";
 import Link from "next/link";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 import { Tooltip } from "@/app/components/Tooltip";
@@ -78,6 +78,25 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   }, [statusFilter]);
   const [search, setSearch]         = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Ctrl/Cmd+F → 검색창 focus + 텍스트 select. input/textarea/contenteditable 안에서는 가로채지 않음.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "f" && e.key !== "F") return;
+      if (!(e.ctrlKey || e.metaKey)) return;
+      const tgt = e.target as HTMLElement | null;
+      const tag = tgt?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tgt?.isContentEditable) return;
+      const el = searchInputRef.current;
+      if (!el) return;
+      e.preventDefault();
+      el.focus();
+      el.select();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // 정렬
   type SortCol = "key" | "summary" | "status" | "assignee" | "reporter" | "eta" | "priority" | "source" | "linkedWork" | "docs";
@@ -107,6 +126,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [remoteLinksByKey, setRemoteLinksByKey] = useState<Record<string, RemoteLink[]>>({});
 
   // Phase 3: ?key= 딥링크 — URL 에 key 가 있으면 해당 ETR 자동 선택
+  // Cross-screen: ?q= 가 있으면 검색어 seed
   useEffect(() => {
     if (typeof window === "undefined") return;
     const params = new URLSearchParams(window.location.search);
@@ -114,6 +134,11 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     if (k && k.startsWith("ETR-")) {
       setSelectedKey(k);
       // 현재 필터 (default = needsAction) 에서 안 보일 수 있으므로 "전체 요청" 으로 강제 전환
+      setFilter("all");
+    }
+    const q = params.get("q");
+    if (q) {
+      setSearch(q);
       setFilter("all");
     }
   }, []);
@@ -608,23 +633,65 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
               {availableStatuses.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <div className="ml-auto">
+          <div className="ml-auto relative" style={{ width: 200 }}>
             <input
+              ref={searchInputRef}
               type="text"
-              placeholder="검색…"
+              placeholder="검색…  (Ctrl+F)"
               value={search}
               onChange={e => setSearch(e.target.value)}
-              className="px-2.5 py-1.5 rounded-lg text-xs border"
-              style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", width: 180, outline: "none" }}
+              onKeyDown={e => {
+                if (e.key === "Escape") {
+                  if (search) { setSearch(""); }
+                  else { (e.currentTarget as HTMLInputElement).blur(); }
+                }
+              }}
+              className="w-full pl-2.5 pr-7 py-1.5 rounded-lg text-xs border"
+              style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none" }}
             />
+            {search && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearch("");
+                  searchInputRef.current?.focus();
+                }}
+                title="검색어 지우기 (Esc)"
+                aria-label="검색어 지우기"
+                className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold transition-colors"
+                style={{ color: "var(--text-muted)", background: "var(--border-2)" }}
+                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-primary)"; (e.currentTarget as HTMLElement).style.background = "var(--text-subtle)"; }}
+                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; (e.currentTarget as HTMLElement).style.background = "var(--border-2)"; }}
+              >×</button>
+            )}
           </div>
         </nav>
 
         {/* ── List (독립 스크롤) ── */}
         <main className="flex-1 overflow-y-auto px-6 py-4">
           {filtered.length === 0 ? (
-            <div className="py-16 text-center text-sm" style={{ color: "var(--text-subtle)" }}>
-              {filter === "needsAction" ? "처리 필요한 ETR 이 없습니다 — 모두 검토되었거나 실행 티켓이 연결됨." : "결과가 없습니다."}
+            <div className="py-16 flex flex-col items-center px-4 text-center">
+              <p className="text-sm" style={{ color: "var(--text-subtle)" }}>
+                {filter === "needsAction" ? "처리 필요한 ETR 이 없습니다 — 모두 검토되었거나 실행 티켓이 연결됨." : "결과가 없습니다."}
+              </p>
+              {/* Cross-screen hint — ETR 검색창에 비-ETR ticket key (TM-/CMALL- 등) 가 입력된 경우 전체 과제 현황으로 이동 제안 */}
+              {(() => {
+                const q = search.trim();
+                if (!q) return null;
+                const isNonEtrKey = /^[A-Z][A-Z0-9]+-\d+$/i.test(q) && !/^ETR-/i.test(q);
+                if (!isNonEtrKey) return null;
+                const href = `/jira-tickets?q=${encodeURIComponent(q)}&ticket=${encodeURIComponent(q.toUpperCase())}`;
+                return (
+                  <Link
+                    href={href}
+                    className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold border-2 transition-all hover:scale-[1.02]"
+                    style={{ background: "#6366f1", color: "#ffffff", borderColor: "#818cf8", boxShadow: "0 2px 6px rgba(99,102,241,0.40)" }}
+                  >
+                    <span>전체 과제 현황에서 <span className="font-mono">{q.toUpperCase()}</span> 보기</span>
+                    <span aria-hidden>→</span>
+                  </Link>
+                );
+              })()}
             </div>
           ) : (
             <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
