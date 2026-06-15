@@ -6,7 +6,7 @@ import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 import { Tooltip } from "@/app/components/Tooltip";
 import TicketCopyButton from "@/app/components/TicketCopyButton";
 import {
-  buildEtrReverseMap,
+  buildEtrReverseMapAll,
   collectLinkedDocs,
   deriveSource,
   SOURCE_LABEL,
@@ -156,17 +156,21 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     return m;
   }, [tickets]);
 
-  const etrReverseMap = useMemo(
-    () => buildEtrReverseMap(etrMap, ticketByKey),
-    [etrMap, ticketByKey],
-  );
-
   // ETR 티켓만 추출 (project===ETR or key starts with ETR-)
   const allEtrTickets = useMemo(
     () => tickets
       .filter(t => t.key.startsWith("ETR-") || t.project === "ETR")
       .filter(t => !hiddenKeys.has(t.key)),
     [tickets, hiddenKeys],
+  );
+
+  // ETR → LinkedWork reverse map.
+  //   cc-etr 수동 등록 (TM 측에서 ETR 추가) + ETR 의 jiraLinks (Jira issue link 양방향) 모두 활용.
+  //   Project key 필터 없음 — TM / CMALL / M29CMOD 등 모두 허용.
+  //   ETR-* 만 제외 (자기 자신 / 다른 ETR).
+  const etrReverseMap = useMemo(
+    () => buildEtrReverseMapAll(etrMap, ticketByKey, allEtrTickets),
+    [etrMap, ticketByKey, allEtrTickets],
   );
 
   // Phase A: "상태 업데이트 필요" 판정 set — row badge + filter 양쪽에서 사용
