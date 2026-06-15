@@ -119,6 +119,11 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
       setSelectedKey(k);
       // 현재 필터 (default = needsAction) 에서 안 보일 수 있으므로 "전체 요청" 으로 강제 전환
       setFilter("all");
+      // ETR row 가 보이도록 스크롤 (목록 렌더 + 필터 변경 flush 후)
+      setTimeout(() => {
+        document.querySelector(`[data-etr-key="${k}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 250);
     }
     const q = params.get("q");
     if (q) {
@@ -710,6 +715,7 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
                 return (
                   <div
                     key={t.key}
+                    data-etr-key={t.key}
                     onClick={() => setSelectedKey(t.key)}
                     className="flex items-center px-4 py-3 cursor-pointer transition-colors text-sm"
                     style={{
