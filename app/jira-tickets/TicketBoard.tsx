@@ -3306,8 +3306,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const match = tickets.find(t => t.key === ticketParam);
 
     if (!match) {
+      // match 없음 — deepLinkProcessedRef 미설정 → 다음 tickets 변경 시 재시도.
+      // 단, 사용자가 인지할 수 있도록 warn 1회 출력 (hidden / 비공개 ticket 가능성).
+      console.warn(`[TicketBoard] deep-link: '${ticketParam}' 을(를) tickets 에서 찾지 못함. 다음 로드 시 재시도.`);
       if (process.env.NODE_ENV === "development") {
-        console.debug("[TicketBoard] deepLink: match 없음 (다음 tickets 변경 시 재시도)", { ticketParam });
+        console.debug("[TicketBoard] deepLink: match 없음", { ticketParam, ticketsLen: tickets.length });
       }
       return; // match 없으면 processed 표시 안 함 — 다음 로드 때 재시도
     }
@@ -3338,8 +3341,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setPlanningTab(targetTab);
 
     // ── 2. detail panel 탭 ──────────────────────────────────────────────────
+    // 명시적 tabParam 이 있으면 우선. 없는데 Global Search (focus=1) 로 들어왔으면
+    // Focus Mode 의 기본 view 인 overview 로 강제.
     if (tabParam === "ops" || tabParam === "overview") {
       setDetailTab(tabParam);
+    } else if (focusParam === "1") {
+      setDetailTab("overview");
     }
 
     // ── 3. owner_dashboard deep-link context 저장 ───────────────────────────
@@ -3382,12 +3389,33 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       setSelected(match);
 
-      // mode=focus (owner_dashboard → Focus Mode 직행)
+      // mode=focus (owner_dashboard → Focus Mode 직행) / focus=1 (Global Search 진입)
       if (autoFocus) {
         // Focus 진입 전 scroll/ptab 저장 (진입 시점 기준)
         workspaceNavRef.current.prevScrollY = window.scrollY;
         workspaceNavRef.current.prevPtab    = planningTab;
-        setIsDetailExpanded(true);
+        // ⚠ 수동 "집중 보기" 버튼 (line ~7339) 과 동일한 state 를 만들기 위해
+        //   순서 안정화: selected 가 실제로 commit 된 다음 프레임에 isDetailExpanded
+        //   + history.state.expanded 를 함께 갱신.
+        //   - rAF 1 tick 으로 React commit 보장
+        //   - history.state.expanded=true 갱신: 수동 진입과 동일하게 popstate 시
+        //     Focus Mode 가 강제 해제되지 않도록 보호
+        const applyFocus = () => {
+          setIsDetailExpanded(true);
+          try {
+            window.history.replaceState(
+              { ...(window.history.state ?? {}), expanded: true },
+              "",
+            );
+          } catch {
+            // replaceState 실패는 무시 — React state 만으로도 Focus Mode 동작
+          }
+        };
+        if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(applyFocus);
+        } else {
+          setTimeout(applyFocus, 0);
+        }
         // Focus Mode에서는 row 스크롤 불필요 — 워크스페이스 패널이 primary
         return;
       }
