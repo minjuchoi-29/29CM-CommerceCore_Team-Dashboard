@@ -16,6 +16,7 @@ import {
   type GlobalSearchResult,
   type GlobalSearchSourceTicket,
 } from "@/lib/global-search";
+import { setSearchTarget } from "@/lib/search-target";
 
 type TicketsResponse = { tickets?: GlobalSearchSourceTicket[] };
 
@@ -103,10 +104,19 @@ export default function GlobalSearchOverlay() {
     node?.scrollIntoView({ block: "nearest" });
   }, [activeIdx, isOpen]);
 
-  const navigateTo = useCallback((dest: string) => {
+  // 결과 row 단위 navigate — sessionStorage 에 명시 target 을 먼저 기록하고 이동.
+  // 도착 페이지 (TicketBoard / EtrReviewBoard) 가 mount 후 target 을 최우선 처리.
+  const navigateToResult = useCallback((r: GlobalSearchResult, queryText: string) => {
+    setSearchTarget({
+      kind: r.kind,
+      key: r.key,
+      query: queryText,
+      focus: r.kind === "ticket",   // ETR 은 detail panel 만 표시 (Focus Mode 없음)
+      createdAt: Date.now(),
+    });
     close();
     setQuery("");
-    window.location.href = dest;
+    window.location.href = r.destination;
   }, [close]);
 
   const onInputKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -132,7 +142,7 @@ export default function GlobalSearchOverlay() {
       const target = results[activeIdx];
       if (target) {
         e.preventDefault();
-        navigateTo(target.destination);
+        navigateToResult(target, query);
       }
       return;
     }
@@ -226,7 +236,7 @@ export default function GlobalSearchOverlay() {
                 key={r.key}
                 href={r.destination}
                 data-idx={idx}
-                onClick={e => { e.preventDefault(); navigateTo(r.destination); }}
+                onClick={e => { e.preventDefault(); navigateToResult(r, query); }}
                 onMouseEnter={() => setActiveIdx(idx)}
                 className="flex items-center gap-3 px-4 py-2.5 transition-colors"
                 style={{

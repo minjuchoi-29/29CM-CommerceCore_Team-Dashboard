@@ -23,6 +23,7 @@ import {
   type EtrReviewFilterKey,
   type EtrSource,
 } from "@/lib/etr-links";
+import { readSearchTarget, clearSearchTarget } from "@/lib/search-target";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -111,8 +112,30 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
 
   // Phase 3: ?key= 딥링크 — URL 에 key 가 있으면 해당 ETR 자동 선택
   // Cross-screen: ?q= 가 있으면 검색어 seed
+  // Global Search Target — sessionStorage 의 명시 target 이 URL 보다 우선.
   useEffect(() => {
     if (typeof window === "undefined") return;
+
+    // ── 0. Global Search Target — 최우선 처리 ──────────────────
+    const target = readSearchTarget();
+    if (target && target.kind === "etr") {
+      setSelectedKey(target.key);
+      setFilter("all");
+      if (target.query) setSearch(target.query);
+      setTimeout(() => {
+        document.querySelector(`[data-etr-key="${target.key}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 250);
+      clearSearchTarget();
+      return;
+    }
+    if (target && target.kind === "ticket") {
+      // ticket target 인데 ETR 화면으로 잘못 들어옴 — TicketBoard 로 redirect.
+      window.location.replace(`/jira-tickets?q=${encodeURIComponent(target.query)}&ticket=${encodeURIComponent(target.key)}&focus=1`);
+      return;
+    }
+
+    // ── 1. URL param fallback ──────────────────
     const params = new URLSearchParams(window.location.search);
     const k = params.get("key");
     if (k && k.startsWith("ETR-")) {
