@@ -28,6 +28,7 @@ import {
   countResolvedExecutionDuplicates,
 } from "@/lib/priorities";
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
+import { readSearchTarget, clearSearchTarget } from "@/lib/search-target";
 import {
   type TrackState,
   TRACK_STATES,
@@ -3253,6 +3254,85 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // 이미 처리 완료된 경우 skip (tickets 변경마다 중복 실행 방지)
     if (deepLinkProcessedRef.current) return;
 
+    // ── 0. Global Search Target — 최우선 처리 ──────────────────────────────────
+    // sessionStorage 의 명시 target 이 있으면 URL param 보다 우선.
+    // 도착 페이지가 잘못된 경우 (ETR → /etr-review) 는 redirect 만 하고 종료.
+    const target = readSearchTarget();
+    if (target) {
+      if (target.kind === "etr") {
+        // ETR 은 /etr-review 가 처리. target 은 그대로 유지 (해당 화면이 읽고 clear).
+        window.location.replace(`/etr-review?q=${encodeURIComponent(target.query)}&key=${encodeURIComponent(target.key)}`);
+        return;
+      }
+      // ticket — 명시 target 으로 강제 처리.
+      const match = tickets.find(t => t.key === target.key);
+      if (!match) {
+        console.warn(
+          `[TicketBoard] global search target '${target.key}' 을(를) tickets 에서 찾지 못함. `
+          + `재시도 대기.`,
+          {
+            targetKey:    target.key,
+            ticketsLen:   tickets.length,
+            urlSearch:    typeof window !== "undefined" ? window.location.search : "",
+            hiddenByKey:  hiddenKeysRef.current?.has(target.key) ?? false,
+          },
+        );
+        // deepLinkProcessedRef 유지 false → 다음 tickets 로드 시 재시도.
+        return;
+      }
+      deepLinkProcessedRef.current = true;
+      // 필터 초기화 — target ticket 이 가려지지 않게.
+      setStatusTab("전체");
+      setPlanningKpiFilter(null);
+      // planningTab — status 기반 자동 계산 (target ticket 이 속하는 탭).
+      const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
+      const DONE_T     = ["론치완료", "완료", "배포완료", "개발완료"];
+      const ACTIVE_T   = [
+        "개발중", "QA", "QA중", "진행중", "In Progress", "In Review",
+        "디자인중", "개발 진행중", "검수중", "기획중", "기획완료", "디자인완료",
+      ];
+      const PLANNING_T = ["준비중", "대기중", "SUGGESTED", "Backlog", "플래닝 대기"];
+      const computedTab =
+        DONE_T.includes(match.status)     ? "완료"
+        : ACTIVE_T.includes(match.status) ? "진행 중"
+        : PLANNING_T.includes(match.status) ? "플래닝 대기·검토"
+        : "전체";
+      const targetTab = VALID_PTABS.includes(computedTab) ? computedTab : "전체";
+      setPlanningTab(targetTab);
+      setDetailTab("overview");
+      // selected commit → rAF 다음 frame → Focus Mode + history.state.expanded=true.
+      setSelected(match);
+      const applyFocusFromTarget = () => {
+        if (target.focus) {
+          workspaceNavRef.current.prevScrollY = window.scrollY;
+          workspaceNavRef.current.prevPtab    = planningTab;
+          setIsDetailExpanded(true);
+          try {
+            window.history.replaceState(
+              { ...(window.history.state ?? {}), expanded: true },
+              "",
+            );
+          } catch {}
+        }
+        // row scroll — Focus Mode 에서는 패널이 primary 이므로 expanded=false 일 때만.
+        if (!target.focus) {
+          setTimeout(() => {
+            document.querySelector<Element>(`[data-ticket-key="${target.key}"]`)
+              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }, 200);
+        }
+        // 처리 성공 → target 제거 (잔존 진입 방지)
+        clearSearchTarget();
+      };
+      if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(applyFocusFromTarget);
+      } else {
+        setTimeout(applyFocusFromTarget, 0);
+      }
+      return;
+    }
+
+    // ── URL param 기반 deep-link (기존 흐름) ──────────────────────────────────
     // useEffect 내부에서 읽기 → Next.js 내비게이션 커밋 이후 항상 최신 URL 보장
     const params      = new URLSearchParams(window.location.search);
     const ticketParam = params.get("ticket");
