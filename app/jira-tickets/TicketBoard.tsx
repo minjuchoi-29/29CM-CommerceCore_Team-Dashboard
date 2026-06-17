@@ -2070,7 +2070,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         let appliedTotal = 0;
         let foundMarkerTotal = 0;
         let skippedNoMarker = 0;
-        let skippedCommentOnly = 0;  // customfield/description 없이 comment fallback만 있는 경우
+        let commentSourceCount = 0;  // v6: comment-source 로 schedule sync 실행된 ticket 수
         let errorTotal = 0;
 
         // Phase B: ticket별 Weekly 원문 수집 (KV cc-weekly-source-text에 누적 저장)
@@ -2099,12 +2099,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 savedAt: nowIso,
               };
 
-              // 정책: schedule merge는 customfield(LIVE SoT) 또는 description weekly section만.
-              // automation comment는 IMMUTABLE history → schedule row append 금지.
+              // 정책 v6 (2026-06-16): description Weekly 섹션 우선, 없으면 Automation Bot
+              // 댓글도 schedule sync 대상. /api/jira-weekly-source 가 이미
+              //   - description-first (LIVE)
+              //   - Bot 작성자 + "<NN>주차 Weekly 공유사항" 마커 매칭 + 최신 1건
+              // 자격만 통과한 source 만 src.text 로 노출. src.source === "comment" 도 진행.
+              // 중복 schedule 방어는 mergeWeeklySync 의 idempotent path 가 담당.
               if (src.source === "comment") {
-                skippedCommentOnly++;
-                console.log(`[WeeklySync] ${t.key} src=comment (history only) — merge skipped`);
-                return;
+                commentSourceCount++;  // 운영 가시성 — merge 는 진행 (v6 정책).
               }
 
               const syncRes = await fetch("/api/weekly-sync", {
@@ -2167,7 +2169,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           `found=${foundMarkerTotal} parsed=${parsedTotal} ` +
           `updated=${updatedTotal} applied=${appliedTotal} ` +
           `candidates=${candidatesTotal} skippedHidden=${skippedHidden} ` +
-          `skippedCommentOnly=${skippedCommentOnly} ` +
+          `commentSourceCount=${commentSourceCount} ` +
           `skippedNoMarker=${skippedNoMarker} errors=${errorTotal}`,
         );
 
