@@ -90,6 +90,48 @@ function findMarkers(text: string): string[] {
   return out;
 }
 
+// ─── Weekly Automation Comment 자격 ──────────────────────────────
+//
+// Comment-source 정책 (2026-06-16 확정):
+//   description Weekly 섹션이 없을 때, comment 도 schedule sync 대상이 될 수 있음.
+//   단 노이즈 차단을 위해 다음 두 조건 **모두** 충족하는 comment 만 허용:
+//
+//   1) 본문이 정확히 "<NN>주차 Weekly 공유사항" 패턴 포함
+//      → Automation for Jira 가 자동 archive 하는 표준 헤더.
+//        사람이 작성한 일반 댓글 안에서 우연히 매칭될 가능성을 줄이기 위해
+//        MARKER_PATTERNS 중 가장 좁은 패턴만 사용.
+//
+//   2) 작성자가 시스템 (Automation / Bot) 임이 표시되어야 함.
+//      → Jira API 의 author.displayName 기준. 보수적 매칭:
+//        "Automation for Jira", "Jira Bot", "Atlassian Automation",
+//        "자동 생성" 등 운영 환경에서 관찰 가능한 이름 패턴.
+//
+//   기본 정렬은 이미 -created (최신순) → break 로 가장 최근 1건만 사용.
+
+const WEEKLY_COMMENT_MARKER_RE = /\d+\s*주차\s*Weekly\s*공유사항/i;
+
+function isAutomationAuthor(name: string | undefined | null): boolean {
+  if (!name) return false;
+  const n = name.toLowerCase().trim();
+  if (n === "-" || n.length === 0) return false;
+  return (
+    n.includes("automation")
+    || /\bbot\b/.test(n)
+    || n.includes("atlassian")
+    || n.includes("자동 생성")
+    || n.includes("자동생성")
+  );
+}
+
+/** 단일 comment 가 weekly automation archive 자격을 충족하는지 판정. */
+function isWeeklyAutomationComment(
+  authorName: string | undefined | null,
+  body: string,
+): boolean {
+  if (!isAutomationAuthor(authorName)) return false;
+  return WEEKLY_COMMENT_MARKER_RE.test(body);
+}
+
 // ─── description 내부 "Weekly 공유사항" 섹션 추출 ────────────────
 // 운영 약속:
 //   description 안에는 PRD/기대결과/링크 등 여러 섹션이 공존한다.
@@ -278,23 +320,41 @@ export async function GET(req: NextRequest) {
     const comments = (commentData.comments ?? []) as JiraComment[];
 
     // marker 있는 최신 comment 탐색 (이미 -created 정렬)
+    //
+    // schedule sync 자격 정책 (isWeeklyAutomationComment):
+    //   - 작성자 = Automation / Bot 류
+    //   - 본문에 "<NN>주차 Weekly 공유사항" 정확 매칭
+    //   양쪽 조건 모두 충족하는 가장 최근 1건만 사용 — 사람이 작성한 일반 댓글이
+    //   우연히 marker 와 겹쳐도 schedule sync 가 트리거되지 않음.
+    //
+    // 디버깅 / UI 표시 목적으로 markers / qualifiesForSync 를 별도 노출.
     let markedComment:
-      | { text: string; updated: string; created: string; author: string; markers: string[] }
+      | {
+          text: string;
+          updated: string;
+          created: string;
+          author: string;
+          markers: string[];
+          qualifiesForSync: boolean;
+        }
       | null = null;
     for (const c of comments) {
       const t = adfToText(c.body).trim();
       if (!t) continue;
       const ms = findMarkers(t);
-      if (ms.length > 0) {
-        markedComment = {
-          text: t,
-          updated: c.updated,
-          created: c.created,
-          author: c.author?.displayName ?? "-",
-          markers: ms,
-        };
-        break;
-      }
+      if (ms.length === 0) continue;
+      const authorName = c.author?.displayName ?? "-";
+      const qualifies = isWeeklyAutomationComment(authorName, t);
+      // 최초 marker 매치만 사용. qualifies=false 면 schedule sync 대상은 아님.
+      markedComment = {
+        text: t,
+        updated: c.updated,
+        created: c.created,
+        author: authorName,
+        markers: ms,
+        qualifiesForSync: qualifies,
+      };
+      break;
     }
 
     // ─── 우선순위 결정 (2026-05-29 정책 재확정 v5) ───────────────
@@ -320,17 +380,20 @@ export async function GET(req: NextRequest) {
     //   올바른 댓글을 선택하지 못하는 문제가 발생.
     //   v5에서는 comment가 2순위 — customfield는 resolution chain에서 완전히 제외.
     //
-    // [중요 운영 약속]
+    // [중요 운영 약속 — v6 (2026-06-16)]
     //   - PRD 본문은 schedule/note 추출 대상 아님 (description 안의 "Weekly 공유사항" 섹션만).
-    //   - comment는 Automation for Jira가 생성한 "nn주차 Weekly 공유사항" 형식 댓글만 대상.
-    //   - comment는 -created 정렬 → 최신 주차 자동 선택.
-    //   - comment 픽된 경우 TicketBoard orchestration이 merge 자체를 skip (IMMUTABLE archive 정책).
+    //   - comment 는 Automation Bot 이 생성한 "<NN>주차 Weekly 공유사항" 형식 댓글만 대상
+    //     (isWeeklyAutomationComment).
+    //   - comment 는 -created 정렬 → 최신 주차 자동 선택.
+    //   - **v6 변경**: comment 도 schedule sync 대상. (이전 v5 의 history-only skip 폐기)
+    //     mergeWeeklySync 의 idempotent path (lib/weekly-merge.ts:245-254) 가 중복 schedule
+    //     생성 방어. 자격 미달 comment 는 commentCandidate=null 로 분류 — schedule sync 미발생.
     type Pick = {
       text: string;
       source: "description" | "comment";
       sourceUpdatedAt: string;
       markers: string[];
-      policyReason: "description-first" | "comment-fallback";
+      policyReason: "description-first" | "comment-automation";
     };
 
     // 1순위: description "Weekly 공유사항" 섹션 — LIVE operational truth
@@ -344,23 +407,25 @@ export async function GET(req: NextRequest) {
         }
       : null;
 
-    // 2순위: Automation for Jira "nn주차 Weekly 공유사항" 댓글 — 실제 운영 SoT
-    // (comments는 이미 -created 정렬 → 최신 주차 자동 선택)
-    const commentCandidate: Pick | null = markedComment
-      ? {
-          text: markedComment.text,
-          source: "comment",
-          sourceUpdatedAt: markedComment.updated,
-          markers: markedComment.markers,
-          policyReason: "comment-fallback",
-        }
-      : null;
+    // 2순위: Automation Bot 의 "<NN>주차 Weekly 공유사항" 댓글
+    //   - 작성자 = Automation / Bot 일 때만 schedule sync 대상.
+    //   - 사람이 작성한 댓글이 marker 만 우연히 매칭하는 경우는 commentCandidate=null.
+    //   - 자격 미달 comment 도 markedComment 자체는 보존 (debug 응답에 노출 — 운영 진단용).
+    const commentCandidate: Pick | null =
+      markedComment && markedComment.qualifiesForSync
+        ? {
+            text: markedComment.text,
+            source: "comment",
+            sourceUpdatedAt: markedComment.updated,
+            markers: markedComment.markers,
+            policyReason: "comment-automation",
+          }
+        : null;
 
     // customfield_10625 — 참고용만 (v5: resolution chain에서 제외)
     // 실운영에서 거의 채워지지 않으므로 source pick에 포함하지 않음.
-    // debug 응답의 weeklyCustomField* 필드에서만 확인 가능.
 
-    // 최종 우선순위 (v5): description LIVE → comment (Automation 최신 주차)
+    // 최종 우선순위 (v6): description LIVE → comment (Automation 최신 주차, schedule sync 대상)
     const pick: Pick | null = descCandidate ?? commentCandidate;
 
     // ─── 파싱 결과 (선택) — text가 있으면 parseWeekly 실행 ───────
@@ -414,7 +479,7 @@ export async function GET(req: NextRequest) {
         descriptionWeeklySectionMarkers: descMarkers,
         descriptionHasMarker: !!descWeeklySection,  // legacy 호환: 섹션 존재 여부로 의미 변경
         descriptionMarkers: descMarkers,             // legacy 호환
-        // ─── comment (IMMUTABLE history archive) ───
+        // ─── comment (Automation Bot archive — v6 schedule sync 대상) ───
         commentCount: comments.length,
         markedCommentFound: !!markedComment,
         markedCommentMarkers: markedComment?.markers ?? [],
@@ -422,6 +487,8 @@ export async function GET(req: NextRequest) {
         markedCommentAuthor: markedComment?.author ?? null,
         markedCommentLength: markedComment?.text.length ?? 0,
         markedCommentPreview: markedComment?.text.slice(0, 200) ?? null,
+        // v6: schedule sync 자격 충족 여부. false 이면 markedComment 가 있어도 pick 미반영.
+        markedCommentQualifiesForSync: markedComment?.qualifiesForSync ?? false,
         // 디버깅: 모든 comment 요약 (auto-archive vs human 구분, marker 매칭 여부)
         allComments: comments.map(c => {
           const t = adfToText(c.body).trim();
@@ -436,8 +503,10 @@ export async function GET(req: NextRequest) {
         }),
         // ─── 운영 정책 명시 (v5) ───
         policyDescription:
-          "[v5 정책] description Weekly 섹션 → 최우선. " +
-          "없으면 Automation for Jira의 최신 'nn주차 Weekly 공유사항' 댓글 사용. " +
+          "[v6 정책 2026-06-16] description Weekly 섹션 → 최우선. " +
+          "없으면 Automation Bot 의 최신 '<NN>주차 Weekly 공유사항' 댓글 사용 — " +
+          "schedule sync 대상 (이전 v5 의 comment-only skip 폐기). " +
+          "사람이 작성한 댓글 + marker 만 우연 매칭은 markedCommentQualifiesForSync=false 로 분류. " +
           "customfield_10625는 참고용만 — source resolution에 사용 안 함.",
       },
     });
