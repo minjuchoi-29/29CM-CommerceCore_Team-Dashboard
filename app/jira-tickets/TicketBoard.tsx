@@ -18,7 +18,7 @@ import {
   selectCompareSnapshot,
   summarizeTransitions,
 } from "@/lib/transitions";
-import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText, WeeklySyncMeta } from "@/lib/weekly-types";
+import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText, WeeklySyncMeta, WeeklyDetectedSource } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
 import { isTicketPastRolePhase } from "@/lib/derived/phase-order";
 import {
@@ -2093,6 +2093,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               foundMarkerTotal++;
 
               // 원문 수집 — Weekly Summary 표시는 source 무관 (history도 보존)
+              // PR-Multi-1: detection 단계 후보들 (description + qualifying comments) 도 함께 보존
+              //   — Trace UI 의 "Detected Sources" 영역 노출용. merge 로직 무관.
               collectedSources[t.key] = {
                 ticketKey: t.key,
                 text: src.text,
@@ -2101,6 +2103,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 sourceWeek: src.parseSummary?.sourceWeek ?? "",
                 sourceUpdatedAt: src.sourceUpdatedAt ?? "",
                 savedAt: nowIso,
+                detectedSources: Array.isArray(src.sources) ? src.sources as WeeklyDetectedSource[] : undefined,
               };
 
               // 정책 v6 (2026-06-16): description Weekly 섹션 우선, 없으면 Automation Bot
@@ -2842,6 +2845,73 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* PR-Multi-1: Detected Sources — detection 단계에서 발견한 모든 후보.
+                실제 schedule sync 에 사용된 source 는 한 건이지만, 후보 가시화로
+                "왜 24주차 comment 가 안 잡혔는지" / "description 도 인식됐는지" 등을
+                self-diagnose 가능. picked source 는 ✓ chip 으로 표시. */}
+          {src?.detectedSources && src.detectedSources.length > 0 && (
+            <div>
+              <div className="flex items-center gap-2 mb-1.5">
+                <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>Detected Sources</span>
+                <span className="text-[10px] font-mono" style={{ color: "var(--text-subtle)" }}>{src.detectedSources.length}건</span>
+              </div>
+              <div className="space-y-1">
+                {src.detectedSources.map((ds, idx) => {
+                  const isPicked = ds.source === src.source && ds.sourceUpdatedAt === src.sourceUpdatedAt;
+                  const sourceColor = ds.source === "description" ? "#34d399" : "#60a5fa";
+                  const sourceBg    = ds.source === "description" ? "rgba(16,185,129,0.12)" : "rgba(59,130,246,0.12)";
+                  const sourceLabelText = ds.source === "description" ? "Description" : "Comment";
+                  return (
+                    <div
+                      key={`${ds.source}-${ds.sourceUpdatedAt}-${idx}`}
+                      className="flex items-center gap-2 flex-wrap text-[11px] px-2 py-1.5 rounded"
+                      style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
+                    >
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded font-semibold"
+                        style={{ background: sourceBg, color: sourceColor, border: `1px solid ${sourceColor}55` }}
+                      >
+                        {sourceLabelText}
+                      </span>
+                      {ds.sourceWeek && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded font-mono"
+                          style={{ background: "rgba(129,140,248,0.10)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}
+                        >
+                          {ds.sourceWeek}
+                        </span>
+                      )}
+                      <span
+                        className="text-[10px] px-1.5 py-0.5 rounded"
+                        style={{ background: "rgba(148,163,184,0.10)", color: "#94a3b8", border: "1px solid rgba(148,163,184,0.25)" }}
+                      >
+                        인식됨
+                      </span>
+                      {isPicked && (
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded font-semibold inline-flex items-center gap-1"
+                          style={{ background: "rgba(16,185,129,0.16)", color: "#10b981", border: "1px solid rgba(16,185,129,0.45)" }}
+                          title="이번 Weekly Sync 에 사용된 source"
+                        >
+                          <span aria-hidden>✓</span>
+                          <span>선택됨</span>
+                        </span>
+                      )}
+                      {ds.sourceUpdatedAt && (
+                        <span className="ml-auto text-[10px] font-mono" style={{ color: "var(--text-muted)" }}>
+                          {fmtAbs(ds.sourceUpdatedAt)}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                현재 정책: description 이 있으면 description 1건 선택, 없으면 Bot 댓글 중 최신 1건. 후보 노출은 진단용.
+              </p>
             </div>
           )}
 
