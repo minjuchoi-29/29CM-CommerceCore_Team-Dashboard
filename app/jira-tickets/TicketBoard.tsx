@@ -1744,6 +1744,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [weeklySourceTexts, setWeeklySourceTexts] = useState<Record<string, WeeklySourceText>>({});
   // 우측 상세 패널 Weekly 원문 expand/collapse 상태 (ticket별)
   const [weeklyExpanded, setWeeklyExpanded] = useState<Record<string, boolean>>({});
+  // PR B3 (2026-06-17) — "최근 Sync 결과" trace card 의 ticket 별 expand 상태.
+  //   item-level detail / source preview 양쪽을 별도 토글로 분리해 사용자 부담 ↓
+  const [syncTraceExpanded,   setSyncTraceExpanded]   = useState<Record<string, boolean>>({});
+  const [syncSourceExpanded,  setSyncSourceExpanded]  = useState<Record<string, boolean>>({});
   const [updateCandidates, setUpdateCandidates] = useState<UpdateCandidate[]>([]);
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
   const [changesMode,           setChangesMode]           = useState(false);
@@ -2639,6 +2643,251 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           {renderCategory("진행", "var(--text-muted)", progress)}
           {renderCategory("리스크", "#ef4444", risks)}
           {renderCategory("다음 액션", "#fbbf24", actions)}
+        </div>
+      </div>
+    );
+  }
+
+  // PR B3 — "최근 Sync 결과" trace card.
+  //
+  // 목표: 사용자가 "왜 schedule 이 안 들어왔는지" 를 console 없이 self-diagnose.
+  //
+  // 데이터 source (모두 이미 fetch + state 보유, 신규 fetch 없음):
+  //   - cc-weekly-sync-meta[ticketKey]   : lastSyncAt / sourceWeek / trace summary / items
+  //   - cc-weekly-source-text[ticketKey] : 실제 읽은 원문 + source / policyReason / sourceUpdatedAt
+  //
+  // 두 KV 가 모두 비면 "Sync 기록 없음" 안내 — 한 번도 sync 가 실행 안 됐거나
+  // 두 KV 가 hidden filter 등으로 정리됐을 가능성.
+  function renderWeeklySyncTrace(ticketKey: string) {
+    const meta = weeklySyncMeta[ticketKey];
+    const src  = weeklySourceTexts[ticketKey];
+    if (!meta && !src) {
+      return (
+        <div
+          className="mb-4 rounded-lg px-3 py-2.5"
+          style={{ border: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}
+        >
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Sync 결과</span>
+            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
+              기록 없음
+            </span>
+          </div>
+          <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            이 ticket 에 대해 Weekly Sync 가 실행된 기록이 없습니다.
+            상단의 [Jira Sync] 버튼을 눌러주세요. Jira description 의 Weekly 섹션 또는
+            Automation Bot 의 댓글 (<code>{`<NN>주차 Weekly 공유사항`}</code>) 이 있으면 자동 인식됩니다.
+          </p>
+        </div>
+      );
+    }
+
+    const fmtAbs = (iso?: string | null): string => {
+      if (!iso) return "—";
+      const d = new Date(iso);
+      if (Number.isNaN(d.getTime())) return iso;
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+    };
+    const fmtRel = (iso?: string | null): string => {
+      if (!iso) return "";
+      const ms = Date.now() - new Date(iso).getTime();
+      if (Number.isNaN(ms)) return "";
+      const sec = Math.floor(ms / 1000);
+      if (sec < 60)  return `${sec}초 전`;
+      const min = Math.floor(sec / 60);
+      if (min < 60) return `${min}분 전`;
+      const hr = Math.floor(min / 60);
+      if (hr < 24)  return `${hr}시간 전`;
+      const d = Math.floor(hr / 24);
+      if (d < 30)   return `${d}일 전`;
+      const mo = Math.floor(d / 30);
+      return `${mo}달 전`;
+    };
+    const sourceLabel =
+      src?.source === "customfield" ? "customfield" :
+      src?.source === "description" ? "description" :
+      src?.source === "comment"     ? "comment"     :
+      "—";
+
+    const summary = meta?.lastTraceSummary;
+    const items   = meta?.lastTraceItems ?? [];
+    const itemCount = items.length;
+    const detailOpen = !!syncTraceExpanded[ticketKey];
+    const sourceOpen = !!syncSourceExpanded[ticketKey];
+
+    // outcome chip 색상
+    const OUTCOME_STYLE: Record<string, { bg: string; color: string; label: string }> = {
+      appended:        { bg: "rgba(16,185,129,0.14)",  color: "#34d399", label: "신규" },
+      updated:         { bg: "rgba(59,130,246,0.16)",  color: "#60a5fa", label: "갱신" },
+      candidates_only: { bg: "rgba(251,191,36,0.16)",  color: "#fbbf24", label: "검토" },
+      idempotent:      { bg: "rgba(148,163,184,0.14)", color: "#94a3b8", label: "변동없음" },
+      manual_guard:    { bg: "rgba(168,85,247,0.16)",  color: "#c084fc", label: "수동보호" },
+    };
+
+    return (
+      <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+        {/* Header — 가장 큰 정보 (lastSyncAt) */}
+        <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+          <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Sync 결과</span>
+          {meta?.lastSourceWeek && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>
+              {meta.lastSourceWeek}
+            </span>
+          )}
+          {src?.source && (
+            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
+              source: {sourceLabel}
+            </span>
+          )}
+          {meta?.lastSyncAt && (
+            <span className="ml-auto text-[10.5px]" style={{ color: "var(--text-muted)" }}>
+              <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{fmtAbs(meta.lastSyncAt)}</span>
+              <span className="ml-1.5">· {fmtRel(meta.lastSyncAt)}</span>
+            </span>
+          )}
+        </div>
+
+        <div className="px-3 py-2.5 space-y-3">
+          {/* Parser 결과 (item count) */}
+          <div className="flex items-center gap-3 flex-wrap text-[11px]">
+            <span style={{ color: "var(--text-muted)" }}>Parser</span>
+            <span style={{ color: "var(--text-secondary)" }}>
+              Schedule Items <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{itemCount}</span>건
+            </span>
+            {itemCount === 0 && (
+              <span className="text-[10.5px] px-1.5 py-0.5 rounded" style={{ background: "rgba(251,113,133,0.12)", color: "#fb7185", border: "1px solid rgba(251,113,133,0.30)" }}>
+                인식 0건
+              </span>
+            )}
+          </div>
+
+          {/* Merge outcome 카운트 */}
+          {summary && (
+            <div className="flex items-center gap-2 flex-wrap text-[11px]">
+              <span style={{ color: "var(--text-muted)" }}>Merge</span>
+              {([
+                ["appended", summary.appended],
+                ["updated", summary.updated],
+                ["candidates_only", summary.candidates],
+                ["idempotent", summary.idempotent],
+                ["manual_guard", summary.manualGuard],
+              ] as const).map(([k, v]) => {
+                const st = OUTCOME_STYLE[k];
+                const dimmed = v === 0;
+                return (
+                  <span
+                    key={k}
+                    className="text-[10.5px] px-1.5 py-0.5 rounded inline-flex items-center gap-1"
+                    style={{
+                      background: dimmed ? "var(--bg-canvas)" : st.bg,
+                      color: dimmed ? "var(--text-muted)" : st.color,
+                      border: dimmed ? "1px solid var(--border-2)" : `1px solid ${st.color}55`,
+                      opacity: dimmed ? 0.55 : 1,
+                    }}
+                  >
+                    {st.label}
+                    <span className="font-semibold">{v}</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+
+          {/* item-level detail (collapsible) */}
+          {itemCount > 0 && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setSyncTraceExpanded(prev => ({ ...prev, [ticketKey]: !prev[ticketKey] }))}
+                className="text-[11px] hover:underline transition-colors"
+                style={{ color: "#818cf8" }}
+              >
+                {detailOpen ? "▴ Items 접기" : `▾ Items 상세 (${itemCount}건)`}
+              </button>
+              {detailOpen && (
+                <div className="mt-2 space-y-1.5">
+                  {items.map((it, idx) => {
+                    const st = OUTCOME_STYLE[it.outcome] ?? OUTCOME_STYLE.idempotent;
+                    const phase = it.phase ?? "—";
+                    const dateRange =
+                      it.startDate && it.endDate
+                        ? `${it.startDate} ~ ${it.endDate}`
+                        : it.startDate ?? it.endDate ?? "";
+                    return (
+                      <div
+                        key={`${idx}-${it.itemText.slice(0, 32)}`}
+                        className="text-[11px] px-2 py-1.5 rounded"
+                        style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
+                      >
+                        <div className="flex items-center gap-1.5 mb-0.5">
+                          <span
+                            className="text-[10px] px-1.5 py-0.5 rounded font-semibold"
+                            style={{ background: st.bg, color: st.color, border: `1px solid ${st.color}55` }}
+                          >
+                            {st.label}
+                          </span>
+                          <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{phase}</span>
+                          {dateRange && (
+                            <span className="font-mono text-[10.5px]" style={{ color: "var(--text-muted)" }}>· {dateRange}</span>
+                          )}
+                        </div>
+                        <pre
+                          className="text-[10.5px] font-sans pl-1"
+                          style={{ color: "var(--text-muted)", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0 }}
+                        >{it.itemText}</pre>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Source Preview — 실제 읽은 원문 */}
+          {src?.text && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setSyncSourceExpanded(prev => ({ ...prev, [ticketKey]: !prev[ticketKey] }))}
+                className="text-[11px] hover:underline transition-colors"
+                style={{ color: "#818cf8" }}
+              >
+                {sourceOpen ? "▴ 실제 읽은 Weekly 원문 접기" : "▾ 실제 읽은 Weekly 원문 (Source Preview)"}
+              </button>
+              {sourceOpen && (
+                <div className="mt-2 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+                  <div
+                    className="px-2.5 py-1.5 text-[10.5px] flex items-center gap-2 flex-wrap"
+                    style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)", color: "var(--text-muted)" }}
+                  >
+                    <span>Source <span style={{ color: "var(--text-secondary)" }}>{sourceLabel}</span></span>
+                    {src.policyReason && (
+                      <span>· policy <span style={{ color: "var(--text-secondary)" }}>{src.policyReason}</span></span>
+                    )}
+                    {src.sourceUpdatedAt && (
+                      <span>· Jira 수정 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{fmtAbs(src.sourceUpdatedAt)}</span></span>
+                    )}
+                    {src.savedAt && (
+                      <span>· 저장 <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{fmtAbs(src.savedAt)}</span></span>
+                    )}
+                    <span className="ml-auto">{src.text.length}자</span>
+                  </div>
+                  <pre
+                    className="px-2.5 py-2 text-[11px] font-sans"
+                    style={{ color: "var(--text-secondary)", whiteSpace: "pre-wrap", wordBreak: "break-word", margin: 0, tabSize: 2, background: "var(--bg-canvas)" }}
+                  >{src.text}</pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 진단 힌트 — schedule items 0건 + source 있음 일 때 */}
+          {itemCount === 0 && src?.text && (
+            <div className="text-[10.5px] px-2 py-1.5 rounded" style={{ background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.30)", color: "#fbbf24" }}>
+              💡 Source 는 정상 인식됐지만 Parser 가 schedule item 을 0건 추출했습니다.
+              원문의 날짜 / phase 키워드 (개발 / QA / Launch / 디자인 등) 표기를 확인하세요.
+            </div>
+          )}
         </div>
       </div>
     );
@@ -8089,6 +8338,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <div data-fm-section="weekly-summary">{summary}</div>
                       ) : null;
                     })()}
+                    {/* PR B3: 최근 Sync 결과 (Trace + Source Preview) */}
+                    <div data-fm-section="weekly-sync-trace">{renderWeeklySyncTrace(selected.key)}</div>
                     {/* Weekly에서 분리된 노트 (리스크 / 액션 / 참고) */}
                     {(() => {
                       const box = renderActionRiskBox(selected.key);
@@ -8931,6 +9182,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
               {renderWeeklySummary(selected.key)}
+              {/* ── PR B3: 최근 Sync 결과 (Trace + Source Preview) ──── */}
+              {renderWeeklySyncTrace(selected.key)}
               {/* ── Weekly에서 분리된 노트 (리스크 / 액션 / 참고) ────── */}
               {renderActionRiskBox(selected.key)}
 
