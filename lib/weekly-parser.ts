@@ -204,6 +204,12 @@ export function normalizeStatus(raw: string): ScheduleStatus {
   if (/^(진행\s*중|in\s*progress|작업\s*중)$/i.test(s)) return "진행중";
   if (/(잔여|착수|진입|시작|킥\s*오프)/i.test(s))         return "진행중";
 
+  // Parser Coverage v1.1 (2026-06-17) — phase+ing 결합 키워드.
+  //   "개발중" / "QA중" / "디자인중" / "기획중"   → 진행중 (해당 phase 작업 중)
+  //   "준비중"                                       → 예정    (아직 본격 작업 전, 준비 단계)
+  if (/^(개발\s*중|qa\s*중|디자인\s*중|기획\s*중)$/i.test(s)) return "진행중";
+  if (/^(준비\s*중)$/i.test(s))                                 return "예정";
+
   // 완료 — 완료 / 종료 / 마감 / done
   if (/^(완료\s*됨?|done|completed|종료|마감)$/i.test(s)) return "완료";
 
@@ -326,7 +332,10 @@ function extractDateRange(text: string, fallbackYear?: number): {
 
 const SECTION_ALIASES: Record<string, string[]> = {
   progress:   ["진행상황", "진행 중", "진행중", "진행 현황", "Progress", "주요 진행", "현황"],
-  schedule:   ["일정", "Schedule", "스케줄", "타임라인"],
+  // 운영 패턴 보강 (Parser Coverage v1.1 — 2026-06-17):
+  //   "주요 일정 : ...", "이번주 일정", "금주 일정" 인식.
+  //   lib/weekly-ast.ts:SECTION_MARKER_ALIASES 와 1:1 동기 — 정책 변경 시 양쪽 갱신.
+  schedule:   ["일정", "Schedule", "스케줄", "타임라인", "주요 일정", "이번주 일정", "금주 일정"],
   risk:       ["이슈/리스크", "이슈·리스크", "이슈/콜아웃", "이슈", "리스크", "Risk", "Issue", "콜아웃"],
   nextAction: ["다음 액션", "다음액션", "Next Action", "Action Item", "ActionItem", "액션 아이템", "다음 단계"],
 };
@@ -413,6 +422,11 @@ const STATUS_KEYWORDS = [
   "완료됨", "완료",
   // 진행 (작업 중 / 진행 중 변형 + 잔여)
   "진행 중", "진행중", "작업 중", "작업중", "잔여 작업", "잔여",
+  // Parser Coverage v1.1 (2026-06-17) — phase+ing 결합 키워드 추가.
+  // "6/8 개발중" 등 운영 자연어 패턴이 normalize 시 "예정" 기본값 대신 정확한
+  // status 로 분류되도록. 각 키워드의 normalizeStatus 매핑은 동일 파일에서 갱신.
+  // ※ "진행중" 보다 뒤에 두어, 명시적 "진행중" 표기가 등장하면 그쪽이 우선.
+  "개발중", "QA중", "디자인중", "기획중", "준비중",
   // 시작 신호 (착수 / 진입 / 킥오프 / 시작)
   // ※ "시작" 은 다른 단어 일부일 수 있어 마지막에 (예: "QA 시작 예정")
   "킥오프", "킥 오프", "착수", "진입",
@@ -911,49 +925,79 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
   const classifiedLines: NonNullable<ParsedWeekly["classifiedLines"]> = [];
 
   if (!hasAnyMarker) {
-    // section marker가 전혀 없으면 전체 AST(=unsectioned)를 classifyLineWithCtx로 분류
-    for (const root of unsectioned) {
-      traverseAst(root, { itemPath: [], parentPhase: undefined, parentText: undefined }, (n, ctx) => {
-        const cls = classifyLineWithCtx(
-          n.text,
-          { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
-          fallbackYear,
-        );
-        classifiedLines.push({
-          type: cls.type,
-          confidence: cls.confidence,
+    // section marker 가 전혀 없으면 전체 AST(=unsectioned) 를 classifyLineWithCtx 로 분류.
+    //
+    // Parser Coverage v1.1 (2026-06-17):
+    //   기존 traverseAst 는 lib/weekly-ast.ts:446-466 의 invariant 상 item 노드에만
+    //   visitor 를 호출. top-level para 노드 ("- " 접두사 없는 자연어 한 줄) 는
+    //   visitor 미호출 → schedule 추출 시도 자체 없음 → scheduleItems 0건.
+    //
+    //   ADF paragraph-only Weekly (TM-2745 / 2756 / 2746 운영 패턴) 가 이 path 를 타기
+    //   때문에 실제로 운영 데이터의 가장 흔한 형식이 silent 0 으로 처리되고 있었음.
+    //
+    //   해결: top-level para 는 직접 처리, list / item 은 기존 traverseAst.
+    //   기존 hasAnyMarker=true 분기의 emitScheduleFromParaOrItem (line 826-847) 와
+    //   동일한 정책 — 단 classifyLineWithCtx 사용 (note / risk / action 도 분류).
+    const processLineForNoMarker = (
+      text: string,
+      ctx: AstContext,
+    ): SchedulePhase | undefined => {
+      const cls = classifyLineWithCtx(
+        text,
+        { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+        fallbackYear,
+      );
+      classifiedLines.push({
+        type: cls.type,
+        confidence: cls.confidence,
+        content: cls.content,
+        rawText: cls.rawText,
+        schedule: cls.schedule,
+        declineReason: cls.declineReason,
+      });
+      if (cls.type === "schedule" && cls.schedule) {
+        // classifyLine 은 ticketKey 를 모르므로 여기서 stableTaskId 를 패치.
+        const s = cls.schedule;
+        if (s.phase && s.phase !== "기타" && !s.stableTaskId) {
+          s.stableTaskId = buildStableTaskId(
+            ticketKey, s.phase, s.resourceTeam ?? null,
+            MILESTONE_PHASES.has(s.phase) ? s.startDate : null,
+          );
+        }
+        scheduleItems.push(s);
+      } else if (cls.type === "risk") {
+        risks.push({ content: cls.content, severity: "medium", rawText: cls.rawText });
+      } else if (cls.type === "action") {
+        nextActions.push({
           content: cls.content,
+          actionCategory: inferActionCategory(cls.content),
           rawText: cls.rawText,
-          schedule: cls.schedule,
-          declineReason: cls.declineReason,
         });
-        if (cls.type === "schedule" && cls.schedule) {
-          // classifyLine은 ticketKey를 모르므로 여기서 stableTaskId를 패치.
-          const s = cls.schedule;
-          if (s.phase && s.phase !== "기타" && !s.stableTaskId) {
-            s.stableTaskId = buildStableTaskId(
-              ticketKey, s.phase, s.resourceTeam ?? null,
-              MILESTONE_PHASES.has(s.phase) ? s.startDate : null,
-            );
-          }
-          scheduleItems.push(s);
-        } else if (cls.type === "risk") {
-          risks.push({ content: cls.content, severity: "medium", rawText: cls.rawText });
-        } else if (cls.type === "action") {
-          nextActions.push({
-            content: cls.content,
-            actionCategory: inferActionCategory(cls.content),
-            rawText: cls.rawText,
-          });
-        }
-        // schedule로 잡힌 경우 자식에게 phase propagate (운영 단계 컨텍스트 유지)
-        if (cls.type === "schedule" && cls.schedule?.phase && cls.schedule.phase !== "기타") {
-          return { propagatePhase: cls.schedule.phase };
-        }
-        // schedule이 아니어도 본인 text에서 phase가 잡히면 propagate (헤더성 line이라도)
-        const own = extractPhaseAndResource(n.text);
-        if (own.phase !== "기타") return { propagatePhase: own.phase };
-        return undefined;
+      }
+      // schedule 로 잡힌 경우 자식에게 phase propagate (운영 단계 컨텍스트 유지)
+      if (cls.type === "schedule" && cls.schedule?.phase && cls.schedule.phase !== "기타") {
+        return cls.schedule.phase;
+      }
+      // schedule 이 아니어도 본인 text 에서 phase 가 잡히면 propagate (헤더성 line 이라도)
+      const own = extractPhaseAndResource(text);
+      if (own.phase !== "기타") return own.phase;
+      return undefined;
+    };
+
+    for (const root of unsectioned) {
+      // ★ Parser Coverage v1.1: top-level para 도 직접 처리.
+      //   traverseAst 는 para 노드에 visitor 미호출 → para 만 있는 위클리가 silent 0
+      //   이 되는 문제 해소. parentPhase 는 root level 이므로 undefined.
+      if (root.kind === "para" && root.text) {
+        processLineForNoMarker(root.text, {
+          itemPath: [], parentPhase: undefined, parentText: undefined,
+        });
+        continue;
+      }
+      // list / item 은 기존 traverseAst — item 노드 별 visitor 호출 + parentPhase propagation.
+      traverseAst(root, { itemPath: [], parentPhase: undefined, parentText: undefined }, (n, ctx) => {
+        const propagatePhase = processLineForNoMarker(n.text, ctx);
+        return propagatePhase ? { propagatePhase } : undefined;
       });
     }
     warnings.push(
