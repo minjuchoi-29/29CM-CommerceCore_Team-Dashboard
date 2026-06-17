@@ -321,6 +321,11 @@ const SECTION_MARKER_ALIASES: Array<{ section: SectionGroup; alias: string }> = 
   { section: "schedule", alias: "Schedule" },
   { section: "schedule", alias: "스케줄" },
   { section: "schedule", alias: "타임라인" },
+  // 운영 패턴 보강 (Parser Coverage v1.1 — 2026-06-17)
+  // TM-2756 류의 "주요 일정 : ..." 패턴 / 주 단위 일정 라벨 인식.
+  { section: "schedule", alias: "주요 일정" },
+  { section: "schedule", alias: "이번주 일정" },
+  { section: "schedule", alias: "금주 일정" },
   // risk
   { section: "risk", alias: "이슈/리스크" },
   { section: "risk", alias: "이슈·리스크" },
