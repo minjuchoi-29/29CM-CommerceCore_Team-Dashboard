@@ -28,7 +28,7 @@ import {
   countResolvedExecutionDuplicates,
 } from "@/lib/priorities";
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
-import { readSearchTarget, clearSearchTarget } from "@/lib/search-target";
+import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/search-target";
 import {
   type TrackState,
   TRACK_STATES,
@@ -2639,6 +2639,231 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           {renderCategory("진행", "var(--text-muted)", progress)}
           {renderCategory("리스크", "#ef4444", risks)}
           {renderCategory("다음 액션", "#fbbf24", actions)}
+        </div>
+      </div>
+    );
+  }
+
+  // PR B5.1 — Ticket Detail 의 "Linked Work" 섹션.
+  //
+  // 목표: 현재 fetch 중인 raw 데이터 (jiraLinks / parent / direct children) 를
+  //   분류 / aggregation 없이 그대로 노출. 사용자가 "이 ticket 에 무엇이
+  //   연결되어 있는지" 즉시 확인 가능.
+  //
+  // 데이터 source (모두 이미 state 보유):
+  //   - selected ticket 의 jiraLinks[]     (Ticket.jiraLinks — parseIssuelinks 결과)
+  //   - selected ticket 의 parent          (Ticket.parent — Jira parent 필드)
+  //   - 자식 reverse                       (tickets.where(t.parent === current.key) — single hop)
+  //
+  // rich vs fallback:
+  //   - 우리 ticket pool 에 있으면 rich (assignee 포함 모든 필드 신선)
+  //   - 외부 ticket (pool 밖) 이면 jiraLinks 의 fallback 메타만 (assignee 없음)
+  //
+  // 클릭 동작:
+  //   - internal ticket / ETR → setSearchTarget + window.location.href
+  //     (PR #45 의 Global Search 와 동일 흐름 — 도착 페이지가 Focus Mode / detail panel 자동 진입)
+  //   - external ticket (우리 pool 밖) → Jira browse 새 탭
+  function renderLinkedWork(ticketKey: string) {
+    const ticket = tickets.find(t => t.key === ticketKey);
+    if (!ticket) return null;
+
+    // ticketByKey lookup map — rich metadata fetch
+    const byKey = new Map<string, Ticket>(tickets.map(t => [t.key, t]));
+
+    type LinkedRow = {
+      key: string;
+      type?: string;
+      status?: string;
+      assignee?: string;
+      summary?: string;
+      isInternal: boolean;
+      // jiraLinks 의 경우 추가
+      linkType?: string;
+      direction?: "in" | "out";
+    };
+
+    const buildRow = (
+      linkedKey: string,
+      fallback?: { type?: string; status?: string; summary?: string },
+    ): LinkedRow => {
+      const rich = byKey.get(linkedKey);
+      return {
+        key: linkedKey,
+        type:     rich?.type     ?? fallback?.type,
+        status:   rich?.status   ?? fallback?.status,
+        summary:  rich?.summary  ?? fallback?.summary,
+        assignee: rich?.assignee,
+        isInternal: !!rich,
+      };
+    };
+
+    const parentRow = ticket.parent ? buildRow(ticket.parent) : null;
+    const childRows = tickets
+      .filter(t => t.parent === ticket.key)
+      .map(t => buildRow(t.key));
+    const linkRows: LinkedRow[] = (ticket.jiraLinks ?? []).map(l => ({
+      ...buildRow(l.key, { type: l.type, status: l.status, summary: l.summary }),
+      linkType: l.linkType,
+      direction: l.direction,
+    }));
+
+    if (!parentRow && childRows.length === 0 && linkRows.length === 0) {
+      return null;
+    }
+
+    // direction 별 split — 같은 linkType raw 그대로 group
+    const outLinks = linkRows.filter(r => r.direction === "out");
+    const inLinks  = linkRows.filter(r => r.direction === "in");
+
+    // 클릭 핸들러 — PR #45 sessionStorage 패턴 재사용
+    const onRowClick = (row: LinkedRow) => {
+      const isEtr = row.key.startsWith("ETR-");
+      // 외부 ticket — Jira browse 새 탭
+      if (!row.isInternal && !isEtr) {
+        window.open(`${JIRA_BASE}${row.key}`, "_blank", "noopener,noreferrer");
+        return;
+      }
+      // 내부 ticket / ETR — search target 으로 navigate (Global Search 와 동일 흐름)
+      try {
+        setSearchTarget({
+          kind: isEtr ? "etr" : "ticket",
+          key: row.key,
+          query: "",
+          focus: !isEtr,
+          createdAt: Date.now(),
+        });
+      } catch {}
+      const dest = isEtr
+        ? `/etr-review?key=${encodeURIComponent(row.key)}`
+        : `/jira-tickets?ticket=${encodeURIComponent(row.key)}&focus=1`;
+      window.location.href = dest;
+    };
+
+    const renderRow = (row: LinkedRow) => {
+      const externalHint = !row.isInternal && !row.key.startsWith("ETR-");
+      return (
+        <button
+          key={`${row.key}-${row.direction ?? "x"}-${row.linkType ?? "x"}`}
+          type="button"
+          onClick={() => onRowClick(row)}
+          title={
+            externalHint
+              ? `${row.key} — Jira browse (외부 ticket, 우리 pool 밖)`
+              : `${row.key} — 상세 보기`
+          }
+          className="w-full flex items-center gap-2 flex-wrap text-left px-2 py-1.5 rounded transition-colors"
+          style={{
+            background: "var(--bg-overlay)",
+            border: "1px solid var(--border-2)",
+          }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-item)"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-overlay)"; }}
+        >
+          <span className="font-mono text-[11.5px] font-semibold shrink-0" style={{ color: "#a5b4fc", minWidth: 96 }}>
+            {row.key}
+          </span>
+          {row.type && (
+            <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${TYPE_COLOR[row.type] ?? "bg-gray-100 text-gray-500"}`}>
+              {row.type}
+            </span>
+          )}
+          {row.status && (
+            <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${STATUS_COLOR[row.status] ?? "bg-gray-100 text-gray-500"}`}>
+              {row.status}
+            </span>
+          )}
+          {row.summary && (
+            <span className="text-[11px] truncate flex-1 min-w-0" style={{ color: "var(--text-secondary)" }}>
+              {row.summary}
+            </span>
+          )}
+          <span className="text-[11px] ml-auto shrink-0" style={{ color: "var(--text-muted)" }}>
+            {row.assignee ?? (externalHint ? "외부" : "—")}
+          </span>
+          <span className="shrink-0 text-[10.5px]" aria-hidden style={{ color: "var(--text-muted)" }}>
+            {externalHint ? "↗" : "→"}
+          </span>
+        </button>
+      );
+    };
+
+    return (
+      <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
+        <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+          <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>Linked Work</span>
+          <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>
+            parent {parentRow ? 1 : 0} · children {childRows.length} · links {linkRows.length}
+          </span>
+        </div>
+
+        <div className="px-3 py-2.5 space-y-3">
+          {/* Hierarchy: Parent / Children (single hop) */}
+          {(parentRow || childRows.length > 0) && (
+            <div className="space-y-1.5">
+              <span className="text-[10.5px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                Hierarchy
+              </span>
+              {parentRow && (
+                <div className="space-y-1">
+                  <span className="text-[10.5px] block" style={{ color: "var(--text-subtle)" }}>↑ Parent</span>
+                  {renderRow(parentRow)}
+                </div>
+              )}
+              {childRows.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10.5px] block" style={{ color: "var(--text-subtle)" }}>↓ Children ({childRows.length})</span>
+                  <div className="space-y-1">
+                    {childRows.map(renderRow)}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Issue Links (jiraLinks raw — 분류 / 일반화는 Stage C) */}
+          {linkRows.length > 0 && (
+            <div className="space-y-1.5">
+              <span className="text-[10.5px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-muted)" }}>
+                Issue Links
+              </span>
+
+              {outLinks.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10.5px] block" style={{ color: "var(--text-subtle)" }}>→ Outward ({outLinks.length})</span>
+                  <div className="space-y-1">
+                    {outLinks.map(row => (
+                      <div key={`${row.key}-out-${row.linkType ?? "x"}`} className="space-y-0.5">
+                        {row.linkType && (
+                          <span className="text-[10px] ml-2" style={{ color: "var(--text-muted)" }}>
+                            {row.linkType}
+                          </span>
+                        )}
+                        {renderRow(row)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {inLinks.length > 0 && (
+                <div className="space-y-1">
+                  <span className="text-[10.5px] block" style={{ color: "var(--text-subtle)" }}>← Inward ({inLinks.length})</span>
+                  <div className="space-y-1">
+                    {inLinks.map(row => (
+                      <div key={`${row.key}-in-${row.linkType ?? "x"}`} className="space-y-0.5">
+                        {row.linkType && (
+                          <span className="text-[10px] ml-2" style={{ color: "var(--text-muted)" }}>
+                            {row.linkType}
+                          </span>
+                        )}
+                        {renderRow(row)}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     );
@@ -8089,6 +8314,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <div data-fm-section="weekly-summary">{summary}</div>
                       ) : null;
                     })()}
+                    {/* PR B5.1: Linked Work (parent / children / jiraLinks) */}
+                    {(() => {
+                      const lw = renderLinkedWork(selected.key);
+                      return lw ? (
+                        <div data-fm-section="linked-work">{lw}</div>
+                      ) : null;
+                    })()}
                     {/* Weekly에서 분리된 노트 (리스크 / 액션 / 참고) */}
                     {(() => {
                       const box = renderActionRiskBox(selected.key);
@@ -8931,6 +9163,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
               {renderWeeklySummary(selected.key)}
+              {/* ── PR B5.1: Linked Work (parent / children / jiraLinks) ── */}
+              {renderLinkedWork(selected.key)}
               {/* ── Weekly에서 분리된 노트 (리스크 / 액션 / 참고) ────── */}
               {renderActionRiskBox(selected.key)}
 
