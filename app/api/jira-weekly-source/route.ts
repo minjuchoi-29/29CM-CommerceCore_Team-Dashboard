@@ -101,12 +101,15 @@ function findMarkers(text: string): string[] {
 //   - "🧭 21주차 Weekly 공유사항"
 //   - "[Weekly 공유사항]"
 //   - "*Weekly 공유사항"
+//   - "이번주 Weekly 공유사항"     (v6.1: 주초 LIVE 편집 패턴)
+//   - "금주 Weekly 공유사항"       (v6.1)
+//   - "This Week Weekly 공유사항"  (v6.1)
 // 종료 조건 (Stop section):
 //   - "연결된 업무 항목" / "활동" / "Confluence 콘텐츠" / "Linked work items" / "Activity"
 //   - description EOF
 
 const WEEKLY_HEADER_RE =
-  /(?:^|\n)\s*[*🧭#[]*\s*(?:\d+\s*주차\s*)?Weekly\s*공유\s*사항\s*\]?\s*[:\n]?/i;
+  /(?:^|\n)\s*[*🧭#[]*\s*(?:\d+\s*주차|이번주|금주|this\s*week|current\s*week)?\s*Weekly\s*공유\s*사항\s*\]?\s*[:\n]?/i;
 
 const WEEKLY_STOP_PATTERNS: RegExp[] = [
   /\n\s*[*#]*\s*(?:연결된\s*업무\s*항목|활동|Confluence\s*콘텐츠|Linked\s*work\s*items|Activity)\s*[:\n]/i,
