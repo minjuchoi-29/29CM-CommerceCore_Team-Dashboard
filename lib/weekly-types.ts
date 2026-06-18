@@ -197,6 +197,17 @@ export interface WeeklySyncMeta {
   //   merge 동작 변경 없음 — trace 결과만 추가 저장.
   lastTraceSummary?: WeeklySyncTraceSummary;
   lastTraceItems?: WeeklySyncTraceItem[];
+
+  // PR-Sync-Visibility (2026-06-18):
+  //   lastSyncAt 은 /api/weekly-sync POST 가 성공해야만 갱신되므로,
+  //   skip 분기 (no_marker / src_error / sync_error) 에 걸린 ticket 의
+  //   lastSyncAt 은 과거 시점에 동결됨. 사용자가 "왜 stale 한가" 를
+  //   self-diagnose 할 수 있도록 별도 attempt timestamp + 사유를 보존.
+  //
+  //   lastAttemptAt > lastSyncAt 이면 직전 시도가 skip 되었다는 신호.
+  //   lastSkipReason 이 undefined 면 직전 시도가 성공 (또는 attempt 기록 없음).
+  lastAttemptAt?: string;
+  lastSkipReason?: "no_marker" | "src_error" | "sync_error";
 }
 
 /** 직전 sync 의 outcome 별 카운트. */
