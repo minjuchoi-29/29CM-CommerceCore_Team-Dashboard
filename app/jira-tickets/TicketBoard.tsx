@@ -1792,6 +1792,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
   // Phase 2: Weekly Sync orchestration 진행 상황 토스트
   const [weeklySyncMsg, setWeeklySyncMsg] = useState<string | null>(null);
+  // PR-Sync-Visibility (2026-06-18): Weekly Sync background 진행 상태.
+  //   transient — 페이지 새로고침 시 초기화. 상단 배지 / 상세 카드 표시 용.
+  //   per-ticket lastSkipReason 은 cc-weekly-sync-meta KV 로 별도 persist.
+  type WeeklySyncRun = {
+    phase: "idle" | "running" | "done";
+    startedAt: string;
+    finishedAt?: string;
+    targets: number;
+    processed: number;
+    applied: number;
+    skippedNoMarker: number;
+    skippedSrcError: number;
+    skippedSyncError: number;
+  };
+  const [weeklySyncRun, setWeeklySyncRun] = useState<WeeklySyncRun | null>(null);
+  const [weeklySyncRunOpen, setWeeklySyncRunOpen] = useState(false);
   // Phase 4: Update Candidate Review 모달 / 진행 중인 candidateId set
   const [candidatePanelOpen, setCandidatePanelOpen] = useState(false);
   const [candidatesInFlight, setCandidatesInFlight] = useState<Set<string>>(new Set());
@@ -2068,6 +2084,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           console.log(`[WeeklySync] start — targets=${targets.length} (hidden ${skippedHidden} 제외)`);
         }
 
+        // PR-Sync-Visibility: run-level 진행 상태 초기화 (상단 배지 source)
+        const runStartedAt = new Date().toISOString();
+        setWeeklySyncRun({
+          phase: "running",
+          startedAt: runStartedAt,
+          targets: targets.length,
+          processed: 0,
+          applied: 0,
+          skippedNoMarker: 0,
+          skippedSrcError: 0,
+          skippedSyncError: 0,
+        });
+        setWeeklySyncRunOpen(false);
+
+        // Per-ticket skip 사유 추적 — orchestration 끝에 KV 에 일괄 write.
+        //   key = ticketKey, value = skip reason (성공한 ticket 은 entry 없음).
+        const skipReasons = new Map<string, "no_marker" | "src_error" | "sync_error">();
+        const successKeys = new Set<string>();
+
         let parsedTotal = 0;
         let updatedTotal = 0;
         let candidatesTotal = 0;
@@ -2087,9 +2122,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           await Promise.all(chunk.map(async (t) => {
             try {
               const srcRes = await fetch(`/api/jira-weekly-source?key=${encodeURIComponent(t.key)}`);
-              if (!srcRes.ok) { errorTotal++; return; }
+              if (!srcRes.ok) {
+                errorTotal++;
+                skipReasons.set(t.key, "src_error");
+                setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, skippedSrcError: prev.skippedSrcError + 1 } : prev);
+                return;
+              }
               const src = await srcRes.json();
-              if (!src.foundMarker || !src.text) { skippedNoMarker++; return; }
+              if (!src.foundMarker || !src.text) {
+                skippedNoMarker++;
+                skipReasons.set(t.key, "no_marker");
+                setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, skippedNoMarker: prev.skippedNoMarker + 1 } : prev);
+                return;
+              }
               foundMarkerTotal++;
 
               // 원문 수집 — Weekly Summary 표시는 source 무관 (history도 보존)
@@ -2121,7 +2166,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ ticketKey: t.key, weeklyText: src.text }),
               });
-              if (!syncRes.ok) { errorTotal++; return; }
+              if (!syncRes.ok) {
+                errorTotal++;
+                skipReasons.set(t.key, "sync_error");
+                setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, skippedSyncError: prev.skippedSyncError + 1 } : prev);
+                return;
+              }
               const result = await syncRes.json();
 
               const parsedCnt = src.parseSummary?.schedulesCount ?? 0;
@@ -2129,6 +2179,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               updatedTotal     += result.schedulesUpdated  ?? 0;
               candidatesTotal  += result.updateCandidates  ?? 0;
               appliedTotal     += result.appliedUpdates    ?? 0;
+
+              successKeys.add(t.key);
+              setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, applied: prev.applied + 1 } : prev);
 
               console.log(
                 `[WeeklySync] ${t.key} src=${src.source} ` +
@@ -2138,6 +2191,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               );
             } catch (e) {
               errorTotal++;
+              skipReasons.set(t.key, "src_error");
+              setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, skippedSrcError: prev.skippedSrcError + 1 } : prev);
               console.error(`[WeeklySync] ${t.key} error:`, e);
             }
           }));
@@ -2179,6 +2234,49 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           `commentSourceCount=${commentSourceCount} ` +
           `skippedNoMarker=${skippedNoMarker} errors=${errorTotal}`,
         );
+
+        // PR-Sync-Visibility: per-ticket lastAttemptAt + lastSkipReason 일괄 write.
+        //   - lastSyncAt 은 /api/weekly-sync 가 이미 성공 ticket 에 대해 갱신 → 절대 안 건드림.
+        //   - skip 된 ticket 의 lastSyncAt 은 과거 시점 그대로 보존 (route 에서 작성 안 됨).
+        //   - 새로 추가: lastAttemptAt = 현재 시각, lastSkipReason = sync 실패/skip 사유 (성공 시 undefined).
+        //   - DONE_FOR_WEEKLY / hidden 으로 targets 에서 제외된 ticket 은 본 write 대상 아님 (entry 무변경).
+        const attemptIso = new Date().toISOString();
+        try {
+          const metaRes = await fetch("/api/kv?keys=cc-weekly-sync-meta");
+          const metaData = await metaRes.json();
+          const currentMeta = (metaData["cc-weekly-sync-meta"] && typeof metaData["cc-weekly-sync-meta"] === "object" && !Array.isArray(metaData["cc-weekly-sync-meta"]))
+            ? metaData["cc-weekly-sync-meta"] as Record<string, WeeklySyncMeta>
+            : {};
+          let dirty = false;
+          for (const t of targets) {
+            const existing: WeeklySyncMeta = currentMeta[t.key] ?? {
+              ticketKey: t.key,
+              lastSyncAt: "",
+              lastSourceWeek: "",
+            };
+            if (successKeys.has(t.key)) {
+              currentMeta[t.key] = { ...existing, lastAttemptAt: attemptIso, lastSkipReason: undefined };
+              dirty = true;
+            } else if (skipReasons.has(t.key)) {
+              currentMeta[t.key] = { ...existing, lastAttemptAt: attemptIso, lastSkipReason: skipReasons.get(t.key) };
+              dirty = true;
+            }
+          }
+          if (dirty) {
+            await fetch("/api/kv", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ key: "cc-weekly-sync-meta", value: currentMeta }),
+            });
+          }
+        } catch (e) {
+          console.warn("[WeeklySync] cc-weekly-sync-meta attempt-write failed:", e);
+        }
+
+        // PR-Sync-Visibility: run-level 완료 상태 + 상단 배지 자동 펼침 (오류 있을 때만)
+        const finishedIso = new Date().toISOString();
+        setWeeklySyncRun(prev => prev ? { ...prev, phase: "done", finishedAt: finishedIso } : prev);
+        if (errorTotal > 0) setWeeklySyncRunOpen(true);
 
         // KV reload — weekly-notes, update-candidates, schedules, source-text
         try {
@@ -2754,6 +2852,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         <div className="px-3 py-2.5 space-y-3">
           {/* Parser 결과 (item count) */}
+          {/* PR-Sync-Visibility: stale lastSyncAt 진단.
+                lastAttemptAt 가 lastSyncAt 보다 최근이고 skip 사유 있으면,
+                "최근 sync 가 왜 동결됐는지" 를 사용자에게 인라인 노출. */}
+          {meta?.lastAttemptAt && meta.lastSkipReason && (() => {
+            const attemptedRecently = !meta.lastSyncAt || new Date(meta.lastAttemptAt).getTime() > new Date(meta.lastSyncAt).getTime();
+            if (!attemptedRecently) return null;
+            const reasonLabel: Record<NonNullable<WeeklySyncMeta["lastSkipReason"]>, string> = {
+              no_marker:  "Source 인식 안 됨 (description / Bot comment 모두 미인식)",
+              src_error:  "Source API 호출 실패 (/api/jira-weekly-source)",
+              sync_error: "Schedule 동기화 실패 (/api/weekly-sync)",
+            };
+            return (
+              <div className="text-[10.5px] px-2 py-1.5 rounded"
+                style={{ background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }}>
+                <span className="font-semibold">⚠ 직전 시도 skip</span>
+                <span className="mx-1.5">·</span>
+                <span className="font-mono">{fmtRel(meta.lastAttemptAt)}</span>
+                <span className="mx-1.5">·</span>
+                <span>사유: {reasonLabel[meta.lastSkipReason]}</span>
+                <div className="mt-0.5 text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                  이 때문에 위의 &quot;최근 Sync 결과&quot; lastSyncAt 이 직전 시도가 아닌 그 이전 성공 시점에 멈춰 있을 수 있습니다.
+                </div>
+              </div>
+            );
+          })()}
+
           <div className="flex items-center gap-3 flex-wrap text-[11px]">
             <span style={{ color: "var(--text-muted)" }}>Parser</span>
             <span style={{ color: "var(--text-secondary)" }}>
@@ -5645,8 +5769,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <span className="text-xs text-indigo-500 font-medium">{weeklySyncMsg}</span>
             )}
             {syncedAt && (
-              <span className="text-xs text-gray-400">
-                JIRA 동기화:{" "}
+              <span className="text-xs text-gray-400" title="Jira 메타데이터 (티켓 본문/상태/링크) 가 동기화된 시각. Weekly Sync 와는 분리되어 있습니다.">
+                Jira 메타:{" "}
                 <span className="text-gray-600 font-medium">
                   {(() => {
                     const now = new Date();
@@ -5658,6 +5782,82 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   })()}
                 </span>
               </span>
+            )}
+            {/* PR-Sync-Visibility: Weekly Sync background 진행 상태 (transient).
+                running 동안 counter 실시간 갱신, done 후에는 적용/스킵/오류 요약. */}
+            {weeklySyncRun && (
+              <div className="text-xs flex items-center gap-1.5">
+                {weeklySyncRun.phase === "running" && (
+                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded font-medium"
+                    style={{ background: "rgba(129,140,248,0.10)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.30)" }}
+                    title="Weekly Sync background 진행 중. Jira 메타 동기화는 이미 완료됐고, 각 ticket 의 Weekly 일정 동기화가 이어서 처리 중입니다.">
+                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+                      <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    Weekly Sync 진행중 <span className="font-mono">{weeklySyncRun.processed}/{weeklySyncRun.targets}</span>
+                  </span>
+                )}
+                {weeklySyncRun.phase === "done" && (() => {
+                  const totalSkipped = weeklySyncRun.skippedNoMarker + weeklySyncRun.skippedSrcError + weeklySyncRun.skippedSyncError;
+                  const totalErrors = weeklySyncRun.skippedSrcError + weeklySyncRun.skippedSyncError;
+                  const hasErrors = totalErrors > 0;
+                  const finishedAt = weeklySyncRun.finishedAt ? new Date(weeklySyncRun.finishedAt) : null;
+                  const finishedLabel = finishedAt
+                    ? finishedAt.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })
+                    : "";
+                  const color = hasErrors ? "#fbbf24" : "#10b981";
+                  const bg    = hasErrors ? "rgba(251,191,36,0.10)" : "rgba(16,185,129,0.10)";
+                  return (
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setWeeklySyncRunOpen(v => !v)}
+                        className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded font-medium hover:opacity-80 transition-opacity"
+                        style={{ background: bg, color, border: `1px solid ${color}55` }}
+                        title="Weekly Sync background 결과 — 클릭하면 스킵 사유별 breakdown 표시"
+                      >
+                        <span aria-hidden>{hasErrors ? "⚠" : "✓"}</span>
+                        <span>
+                          Weekly Sync {finishedLabel ? `· ${finishedLabel}` : ""}
+                          {" · "}적용 <span className="font-mono">{weeklySyncRun.applied}</span>
+                          {totalSkipped > 0 && <> · 스킵 <span className="font-mono">{totalSkipped}</span></>}
+                          {totalErrors > 0 && <> · 오류 <span className="font-mono">{totalErrors}</span></>}
+                        </span>
+                      </button>
+                      {weeklySyncRunOpen && (
+                        <div className="absolute right-0 top-full mt-1 z-50 rounded-lg shadow-lg overflow-hidden text-xs"
+                          style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", minWidth: 260 }}>
+                          <div className="px-3 py-2" style={{ borderBottom: "1px solid var(--border-2)" }}>
+                            <div className="font-semibold mb-1" style={{ color: "var(--text-primary)" }}>Weekly Sync 결과</div>
+                            <div style={{ color: "var(--text-muted)" }}>
+                              대상 <span className="font-mono">{weeklySyncRun.targets}</span>건 ·
+                              적용 <span className="font-mono" style={{ color: "#10b981" }}>{weeklySyncRun.applied}</span>건
+                            </div>
+                          </div>
+                          <div className="px-3 py-2 space-y-1">
+                            <div className="flex justify-between" style={{ color: "var(--text-secondary)" }}>
+                              <span>Source 인식 안 됨 (no_marker)</span>
+                              <span className="font-mono">{weeklySyncRun.skippedNoMarker}</span>
+                            </div>
+                            <div className="flex justify-between" style={{ color: weeklySyncRun.skippedSrcError > 0 ? "#fbbf24" : "var(--text-secondary)" }}>
+                              <span>Source API 호출 실패 (src_error)</span>
+                              <span className="font-mono">{weeklySyncRun.skippedSrcError}</span>
+                            </div>
+                            <div className="flex justify-between" style={{ color: weeklySyncRun.skippedSyncError > 0 ? "#fbbf24" : "var(--text-secondary)" }}>
+                              <span>Schedule sync 실패 (sync_error)</span>
+                              <span className="font-mono">{weeklySyncRun.skippedSyncError}</span>
+                            </div>
+                          </div>
+                          <div className="px-3 py-2 text-[10.5px]"
+                            style={{ borderTop: "1px dashed var(--border-2)", color: "var(--text-subtle)" }}>
+                            완료 상태 / 숨김 ticket 은 대상에서 제외됐고, 본 카운트에 포함되지 않습니다.
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
             )}
             {hiddenMeta.length > 0 && (
               <button
