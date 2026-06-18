@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { parseWeekly } from "@/lib/weekly-parser";
+import { parseWeekly, parseWeekNumber } from "@/lib/weekly-parser";
 import { buildAstFromAdf, printAstTree } from "@/lib/weekly-ast";
+import type { WeeklyDetectedSource } from "@/lib/weekly-types";
 
 export const dynamic = "force-dynamic";
 
@@ -322,25 +323,31 @@ export async function GET(req: NextRequest) {
     const commentData = await commentRes.json();
     const comments = (commentData.comments ?? []) as JiraComment[];
 
-    // marker 있는 최신 comment 탐색 (이미 -created 정렬)
+    // marker 있는 comment 탐색 (이미 -created 정렬)
     //
     // schedule sync 자격 정책 (isWeeklyAutomationComment):
     //   - 작성자 = Automation / Bot 류
     //   - 본문에 "<NN>주차 Weekly 공유사항" 정확 매칭
-    //   양쪽 조건 모두 충족하는 가장 최근 1건만 사용 — 사람이 작성한 일반 댓글이
-    //   우연히 marker 와 겹쳐도 schedule sync 가 트리거되지 않음.
+    //   양쪽 조건 모두 충족하는 comment 만 schedule sync 대상.
     //
-    // 디버깅 / UI 표시 목적으로 markers / qualifiesForSync 를 별도 노출.
-    let markedComment:
-      | {
-          text: string;
-          updated: string;
-          created: string;
-          author: string;
-          markers: string[];
-          qualifiesForSync: boolean;
-        }
-      | null = null;
+    // [PR-Multi-1 변경 — 2026-06-17]
+    //   기존 로직은 `for ... break;` 로 첫 marker 매치 1건만 보존했다.
+    //   본 변경은 **break 제거**: marker 가 있는 comment 를 전부 누적하여
+    //   `markedCommentList` 에 보관한다. 단일 source pick 정책 (`pick = descCandidate
+    //   ?? commentCandidate`) 은 변경 없음 — `markedComment = list[0] ?? null` 로
+    //   기존 동작 그대로 복원 (comments 가 -created 정렬이므로 [0] = 최신 marker comment).
+    //
+    //   추가된 list 는 응답의 `sources[]` 노출 (detection 후보 시각화) 전용이며,
+    //   merge / candidate / stale 로직은 list 를 참조하지 않는다.
+    type MarkedComment = {
+      text: string;
+      updated: string;
+      created: string;
+      author: string;
+      markers: string[];
+      qualifiesForSync: boolean;
+    };
+    const markedCommentList: MarkedComment[] = [];
     for (const c of comments) {
       const t = adfToText(c.body).trim();
       if (!t) continue;
@@ -348,17 +355,17 @@ export async function GET(req: NextRequest) {
       if (ms.length === 0) continue;
       const authorName = c.author?.displayName ?? "-";
       const qualifies = isWeeklyAutomationComment(authorName, t);
-      // 최초 marker 매치만 사용. qualifies=false 면 schedule sync 대상은 아님.
-      markedComment = {
+      markedCommentList.push({
         text: t,
         updated: c.updated,
         created: c.created,
         author: authorName,
         markers: ms,
         qualifiesForSync: qualifies,
-      };
-      break;
+      });
     }
+    // 기존 단일 pick 경로 복원 — 최신 marker comment 1건 (-created 정렬 → [0]).
+    const markedComment: MarkedComment | null = markedCommentList[0] ?? null;
 
     // ─── 우선순위 결정 (2026-05-29 정책 재확정 v5) ───────────────
     //
@@ -431,6 +438,57 @@ export async function GET(req: NextRequest) {
     // 최종 우선순위 (v6): description LIVE → comment (Automation 최신 주차, schedule sync 대상)
     const pick: Pick | null = descCandidate ?? commentCandidate;
 
+    // ─── PR-Multi-1 (2026-06-17): detection 단계의 모든 source 후보 노출 ──
+    //
+    // 단일 pick 정책 (`pick = descCandidate ?? commentCandidate`) 은 그대로 유지.
+    // 운영자가 "어떤 후보가 감지됐는지" / "왜 특정 source 가 선택됐는지" 를
+    // 코드/디버그 없이 self-diagnose 할 수 있도록 detection 결과 자체를 노출.
+    //
+    // 포함 대상:
+    //   1) description 의 "Weekly 공유사항" 섹션 (descWeeklySection 이 non-empty)
+    //   2) Automation Bot 자격 충족 comment 전체 (markedCommentList 의 qualifiesForSync=true)
+    //
+    // qualifies=false comment (marker 만 우연 매칭한 인간 작성자 댓글) 는 의도적으로 제외.
+    //   debug.allComments / debug.markedCommentQualifiesForSync 에서 확인 가능.
+    //
+    // 정렬: comment 는 sourceWeek 숫자 DESC (최신 주차 먼저). description 은 항상 맨 앞.
+    //   숫자 추출 실패시 그 자리에 그대로 (stable sort).
+    const detectedSources: WeeklyDetectedSource[] = [];
+
+    if (descWeeklySection) {
+      detectedSources.push({
+        source: "description",
+        sourceWeek: parseWeekNumber(descWeeklySection),
+        sourceUpdatedAt: descUpdated,
+        policyReason: "description-first",
+        markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
+        textLength: descWeeklySection.length,
+        textPreview: descWeeklySection.slice(0, 200),
+      });
+    }
+
+    const qualifyingComments = markedCommentList.filter(c => c.qualifiesForSync);
+    // sourceWeek 숫자 DESC 정렬 (최신 주차 우선) — comment 만 정렬, description 은 위에서 prepend.
+    const commentSourcesSorted: WeeklyDetectedSource[] = qualifyingComments
+      .map(c => ({
+        source: "comment" as const,
+        sourceWeek: parseWeekNumber(c.text),
+        sourceUpdatedAt: c.updated,
+        policyReason: "comment-automation" as const,
+        markers: c.markers,
+        textLength: c.text.length,
+        textPreview: c.text.slice(0, 200),
+      }))
+      .sort((a, b) => {
+        const na = parseInt(a.sourceWeek, 10);
+        const nb = parseInt(b.sourceWeek, 10);
+        if (Number.isNaN(na) && Number.isNaN(nb)) return 0;
+        if (Number.isNaN(na)) return 1;
+        if (Number.isNaN(nb)) return -1;
+        return nb - na;
+      });
+    detectedSources.push(...commentSourcesSorted);
+
     // ─── 파싱 결과 (선택) — text가 있으면 parseWeekly 실행 ───────
     const parsed = pick ? parseWeekly(pick.text, key) : null;
     const parseSummary = parsed ? {
@@ -455,6 +513,9 @@ export async function GET(req: NextRequest) {
       markers: pick?.markers ?? [],
       parsed,
       parseSummary,
+      // PR-Multi-1: detection 단계의 모든 source 후보 (description + qualifying comments).
+      // 단일 pick 정책은 무변경 — 본 필드는 UI 의 "Detected Sources" 노출 전용.
+      sources: detectedSources,
       debug: {
         // ─── customfield_10625 = "Weekly 공유사항" (참고용 — v5 resolution에서 제외) ───
         // 실운영에서 거의 비어있음. source pick 에 사용되지 않으며 debug 확인 전용.
