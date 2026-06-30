@@ -490,47 +490,43 @@ export default function SidebarNav({ user, logoutAction }: Props) {
       {guideOpen && <GuideModal onClose={() => setGuideOpen(false)} />}
       {quickLinksOpen && <QuickLinksModal onClose={() => setQuickLinksOpen(false)} />}
 
-      {/* TODO [THEME]: theme stabilization 이후 구분선 + 테마 토글 재노출 예정 */}
-      {false && (
-        <>
-          {/* ── 구분선 ── */}
-          <div className="mx-3" style={{ borderTop: "1px solid var(--border)" }} />
+      {/* 테마 토글 — 사이드바 하단, 유저 프로필 위 (PR-Light-1: 재노출) */}
+      {/* ── 구분선 ── */}
+      <div className="mx-3" style={{ borderTop: "1px solid var(--border)" }} />
 
-          {/* ── 테마 토글 ── */}
-          <div className="px-3 pt-3 pb-2">
-            <button
-              onClick={toggle}
-              className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs font-medium transition-all w-full text-left"
-              style={{ color: "var(--text-muted)", borderLeft: "2px solid transparent" }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLElement).style.background = "var(--bg-item)";
-                (e.currentTarget as HTMLElement).style.color = "var(--text-primary)";
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLElement).style.background = "transparent";
-                (e.currentTarget as HTMLElement).style.color = "var(--text-muted)";
-              }}
-            >
-              {isDark ? (
-                <>
-                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <circle cx="12" cy="12" r="4"/>
-                    <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
-                  </svg>
-                  라이트 모드로 전환
-                </>
-              ) : (
-                <>
-                  <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                  </svg>
-                  다크 모드로 전환
-                </>
-              )}
-            </button>
-          </div>
-        </>
-      )}
+      {/* ── 테마 토글 ── */}
+      <div className="px-3 pt-3 pb-2">
+        <button
+          onClick={toggle}
+          className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-xs font-medium transition-all w-full text-left"
+          style={{ color: "var(--text-muted)", borderLeft: "2px solid transparent" }}
+          onMouseEnter={e => {
+            (e.currentTarget as HTMLElement).style.background = "var(--bg-item)";
+            (e.currentTarget as HTMLElement).style.color = "var(--text-primary)";
+          }}
+          onMouseLeave={e => {
+            (e.currentTarget as HTMLElement).style.background = "transparent";
+            (e.currentTarget as HTMLElement).style.color = "var(--text-muted)";
+          }}
+        >
+          {isDark ? (
+            <>
+              <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <circle cx="12" cy="12" r="4"/>
+                <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+              </svg>
+              라이트 모드로 전환
+            </>
+          ) : (
+            <>
+              <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+              </svg>
+              다크 모드로 전환
+            </>
+          )}
+        </button>
+      </div>
 
       {/* ── 유저 프로필 ── */}
       {user && (
