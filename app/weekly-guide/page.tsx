@@ -33,7 +33,7 @@ const WEEKLY_TEMPLATE = `NN주차 Weekly 공유사항
 - PM
   - MM/DD :
 
-- Design
+- PD
   - MM/DD :
 
 - BE
@@ -45,7 +45,7 @@ const WEEKLY_TEMPLATE = `NN주차 Weekly 공유사항
 - QA
   - MM/DD ~ MM/DD :
 
-- 운영
+- 배포/론치
   - MM/DD :
 
 ⚠️ 이슈
