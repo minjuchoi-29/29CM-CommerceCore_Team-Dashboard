@@ -11,12 +11,50 @@
  *   - grid layout (모바일에서 세로 스택)
  */
 import type { Metadata } from "next";
+import CopyTemplateButton from "./CopyTemplateButton";
 
 export const metadata: Metadata = {
   title: "Weekly 작성 가이드 — 29CM Commerce Core Dashboard",
   description:
     "Dashboard 일정은 Weekly 공유사항의 📅 일정 영역을 기준으로 자동 반영됩니다. 어디에 어떻게 작성해야 하는지 확인하세요.",
 };
+
+// ─── Weekly 작성 템플릿 ───────────────────────────────────────────────────────
+//
+// 사용자가 Jira Description 또는 Comment 에 그대로 붙여넣고 내용만 채우면
+// 되는 형태. Description 우선, Comment 는 "NN주차" prefix 로 아카이브.
+//
+// 이 상수는 <CopyTemplateButton> 로 clipboard 에 복사되며,
+// 아래 <pre> 안에서도 동일 값으로 렌더 → 화면과 클립보드가 항상 일치.
+const WEEKLY_TEMPLATE = `NN주차 Weekly 공유사항
+
+📅 일정
+
+- PM
+  - MM/DD :
+
+- Design
+  - MM/DD :
+
+- BE
+  - MM/DD :
+
+- FE
+  - MM/DD :
+
+- QA
+  - MM/DD ~ MM/DD :
+
+- 운영
+  - MM/DD :
+
+⚠️ 이슈
+
+-
+
+💬 공유사항
+
+- `;
 
 // ─── Sub-components ──────────────────────────────────────────────────────────
 
@@ -189,12 +227,16 @@ export default function WeeklyGuidePage() {
         <section className="mb-8">
           <SectionLabel>② 권장 작성 형식</SectionLabel>
           <Card>
-            <p
-              className="text-[11px] font-semibold mb-2"
-              style={{ color: "var(--text-primary)" }}
-            >
-              예시
-            </p>
+            {/* 예시 라벨 + 우측 상단 복사 버튼 */}
+            <div className="flex items-center justify-between gap-2 mb-2">
+              <p
+                className="text-[11px] font-semibold"
+                style={{ color: "var(--text-primary)" }}
+              >
+                예시
+              </p>
+              <CopyTemplateButton template={WEEKLY_TEMPLATE} />
+            </div>
             <pre
               className="text-xs leading-relaxed rounded-md p-3 overflow-x-auto"
               style={{
@@ -205,19 +247,7 @@ export default function WeeklyGuidePage() {
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
               }}
-            >{`Weekly 공유사항
-
-📅 일정
-- 6/15~6/28 QA
-- 6/29 대고객 런칭
-- 7/5 회고
-
-📝 진행 상황
-- QA 시나리오 작성 완료
-- 스테이징 배포 준비 중
-
-⚠ 이슈 / 리스크
-- 결제 API 응답 지연 이슈 확인 중`}</pre>
+            >{WEEKLY_TEMPLATE}</pre>
             <p
               className="text-[11px] mt-2"
               style={{ color: "var(--text-muted)", lineHeight: 1.6 }}
