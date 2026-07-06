@@ -16,6 +16,11 @@ const LINKS = [
         url: "https://wiki.team.musinsa.com/wiki/spaces/29PRODUCT/pages/448730075/2026+H1+Commerce+Core",
         icon: "🗺️",
       },
+      {
+        label: "2026 H2 Commerce Core",
+        url: "https://wiki.team.musinsa.com/wiki/spaces/29PRODUCT/pages/506792121/26-H2+29CM+Commerce+Core",
+        icon: "🗺️",
+      },
     ],
   },
   {
