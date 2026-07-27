@@ -1,9 +1,7 @@
 /**
  * WEEKLY_HEADER_RE — description 안의 "Weekly 공유사항" 헤더 인식.
  *
- * 본 테스트는 app/api/jira-weekly-source/route.ts 의 WEEKLY_HEADER_RE 를
- * 거울처럼 복제하여 정책 변화 / regression 을 unit 단위로 보호한다.
- * regex 가 변경되면 본 테스트와 route.ts 양쪽을 동시에 업데이트.
+ * production source helper를 직접 검증하여 route와 테스트의 drift를 막는다.
  *
  * 보호 invariants:
  *  - 기존 매칭 케이스 모두 보존 (numeric prefix / 무 prefix / 장식 chars)
@@ -14,9 +12,10 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-
-const WEEKLY_HEADER_RE =
-  /(?:^|\n)\s*[*🧭#[]*\s*(?:\d+\s*주차|이번주|금주|this\s*week|current\s*week)?\s*Weekly\s*공유\s*사항\s*\]?\s*[:\n]?/i;
+import {
+  WEEKLY_HEADER_RE,
+  extractLatestWeeklySection,
+} from "../lib/weekly-source";
 
 describe("WEEKLY_HEADER_RE — 기존 매칭 케이스 (v6.1 회귀 보호)", () => {
   it("'Weekly 공유사항' (prefix 없음) 매치", () => {
@@ -155,5 +154,35 @@ describe("WEEKLY_HEADER_RE — TM-2745 / TM-2756 운영 시나리오 reproductio
     // v6.0 (PR #46) 이 comment-source 자격을 부여한 marker 와 동일 형태.
     // description 에서도 numeric prefix 그대로 매치되어야 함.
     assert.ok(WEEKLY_HEADER_RE.test("24주차 Weekly 공유사항"));
+  });
+});
+
+describe("extractLatestWeeklySection — live description source", () => {
+  it("여러 Weekly 블록 중 시각적으로 마지막 블록을 선택", () => {
+    const result = extractLatestWeeklySection(
+      "20주차 Weekly 공유사항\n"
+      + "- QA: 5/10 완료\n\n"
+      + "21주차 Weekly 공유사항\n"
+      + "- QA: 5/17 진행중",
+    );
+
+    assert.equal(result.headerMatched, "21주차 Weekly 공유사항");
+    assert.equal(result.section, "- QA: 5/17 진행중");
+  });
+
+  it("숫자 주차 헤더를 sourceText에 보존", () => {
+    const result = extractLatestWeeklySection(
+      "프로젝트 개요\n\n24주차 Weekly 공유사항\n- 6/8 개발중",
+    );
+
+    assert.equal(result.sourceText, "24주차 Weekly 공유사항\n- 6/8 개발중");
+  });
+
+  it("운영 stop section 이후 내용은 제외", () => {
+    const result = extractLatestWeeklySection(
+      "24주차 Weekly 공유사항\n- 6/8 개발중\n활동:\n- 상태 변경",
+    );
+
+    assert.equal(result.section, "- 6/8 개발중");
   });
 });

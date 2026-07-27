@@ -1,9 +1,7 @@
 /**
  * v6 정책 검증 — comment-source 자격 (isWeeklyAutomationComment).
  *
- * 본 테스트는 app/api/jira-weekly-source/route.ts 의 자격 로직을 거울처럼 복제하여
- * 정책 변화 / regression 을 unit 단위로 보호한다. 로직이 변경되면 본 테스트와
- * route.ts 양쪽을 동시에 업데이트.
+ * production source helper를 직접 검증하여 route와 테스트의 drift를 막는다.
  *
  * 보호 invariants:
  *  - 자동 댓글 (Automation/Bot author) + "<NN>주차 Weekly 공유사항" 마커 → qualifies
@@ -15,29 +13,13 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-
-const WEEKLY_COMMENT_MARKER_RE = /\d+\s*주차\s*Weekly\s*공유사항/i;
-
-function isAutomationAuthor(name: string | undefined | null): boolean {
-  if (!name) return false;
-  const n = name.toLowerCase().trim();
-  if (n === "-" || n.length === 0) return false;
-  return (
-    n.includes("automation")
-    || /\bbot\b/.test(n)
-    || n.includes("atlassian")
-    || n.includes("자동 생성")
-    || n.includes("자동생성")
-  );
-}
-
-function isWeeklyAutomationComment(
-  authorName: string | undefined | null,
-  body: string,
-): boolean {
-  if (!isAutomationAuthor(authorName)) return false;
-  return WEEKLY_COMMENT_MARKER_RE.test(body);
-}
+import {
+  WEEKLY_COMMENT_MARKER_RE,
+  isAutomationAuthor,
+  isWeeklyAutomationComment,
+  selectLatestQualifyingComment,
+  type WeeklyCommentCandidate,
+} from "../lib/weekly-source";
 
 describe("isAutomationAuthor — 작성자 분류", () => {
   it("'Automation for Jira' → automation", () => {
@@ -202,5 +184,39 @@ describe("운영 사례 — TM-2745 / TM-2756 시나리오 reproduction", () => 
     const body = "24주차 Weekly 공유사항\n- 변경 항목";
     const qualifies = isWeeklyAutomationComment("Automation for Jira", body);
     assert.equal(qualifies, true, "v6: schedule sync 대상");
+  });
+});
+
+describe("selectLatestQualifyingComment — comment fallback", () => {
+  const comment = (
+    author: string,
+    text: string,
+    updated: string,
+  ): WeeklyCommentCandidate => ({
+    author,
+    text,
+    updated,
+    created: updated,
+    markers: ["주차_Weekly_공유사항"],
+    qualifiesForSync: isWeeklyAutomationComment(author, text),
+  });
+
+  it("최신 marker 댓글이 사람 작성이어도 그 다음 최신 bot 댓글을 선택", () => {
+    const human = comment("Minju Choi", "25주차 Weekly 공유사항", "2026-06-20");
+    const bot = comment("Automation for Jira", "24주차 Weekly 공유사항", "2026-06-19");
+
+    assert.equal(selectLatestQualifyingComment([human, bot]), bot);
+  });
+
+  it("자격 충족 bot 댓글 중 newest-first 첫 항목을 선택", () => {
+    const newest = comment("Automation for Jira", "25주차 Weekly 공유사항", "2026-06-20");
+    const older = comment("Jira Bot", "24주차 Weekly 공유사항", "2026-06-13");
+
+    assert.equal(selectLatestQualifyingComment([newest, older]), newest);
+  });
+
+  it("자격 충족 댓글이 없으면 null", () => {
+    const human = comment("Minju Choi", "25주차 Weekly 공유사항", "2026-06-20");
+    assert.equal(selectLatestQualifyingComment([human]), null);
   });
 });

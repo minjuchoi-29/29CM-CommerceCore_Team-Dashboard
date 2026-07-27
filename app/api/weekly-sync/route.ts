@@ -2,12 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { redis } from "@/lib/redis";
 import { parseWeekly } from "@/lib/weekly-parser";
 import { mergeWeeklySync, getRowAllKeys } from "@/lib/weekly-merge";
+import { RedisLockTimeoutError, withRedisLock } from "@/lib/redis-lock";
 import type {
-  WeeklyNote, UpdateCandidate, WeeklySyncMeta,
+  ParsedWeekly, WeeklyNote, UpdateCandidate, WeeklySyncMeta,
 } from "@/lib/weekly-types";
 import type { ExtendedSchedule } from "@/lib/weekly-merge";
 
 export const dynamic = "force-dynamic";
+const WEEKLY_SYNC_LOCK_KEY = "lock:cc-weekly-sync";
 
 // ─── GET: 특정 티켓의 weekly notes + update candidates ─────────
 export async function GET(req: NextRequest) {
@@ -26,24 +28,9 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// ─── POST: weekly sync ─────────────────────────────────────────
-// Body: { ticketKey: string, weeklyText: string, force?: boolean }
-export async function POST(request: Request) {
-  try {
-    const body = await request.json() as {
-      ticketKey: string;
-      weeklyText: string;
-      force?: boolean;
-    };
-    const { ticketKey, weeklyText } = body;
-    if (!ticketKey || !weeklyText) {
-      return NextResponse.json({ error: "ticketKey and weeklyText required" }, { status: 400 });
-    }
-
-    // 1. 파싱
-    const parsed = parseWeekly(weeklyText, ticketKey);
-
-    // 2. 기존 데이터 읽기 (?? 는 await 후 적용해야 타입이 좁혀짐)
+async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly) {
+  return withRedisLock(redis, WEEKLY_SYNC_LOCK_KEY, async () => {
+    // Shared JSON keys must be read and written while holding the same lock.
     const [rawSchedules, rawNotes, rawCandidates] = await Promise.all([
       redis.get<Record<string, unknown[]>>("cc-schedules"),
       redis.get<Record<string, WeeklyNote[]>>("cc-weekly-notes"),
@@ -102,19 +89,40 @@ export async function POST(request: Request) {
     };
     await redis.set("cc-weekly-sync-meta", allMeta);
 
-    return NextResponse.json({
+    return {
       ok: true,
       sourceWeek: parsed.sourceWeek,
       schedulesUpdated: result.updatedSchedules.length,
       notesTotal: result.newNotes.length,
-      newNotesAdded: result.updateCandidates.length > 0 ? result.updateCandidates.length : 0,
+      newNotesAdded: result.newNotes.length - existingNotes.length,
       updateCandidates: result.updateCandidates.length,
       staleCandidates: result.staleCandidates,
       isIdempotent: result.isIdempotent,
-    });
+    };
+  });
+}
+
+// ─── POST: weekly sync ─────────────────────────────────────────
+// Body: { ticketKey: string, weeklyText: string, force?: boolean }
+export async function POST(request: Request) {
+  try {
+    const body = await request.json() as {
+      ticketKey: string;
+      weeklyText: string;
+      force?: boolean;
+    };
+    const { ticketKey, weeklyText } = body;
+    if (!ticketKey || !weeklyText) {
+      return NextResponse.json({ error: "ticketKey and weeklyText required" }, { status: 400 });
+    }
+
+    const parsed = parseWeekly(weeklyText, ticketKey);
+    const result = await persistWeeklySync(ticketKey, parsed);
+    return NextResponse.json(result);
   } catch (e) {
     console.error("[weekly-sync POST]", e);
-    return NextResponse.json({ error: String(e) }, { status: 500 });
+    const status = e instanceof RedisLockTimeoutError ? 503 : 500;
+    return NextResponse.json({ error: String(e) }, { status });
   }
 }
 

@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { parseWeekly, parseWeekNumber } from "@/lib/weekly-parser";
 import { buildAstFromAdf, printAstTree } from "@/lib/weekly-ast";
 import type { WeeklyDetectedSource } from "@/lib/weekly-types";
+import {
+  extractLatestWeeklySection,
+  isWeeklyAutomationComment,
+  selectLatestQualifyingComment,
+  weeklyAdfToText,
+  type WeeklyAdfNode,
+  type WeeklyCommentCandidate,
+} from "@/lib/weekly-source";
 
 export const dynamic = "force-dynamic";
 
@@ -18,61 +26,6 @@ const FETCH_TIMEOUT_MS = 15_000;
 //
 // 이렇게 해야 jira-weekly-source → /api/weekly-sync → parseWeekly → AST traversal 흐름에서
 // parent phase context가 실제로 자식에게 propagate됨. 이 indent가 없으면 AST 도입의 효과 0.
-
-type AdfNode = {
-  type?: string;
-  text?: string;
-  content?: AdfNode[];
-  attrs?: Record<string, unknown>;
-};
-
-const BLOCK_TYPES = new Set([
-  "paragraph", "heading", "codeBlock", "blockquote",
-  "rule", "panel", "expand", "nestedExpand", "mediaSingle",
-]);
-
-function adfToText(node: AdfNode | null | undefined, typesSeen?: Set<string>, listDepth = 0): string {
-  if (!node) return "";
-  if (typesSeen && node.type) typesSeen.add(node.type);
-  if (node.type === "text") return node.text ?? "";
-  if (node.type === "hardBreak") return "\n";
-
-  // bulletList / orderedList: depth +1 하여 자식 listItem 처리
-  if (node.type === "bulletList" || node.type === "orderedList") {
-    return Array.isArray(node.content)
-      ? node.content.map(c => adfToText(c, typesSeen, listDepth + 1)).join("")
-      : "";
-  }
-
-  // listItem: 현재 listDepth를 기준으로 indent 적용
-  if (node.type === "listItem") {
-    // listItem 내부의 paragraph는 자체 줄바꿈을 붙이므로, 우리는 첫 줄에 prefix만 붙이고
-    // nested list (자식 bulletList)는 그 다음 줄들에 자기 indent를 입혀 출력함.
-    const inner = Array.isArray(node.content)
-      ? node.content.map(c => adfToText(c, typesSeen, listDepth)).join("")
-      : "";
-    const indent = "  ".repeat(Math.max(0, listDepth - 1));
-    const lines = inner.split("\n");
-    // 첫 비어있지 않은 line에 prefix를 붙이고, 그 뒤 line은 indent 유지 (자식 list가 이미 자기 indent를 가짐)
-    let firstNonEmpty = -1;
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim()) { firstNonEmpty = i; break; }
-    }
-    if (firstNonEmpty < 0) return "";
-    lines[firstNonEmpty] = `${indent}- ${lines[firstNonEmpty].trim()}`;
-    // trailing blank lines 제거 후 줄바꿈 1개
-    while (lines.length > 0 && !lines[lines.length - 1].trim()) lines.pop();
-    return lines.join("\n") + "\n";
-  }
-
-  const inner = Array.isArray(node.content)
-    ? node.content.map(c => adfToText(c, typesSeen, listDepth)).join("")
-    : "";
-
-  if (node.type === "tableRow") return inner.replace(/\n+/g, " | ") + "\n";
-  if (node.type && BLOCK_TYPES.has(node.type)) return inner + "\n";
-  return inner;
-}
 
 // ─── Marker 정의 ──────────────────────────────────────────────
 const MARKER_PATTERNS: Array<{ name: string; re: RegExp }> = [
@@ -109,30 +62,6 @@ function findMarkers(text: string): string[] {
 //
 //   기본 정렬은 이미 -created (최신순) → break 로 가장 최근 1건만 사용.
 
-const WEEKLY_COMMENT_MARKER_RE = /\d+\s*주차\s*Weekly\s*공유사항/i;
-
-function isAutomationAuthor(name: string | undefined | null): boolean {
-  if (!name) return false;
-  const n = name.toLowerCase().trim();
-  if (n === "-" || n.length === 0) return false;
-  return (
-    n.includes("automation")
-    || /\bbot\b/.test(n)
-    || n.includes("atlassian")
-    || n.includes("자동 생성")
-    || n.includes("자동생성")
-  );
-}
-
-/** 단일 comment 가 weekly automation archive 자격을 충족하는지 판정. */
-function isWeeklyAutomationComment(
-  authorName: string | undefined | null,
-  body: string,
-): boolean {
-  if (!isAutomationAuthor(authorName)) return false;
-  return WEEKLY_COMMENT_MARKER_RE.test(body);
-}
-
 // ─── description 내부 "Weekly 공유사항" 섹션 추출 ────────────────
 // 운영 약속:
 //   description 안에는 PRD/기대결과/링크 등 여러 섹션이 공존한다.
@@ -151,32 +80,6 @@ function isWeeklyAutomationComment(
 //   - "연결된 업무 항목" / "활동" / "Confluence 콘텐츠" / "Linked work items" / "Activity"
 //   - description EOF
 
-const WEEKLY_HEADER_RE =
-  /(?:^|\n)\s*[*🧭#[]*\s*(?:\d+\s*주차|이번주|금주|this\s*week|current\s*week)?\s*Weekly\s*공유\s*사항\s*\]?\s*[:\n]?/i;
-
-const WEEKLY_STOP_PATTERNS: RegExp[] = [
-  /\n\s*[*#]*\s*(?:연결된\s*업무\s*항목|활동|Confluence\s*콘텐츠|Linked\s*work\s*items|Activity)\s*[:\n]/i,
-  /\n\s*\[\s*(?:연결된\s*업무\s*항목|활동|Confluence\s*콘텐츠|Linked\s*work\s*items|Activity)\s*\]/i,
-];
-
-function extractWeeklySection(text: string): { section: string; headerMatched: string | null } {
-  const m = text.match(WEEKLY_HEADER_RE);
-  if (!m || m.index === undefined) return { section: "", headerMatched: null };
-
-  const headerMatched = m[0].trim();
-  const startIdx = m.index + m[0].length;
-  const after = text.slice(startIdx);
-
-  // 첫 stop pattern 매치 위치 찾음
-  let stopAt = after.length;
-  for (const stopRe of WEEKLY_STOP_PATTERNS) {
-    const sm = after.match(stopRe);
-    if (sm && sm.index !== undefined && sm.index < stopAt) stopAt = sm.index;
-  }
-
-  return { section: after.slice(0, stopAt).trim(), headerMatched };
-}
-
 // ─── Jira fetch helper ───────────────────────────────────────
 async function fetchWithTimeout(url: string, options: RequestInit): Promise<Response> {
   const controller = new AbortController();
@@ -190,7 +93,7 @@ async function fetchWithTimeout(url: string, options: RequestInit): Promise<Resp
 
 type JiraComment = {
   id: string;
-  body: AdfNode;
+  body: WeeklyAdfNode;
   created: string;
   updated: string;
   author?: { displayName?: string };
@@ -293,19 +196,25 @@ export async function GET(req: NextRequest) {
       );
     }
     const issueData = await issueRes.json();
-    const descAdf = (issueData.fields?.description ?? null) as AdfNode | null;
+    const descAdf = (issueData.fields?.description ?? null) as WeeklyAdfNode | null;
     const descAdfNodeTypes = new Set<string>();
-    const descText = adfToText(descAdf, descAdfNodeTypes).trim();
+    const descText = weeklyAdfToText(descAdf, descAdfNodeTypes).trim();
     const descUpdated = (issueData.fields?.updated as string | undefined) ?? "";
-    // description 내부 "Weekly 공유사항" 섹션 추출 (fallback용)
-    const { section: descWeeklySection, headerMatched: descWeeklyHeader } =
-      descText ? extractWeeklySection(descText) : { section: "", headerMatched: null };
+    // description 내부에서 시각적으로 마지막 Weekly 섹션을 live source로 선택.
+    // sourceText에는 헤더를 보존하여 "<NN>주차"가 parser까지 전달되게 한다.
+    const {
+      section: descWeeklySection,
+      headerMatched: descWeeklyHeader,
+      sourceText: descWeeklySourceText,
+    } = descText
+      ? extractLatestWeeklySection(descText)
+      : { section: "", headerMatched: null, sourceText: "" };
     const descMarkers = descWeeklySection ? findMarkers(descWeeklySection) : [];
 
     // ── 진짜 SoT: customfield_10625 = "Weekly 공유사항" ─────────
     // PM이 매주 직접 갱신하는 dedicated field. description/comment보다 우선.
-    const cfWeeklyAdf = (issueData.fields?.[WEEKLY_CUSTOM_FIELD_ID] ?? null) as AdfNode | null;
-    const cfWeeklyText = cfWeeklyAdf ? adfToText(cfWeeklyAdf).trim() : "";
+    const cfWeeklyAdf = (issueData.fields?.[WEEKLY_CUSTOM_FIELD_ID] ?? null) as WeeklyAdfNode | null;
+    const cfWeeklyText = cfWeeklyAdf ? weeklyAdfToText(cfWeeklyAdf).trim() : "";
     const cfWeeklyMarkers = cfWeeklyText ? findMarkers(cfWeeklyText) : [];
 
     // 2) comments — 최신순 (Jira는 기본 created asc, 최근 N개만 보려면 orderBy=-created)
@@ -339,17 +248,9 @@ export async function GET(req: NextRequest) {
     //
     //   추가된 list 는 응답의 `sources[]` 노출 (detection 후보 시각화) 전용이며,
     //   merge / candidate / stale 로직은 list 를 참조하지 않는다.
-    type MarkedComment = {
-      text: string;
-      updated: string;
-      created: string;
-      author: string;
-      markers: string[];
-      qualifiesForSync: boolean;
-    };
-    const markedCommentList: MarkedComment[] = [];
+    const markedCommentList: WeeklyCommentCandidate[] = [];
     for (const c of comments) {
-      const t = adfToText(c.body).trim();
+      const t = weeklyAdfToText(c.body).trim();
       if (!t) continue;
       const ms = findMarkers(t);
       if (ms.length === 0) continue;
@@ -364,8 +265,10 @@ export async function GET(req: NextRequest) {
         qualifiesForSync: qualifies,
       });
     }
-    // 기존 단일 pick 경로 복원 — 최신 marker comment 1건 (-created 정렬 → [0]).
-    const markedComment: MarkedComment | null = markedCommentList[0] ?? null;
+    // 진단에는 최신 marker 댓글을 보존하되, 실제 source는 newest-first 목록에서
+    // 처음 발견되는 "자격 충족 Automation 댓글"을 선택한다.
+    const latestMarkedComment: WeeklyCommentCandidate | null = markedCommentList[0] ?? null;
+    const markedComment = selectLatestQualifyingComment(markedCommentList);
 
     // ─── 우선순위 결정 (2026-05-29 정책 재확정 v5) ───────────────
     //
@@ -409,7 +312,7 @@ export async function GET(req: NextRequest) {
     // 1순위: description "Weekly 공유사항" 섹션 — LIVE operational truth
     const descCandidate: Pick | null = descWeeklySection
       ? {
-          text: descWeeklySection,
+          text: descWeeklySourceText,
           source: "description",
           sourceUpdatedAt: descUpdated,
           markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
@@ -458,12 +361,12 @@ export async function GET(req: NextRequest) {
     if (descWeeklySection) {
       detectedSources.push({
         source: "description",
-        sourceWeek: parseWeekNumber(descWeeklySection),
+        sourceWeek: parseWeekNumber(descWeeklySourceText),
         sourceUpdatedAt: descUpdated,
         policyReason: "description-first",
         markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
-        textLength: descWeeklySection.length,
-        textPreview: descWeeklySection.slice(0, 200),
+        textLength: descWeeklySourceText.length,
+        textPreview: descWeeklySourceText.slice(0, 200),
       });
     }
 
@@ -545,17 +448,18 @@ export async function GET(req: NextRequest) {
         descriptionMarkers: descMarkers,             // legacy 호환
         // ─── comment (Automation Bot archive — v6 schedule sync 대상) ───
         commentCount: comments.length,
-        markedCommentFound: !!markedComment,
-        markedCommentMarkers: markedComment?.markers ?? [],
-        markedCommentUpdated: markedComment?.updated ?? null,
-        markedCommentAuthor: markedComment?.author ?? null,
-        markedCommentLength: markedComment?.text.length ?? 0,
-        markedCommentPreview: markedComment?.text.slice(0, 200) ?? null,
+        markedCommentFound: !!latestMarkedComment,
+        markedCommentMarkers: latestMarkedComment?.markers ?? [],
+        markedCommentUpdated: latestMarkedComment?.updated ?? null,
+        markedCommentAuthor: latestMarkedComment?.author ?? null,
+        markedCommentLength: latestMarkedComment?.text.length ?? 0,
+        markedCommentPreview: latestMarkedComment?.text.slice(0, 200) ?? null,
         // v6: schedule sync 자격 충족 여부. false 이면 markedComment 가 있어도 pick 미반영.
-        markedCommentQualifiesForSync: markedComment?.qualifiesForSync ?? false,
+        markedCommentQualifiesForSync: latestMarkedComment?.qualifiesForSync ?? false,
+        selectedAutomationCommentUpdated: markedComment?.updated ?? null,
         // 디버깅: 모든 comment 요약 (auto-archive vs human 구분, marker 매칭 여부)
         allComments: comments.map(c => {
-          const t = adfToText(c.body).trim();
+          const t = weeklyAdfToText(c.body).trim();
           return {
             created: c.created,
             updated: c.updated,
