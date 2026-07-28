@@ -142,3 +142,24 @@ export function selectLatestQualifyingComment<T extends WeeklyCommentCandidate>(
 ): T | null {
   return comments.find((comment) => comment.qualifiesForSync) ?? null;
 }
+
+export type WeeklySourceCandidate = {
+  source: "customfield" | "description" | "comment";
+};
+
+/**
+ * Current Weekly source policy.
+ *
+ * Jira's dedicated "Weekly 공유사항" field is the live source of truth.
+ * Description sections are retained for legacy tickets, while Automation
+ * comments are archived Weekly history and are used only as a fallback.
+ */
+export function selectWeeklySource<T extends WeeklySourceCandidate>(
+  candidates: {
+    customfield: T | null;
+    description: T | null;
+    comment: T | null;
+  },
+): T | null {
+  return candidates.customfield ?? candidates.description ?? candidates.comment;
+}

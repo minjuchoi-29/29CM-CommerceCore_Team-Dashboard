@@ -232,21 +232,21 @@ export interface WeeklySyncTraceItem {
  * PR-Multi-1 (2026-06-17) — Weekly Source 후보 시각화 전용 타입.
  *
  * `/api/jira-weekly-source` 가 단일 pick 외에도 detection 단계에서 발견한
- * description / qualifying comment(s) 후보를 모두 노출하기 위해 사용.
+ * customfield / description / qualifying comment(s) 후보를 모두 노출하기 위해 사용.
  *
  * 본 타입은 **표시 전용**. merge / candidate / stale 로직은 본 필드를
  * 참조하지 않음 (single-source pick 정책 유지).
  */
 export interface WeeklyDetectedSource {
-  /** "description" | "comment" — single-source pick 의 source 와 동일 어휘 */
-  source: "description" | "comment";
+  /** single-source pick 의 source 와 동일 어휘 */
+  source: "customfield" | "description" | "comment";
   /** "25주차" 형태. 미상정 시 "". description 의 prefix-only ("이번주" 등) 는
    *  parseWeekNumber 의 현재 주차 fallback 으로 채워짐. */
   sourceWeek: string;
-  /** description 의 issue.updated 또는 comment 의 updated. */
+  /** customfield/description 의 issue.updated 또는 comment 의 updated. */
   sourceUpdatedAt: string;
-  /** "description-first" | "comment-automation" — pick 정책의 reason 어휘 재사용 */
-  policyReason: "description-first" | "comment-automation";
+  /** pick 정책의 reason 어휘 재사용 */
+  policyReason: "customfield-first" | "description-legacy" | "comment-automation";
   /** 본문 안에서 감지된 marker 들 (예: ["weekly_공유사항_section"], ["24주차 Weekly 공유사항"]) */
   markers: string[];
   /** 본문 전체 길이 (자) — 진단용 */

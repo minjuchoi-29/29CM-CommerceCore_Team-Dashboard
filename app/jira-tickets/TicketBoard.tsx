@@ -29,6 +29,7 @@ import {
 } from "@/lib/priorities";
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
 import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/search-target";
+import { compactSchedulesForDisplay } from "@/lib/schedule-display";
 import {
   type TrackState,
   TRACK_STATES,
@@ -484,6 +485,8 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   const [showPlaceholders, setShowPlaceholders] = useState(false);
   // 담당자 hover 강조 — 같은 person의 다른 row에 subtle highlight.
   const [hoveredPerson, setHoveredPerson] = useState<string | null>(null);
+  // 현재 판단에 필요한 일정만 기본 노출. 완료·대체된 일정은 이력으로 접는다.
+  const [showScheduleHistory, setShowScheduleHistory] = useState(false);
   // (구) showCompleted state는 2차 보정에서 제거.
   //   사유: 완료 일정 숨김이 기본일 때 진행중 티켓(TM-1241 등)이 "확정 일정 없음"으로
   //   잘못 보이는 issue. 완료 일정은 항상 표시하되 시각적으로 톤다운(opacity)으로 처리.
@@ -555,10 +558,18 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
 
   // Gantt 본문 = cleanup 자격 미달 row 제외.
   const qualifiedRoles = (roles ?? []).filter(r => !isCleanupCandidate(r).isCleanup);
+  const compactedRoles = compactSchedulesForDisplay(
+    qualifiedRoles.map(row => ({ ...row, phase: row.phase ?? inferPhase(row.role) })),
+    TODAY_MS,
+  );
+  const showHistory = !!ticketDone || showScheduleHistory;
+  const displayRoles = showHistory
+    ? [...compactedRoles.current, ...compactedRoles.history]
+    : compactedRoles.current;
 
   // 정렬 정책 (2026-06-01): 시작일 asc → PHASE_ORDER → resourceTeam → end asc.
   //   시간 흐름을 1차 키로. 같은 날짜의 milestone(Kick-Off)과 work(기획) 안정 정렬은 PHASE_ORDER로 처리.
-  const sortedRoles = [...qualifiedRoles].sort((a, b) => {
+  const sortedRoles = [...displayRoles].sort((a, b) => {
     const aS = a.start ? new Date(a.start).getTime() : Infinity;
     const bS = b.start ? new Date(b.start).getTime() : Infinity;
     if (aS !== bS) return aS - bS;
@@ -592,6 +603,13 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   // Placeholder 분리 — module-level isPlaceholderSchedule 사용 (PlaceholderSummary와 공유)
   const confirmedRoles   = dedupedRoles.filter(r => !isPlaceholderSchedule(r));
   const placeholderRoles = dedupedRoles.filter(isPlaceholderSchedule);
+  const overdueCount = confirmedRoles.filter(r => {
+    const date = r.end || r.start;
+    if (!date || r.status === "완료") return false;
+    const phase = r.phase ?? inferPhase(r.role) ?? "기타";
+    return new Date(`${date}T23:59:59`).getTime() < TODAY_MS
+      && !(ticketStatus && isTicketPastRolePhase(ticketStatus, phase));
+  }).length;
 
   // 외부에서 highlightRowKey가 들어오면 placeholder 섹션 자동 펼침
   //   (Summary chip 클릭 → 해당 row 강조까지 한 동작으로 완결)
@@ -629,6 +647,28 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
 
   return (
     <div className="mt-3">
+      {(compactedRoles.history.length > 0 || overdueCount > 0) && (
+        <div
+          className="mb-3 flex items-center gap-2 flex-wrap rounded-lg px-2.5 py-2 text-[11px]"
+          style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
+        >
+          {overdueCount > 0 && (
+            <span className="font-semibold" style={{ color: "#ef4444" }}>
+              기한 경과 {overdueCount}건 · 상태 확인 필요
+            </span>
+          )}
+          {compactedRoles.history.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setShowScheduleHistory(value => !value)}
+              className="ml-auto rounded px-2 py-1 font-medium transition-colors"
+              style={{ color: "#818cf8", background: "rgba(129,140,248,0.10)" }}
+            >
+              {showHistory ? "현재 일정만 보기" : `과거 일정 ${compactedRoles.history.length}건 보기`}
+            </button>
+          )}
+        </div>
+      )}
       {/* 월 헤더 */}
       <div className="flex mb-0.5">
         <div className="w-48 shrink-0" />
@@ -896,7 +936,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                   <span className={`ml-2 text-xs w-16 shrink-0 whitespace-nowrap ${r.status === "완료" ? "text-green-500" : r.status === "진행중" ? "text-blue-500" : r.status === "미정" ? "text-orange-400" : r.status === "확인필요" ? "text-purple-500" : "text-gray-400"}`}>
                     {r.status}
                   </span>
-                  {overdue && (
+                  {overdue && overdueCount <= 1 && (
                     <span className="relative ml-1 shrink-0 group">
                       <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-red-100 text-red-600 border border-red-200 cursor-default">기한 초과</span>
                       <span className="pointer-events-none absolute bottom-full right-0 mb-1.5 w-40 rounded-lg bg-gray-900 text-white text-xs px-2.5 py-1.5 opacity-0 group-hover:opacity-100 transition-opacity duration-150 z-50 whitespace-normal text-center">
@@ -904,6 +944,12 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                         <span className="absolute top-full right-3 border-4 border-transparent border-t-gray-900" />
                       </span>
                     </span>
+                  )}
+                  {overdue && overdueCount > 1 && (
+                    <span
+                      className="ml-1 h-2 w-2 shrink-0 rounded-full bg-red-500"
+                      title="기한이 지나 상태 확인이 필요합니다"
+                    />
                   )}
                   {!overdue && notStarted && (
                     <span className="relative ml-1 shrink-0 group">
@@ -939,9 +985,13 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
                 ) : r.start && r.end && (
                   <p className="inline-flex items-center gap-1 text-[11px] whitespace-nowrap mt-0.5 px-1.5 py-0.5 rounded" style={{ background: "var(--bg-overlay)", color: "var(--text-muted)", border: "1px solid var(--border)" }}>
                     <span>{formatDateWithDay(r.start)}</span>
-                    <span style={{ color: "var(--text-subtle)" }}>~</span>
-                    <span>{formatDateWithDay(r.end)}</span>
-                    {(() => {
+                    {r.start !== r.end && (
+                      <>
+                        <span style={{ color: "var(--text-subtle)" }}>~</span>
+                        <span>{formatDateWithDay(r.end)}</span>
+                      </>
+                    )}
+                    {r.start !== r.end && (() => {
                       const total = calcWorkingDays(r.start, r.end);
                       const vac = r.vacationDays ?? 0;
                       const net = Math.max(0, total - vac);
@@ -1748,6 +1798,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   //   item-level detail / source preview 양쪽을 별도 토글로 분리해 사용자 부담 ↓
   const [syncTraceExpanded,   setSyncTraceExpanded]   = useState<Record<string, boolean>>({});
   const [syncSourceExpanded,  setSyncSourceExpanded]  = useState<Record<string, boolean>>({});
+  const [syncDiagnosticsExpanded, setSyncDiagnosticsExpanded] = useState<Record<string, boolean>>({});
   const [updateCandidates, setUpdateCandidates] = useState<UpdateCandidate[]>([]);
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
   const [changesMode,           setChangesMode]           = useState(false);
@@ -2151,10 +2202,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 detectedSources: Array.isArray(src.sources) ? src.sources as WeeklyDetectedSource[] : undefined,
               };
 
-              // 정책 v6 (2026-06-16): description Weekly 섹션 우선, 없으면 Automation Bot
-              // 댓글도 schedule sync 대상. /api/jira-weekly-source 가 이미
-              //   - description-first (LIVE)
-              //   - Bot 작성자 + "<NN>주차 Weekly 공유사항" 마커 매칭 + 최신 1건
+              // 정책 (2026-07-28): dedicated Weekly field 우선, 없으면 description,
+              // 그것도 없으면 Automation Bot archive 댓글을 schedule sync 대상으로 사용.
+              // /api/jira-weekly-source 가 이미
+              //   - customfield-first (현재 Weekly)
+              //   - description legacy fallback
+              //   - Bot 작성자 + "<NN>주차 Weekly 공유사항" 마커 매칭 + 최신 1건 fallback
               // 자격만 통과한 source 만 src.text 로 노출. src.source === "comment" 도 진행.
               // 중복 schedule 방어는 mergeWeeklySync 의 idempotent path 가 담당.
               if (src.source === "comment") {
@@ -2778,8 +2831,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
             이 ticket 에 대해 Weekly Sync 가 실행된 기록이 없습니다.
-            상단의 [Jira Sync] 버튼을 눌러주세요. Jira description 의 Weekly 섹션 또는
-            Automation Bot 의 댓글 (<code>{`<NN>주차 Weekly 공유사항`}</code>) 이 있으면 자동 인식됩니다.
+            상단의 [Jira Sync] 버튼을 눌러주세요. Jira의 Weekly 공유사항 필드,
+            description Weekly 섹션 또는 Automation Bot 댓글(<code>{`<NN>주차 Weekly 공유사항`}</code>)을 자동 인식합니다.
           </p>
         </div>
       );
@@ -2817,6 +2870,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const itemCount = items.length;
     const detailOpen = !!syncTraceExpanded[ticketKey];
     const sourceOpen = !!syncSourceExpanded[ticketKey];
+    const diagnosticsOpen = !!syncDiagnosticsExpanded[ticketKey];
+    const appliedCount = (summary?.appended ?? 0) + (summary?.updated ?? 0);
+    const sourceUserLabel =
+      src?.source === "description" ? "Jira 본문" :
+      src?.source === "comment" ? "오토봇 댓글" :
+      src?.source === "customfield" ? "Jira 필드" :
+      "출처 미확인";
+    const hasSyncWarning = itemCount === 0 || !!meta?.lastSkipReason;
 
     // outcome chip 색상
     const OUTCOME_STYLE: Record<string, { bg: string; color: string; label: string }> = {
@@ -2829,28 +2890,51 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
     return (
       <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
-        {/* Header — 가장 큰 정보 (lastSyncAt) */}
-        <div className="px-3 py-2 flex items-center gap-2 flex-wrap" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
-          <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Sync 결과</span>
+        {/* 기본 화면은 업무 판단에 필요한 한 줄만 노출한다. */}
+        <div className="px-3 py-2.5 flex items-center gap-2 flex-wrap" style={{ background: "var(--bg-overlay)" }}>
+          <span aria-hidden style={{ color: hasSyncWarning ? "#f59e0b" : "#10b981" }}>{hasSyncWarning ? "⚠" : "✓"}</span>
+          <span className="text-[11.5px] font-semibold" style={{ color: "var(--text-secondary)" }}>Weekly 동기화</span>
           {meta?.lastSourceWeek && (
             <span className="text-[10px] px-1.5 py-0.5 rounded font-mono" style={{ background: "rgba(129,140,248,0.12)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.25)" }}>
               {meta.lastSourceWeek}
             </span>
           )}
-          {src?.source && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
-              source: {sourceLabel}
-            </span>
-          )}
+          <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+            {sourceUserLabel} · 일정 {itemCount}건 인식
+            {appliedCount > 0 ? ` · ${appliedCount}건 반영` : ""}
+          </span>
           {meta?.lastSyncAt && (
-            <span className="ml-auto text-[10.5px]" style={{ color: "var(--text-muted)" }}>
-              <span className="font-mono" style={{ color: "var(--text-secondary)" }}>{fmtAbs(meta.lastSyncAt)}</span>
-              <span className="ml-1.5">· {fmtRel(meta.lastSyncAt)}</span>
+            <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>
+              · {fmtRel(meta.lastSyncAt)}
             </span>
           )}
+          <div className="ml-auto flex items-center gap-1">
+            {src?.text && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSyncDiagnosticsExpanded(prev => ({ ...prev, [ticketKey]: true }));
+                  setSyncSourceExpanded(prev => ({ ...prev, [ticketKey]: !sourceOpen }));
+                }}
+                className="rounded px-2 py-1 text-[10.5px] font-medium"
+                style={{ color: "#818cf8", background: "rgba(129,140,248,0.10)" }}
+              >
+                {sourceOpen && diagnosticsOpen ? "원문 닫기" : "원문 보기"}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setSyncDiagnosticsExpanded(prev => ({ ...prev, [ticketKey]: !prev[ticketKey] }))}
+              className="rounded px-2 py-1 text-[10.5px] font-medium"
+              style={{ color: "var(--text-muted)", background: "var(--bg-canvas)" }}
+            >
+              {diagnosticsOpen ? "진단 닫기" : "진단 보기"}
+            </button>
+          </div>
         </div>
 
-        <div className="px-3 py-2.5 space-y-3">
+        {diagnosticsOpen && (
+        <div className="px-3 py-2.5 space-y-3" style={{ borderTop: "1px solid var(--border-2)" }}>
           {/* Parser 결과 (item count) */}
           {/* PR-Sync-Visibility: stale lastSyncAt 진단.
                 lastAttemptAt 가 lastSyncAt 보다 최근이고 skip 사유 있으면,
@@ -2985,9 +3069,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <div className="space-y-1">
                 {src.detectedSources.map((ds, idx) => {
                   const isPicked = ds.source === src.source && ds.sourceUpdatedAt === src.sourceUpdatedAt;
-                  const sourceColor = ds.source === "description" ? "#34d399" : "#60a5fa";
-                  const sourceBg    = ds.source === "description" ? "rgba(16,185,129,0.12)" : "rgba(59,130,246,0.12)";
-                  const sourceLabelText = ds.source === "description" ? "Description" : "Comment";
+                  const sourceColor =
+                    ds.source === "customfield" ? "#a78bfa" :
+                    ds.source === "description" ? "#34d399" :
+                    "#60a5fa";
+                  const sourceBg =
+                    ds.source === "customfield" ? "rgba(167,139,250,0.12)" :
+                    ds.source === "description" ? "rgba(16,185,129,0.12)" :
+                    "rgba(59,130,246,0.12)";
+                  const sourceLabelText =
+                    ds.source === "customfield" ? "현재 Weekly" :
+                    ds.source === "description" ? "Description" :
+                    "지난 Weekly 댓글";
                   return (
                     <div
                       key={`${ds.source}-${ds.sourceUpdatedAt}-${idx}`}
@@ -3034,7 +3127,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 })}
               </div>
               <p className="mt-1.5 text-[10px]" style={{ color: "var(--text-subtle)" }}>
-                현재 정책: description 이 있으면 description 1건 선택, 없으면 Bot 댓글 중 최신 1건. 후보 노출은 진단용.
+                현재 정책: Weekly 공유사항 필드 우선 → description fallback → 최신 Bot 댓글 fallback. 지난 댓글은 이력 후보로 보존됩니다.
               </p>
             </div>
           )}
@@ -3085,6 +3178,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </div>
           )}
         </div>
+        )}
       </div>
     );
   }

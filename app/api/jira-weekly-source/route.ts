@@ -6,6 +6,7 @@ import {
   extractLatestWeeklySection,
   isWeeklyAutomationComment,
   selectLatestQualifyingComment,
+  selectWeeklySource,
   weeklyAdfToText,
   type WeeklyAdfNode,
   type WeeklyCommentCandidate,
@@ -179,9 +180,9 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    // 1) description + updated + customfield_10625 (참고용만 — v5부터 resolution에서 제외)
+    // 1) description + updated + customfield_10625
     //    customfield_10625 = "Weekly 공유사항" (29CM Jira).
-    //    실운영에서 거의 채워지지 않음 → debug 확인용으로만 fetch.
+    //    Jira 화면에서 description과 별도로 노출되는 현재 Weekly 전용 필드.
     const WEEKLY_CUSTOM_FIELD_ID = "customfield_10625";
     const WEEKLY_CUSTOM_FIELD_NAME = "Weekly 공유사항";
     const issueUrl =
@@ -270,28 +271,18 @@ export async function GET(req: NextRequest) {
     const latestMarkedComment: WeeklyCommentCandidate | null = markedCommentList[0] ?? null;
     const markedComment = selectLatestQualifyingComment(markedCommentList);
 
-    // ─── 우선순위 결정 (2026-05-29 정책 재확정 v5) ───────────────
+    // ─── 우선순위 결정 (2026-07-28 실제 Jira 화면 재검증) ─────────
     //
-    // [운영 흐름 — v5 실제 운영 기준]
-    //   description "Weekly 공유사항" 섹션          = LIVE operational truth (1순위)
-    //                                               PM이 description 안에 직접 적는 경우, 항상 latest operational state.
-    //   Automation for Jira "nn주차 Weekly 공유사항" 댓글 = 실제 운영 SoT (2순위)
-    //                                               description Weekly가 없을 때 가장 최신 주차 댓글을 선택.
-    //   customfield_10625 ("Weekly 공유사항")        = 참고용만 — source resolution에 사용 안 함
-    //                                               실운영에서 거의 사용되지 않거나 비어있는 경우가 많음.
-    //                                               debug 응답에서 확인 가능하나 pick에 포함되지 않음.
+    // [운영 흐름]
+    //   customfield_10625 ("Weekly 공유사항")        = 현재 Weekly (1순위)
+    //   description "Weekly 공유사항" 섹션           = legacy live Weekly (2순위)
+    //   Automation "nn주차 Weekly 공유사항" 댓글     = 지난 Weekly archive (3순위)
     //
-    // [선택 정책 — 우선순위 (descCandidate ?? commentCandidate)]
-    //   1) description "Weekly 공유사항" 섹션 있음 → description-first
-    //   2) latest Automation "nn주차 Weekly 공유사항" 댓글 있음 → comment-fallback
-    //   3) 모두 없음 → null
-    //
-    // [v4 → v5 변경 사유]
-    //   customfield_10625는 실제 운영에서 거의 채워지지 않음 (PM 확인).
-    //   따라서 customfield를 2순위로 두면 description도 없고 comment도 있는 티켓
-    //   (예: TM-3032 — 20/21/22주차 댓글 존재, customfield=null)에서
-    //   올바른 댓글을 선택하지 못하는 문제가 발생.
-    //   v5에서는 comment가 2순위 — customfield는 resolution chain에서 완전히 제외.
+    // [선택 정책]
+    //   1) dedicated Weekly field 있음 → customfield-first
+    //   2) description Weekly 섹션 있음 → description legacy fallback
+    //   3) latest Automation Weekly 댓글 있음 → archived comment fallback
+    //   4) 모두 없음 → null
     //
     // [중요 운영 약속 — v6 (2026-06-16)]
     //   - PRD 본문은 schedule/note 추출 대상 아님 (description 안의 "Weekly 공유사항" 섹션만).
@@ -303,24 +294,36 @@ export async function GET(req: NextRequest) {
     //     생성 방어. 자격 미달 comment 는 commentCandidate=null 로 분류 — schedule sync 미발생.
     type Pick = {
       text: string;
-      source: "description" | "comment";
+      source: "customfield" | "description" | "comment";
       sourceUpdatedAt: string;
       markers: string[];
-      policyReason: "description-first" | "comment-automation";
+      policyReason: "customfield-first" | "description-legacy" | "comment-automation";
     };
 
-    // 1순위: description "Weekly 공유사항" 섹션 — LIVE operational truth
+    // 1순위: Jira dedicated "Weekly 공유사항" field — 현재 operational truth.
+    // 필드 label 자체가 Weekly marker이므로 내부에 Weekly 헤더가 없어도 유효하다.
+    const customfieldCandidate: Pick | null = cfWeeklyText
+      ? {
+          text: cfWeeklyText,
+          source: "customfield",
+          sourceUpdatedAt: descUpdated,
+          markers: cfWeeklyMarkers.length > 0 ? cfWeeklyMarkers : ["weekly_공유사항_field"],
+          policyReason: "customfield-first",
+        }
+      : null;
+
+    // 2순위: description "Weekly 공유사항" 섹션 — legacy live source
     const descCandidate: Pick | null = descWeeklySection
       ? {
           text: descWeeklySourceText,
           source: "description",
           sourceUpdatedAt: descUpdated,
           markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
-          policyReason: "description-first",
+          policyReason: "description-legacy",
         }
       : null;
 
-    // 2순위: Automation Bot 의 "<NN>주차 Weekly 공유사항" 댓글
+    // 3순위: Automation Bot 의 "<NN>주차 Weekly 공유사항" archive 댓글
     //   - 작성자 = Automation / Bot 일 때만 schedule sync 대상.
     //   - 사람이 작성한 댓글이 marker 만 우연히 매칭하는 경우는 commentCandidate=null.
     //   - 자격 미달 comment 도 markedComment 자체는 보존 (debug 응답에 노출 — 운영 진단용).
@@ -335,11 +338,11 @@ export async function GET(req: NextRequest) {
           }
         : null;
 
-    // customfield_10625 — 참고용만 (v5: resolution chain에서 제외)
-    // 실운영에서 거의 채워지지 않으므로 source pick에 포함하지 않음.
-
-    // 최종 우선순위 (v6): description LIVE → comment (Automation 최신 주차, schedule sync 대상)
-    const pick: Pick | null = descCandidate ?? commentCandidate;
+    const pick: Pick | null = selectWeeklySource({
+      customfield: customfieldCandidate,
+      description: descCandidate,
+      comment: commentCandidate,
+    });
 
     // ─── PR-Multi-1 (2026-06-17): detection 단계의 모든 source 후보 노출 ──
     //
@@ -348,8 +351,9 @@ export async function GET(req: NextRequest) {
     // 코드/디버그 없이 self-diagnose 할 수 있도록 detection 결과 자체를 노출.
     //
     // 포함 대상:
-    //   1) description 의 "Weekly 공유사항" 섹션 (descWeeklySection 이 non-empty)
-    //   2) Automation Bot 자격 충족 comment 전체 (markedCommentList 의 qualifiesForSync=true)
+    //   1) dedicated "Weekly 공유사항" field
+    //   2) description 의 legacy "Weekly 공유사항" 섹션
+    //   3) Automation Bot 자격 충족 comment 전체
     //
     // qualifies=false comment (marker 만 우연 매칭한 인간 작성자 댓글) 는 의도적으로 제외.
     //   debug.allComments / debug.markedCommentQualifiesForSync 에서 확인 가능.
@@ -358,12 +362,24 @@ export async function GET(req: NextRequest) {
     //   숫자 추출 실패시 그 자리에 그대로 (stable sort).
     const detectedSources: WeeklyDetectedSource[] = [];
 
+    if (cfWeeklyText) {
+      detectedSources.push({
+        source: "customfield",
+        sourceWeek: parseWeekNumber(cfWeeklyText),
+        sourceUpdatedAt: descUpdated,
+        policyReason: "customfield-first",
+        markers: cfWeeklyMarkers.length > 0 ? cfWeeklyMarkers : ["weekly_공유사항_field"],
+        textLength: cfWeeklyText.length,
+        textPreview: cfWeeklyText.slice(0, 200),
+      });
+    }
+
     if (descWeeklySection) {
       detectedSources.push({
         source: "description",
         sourceWeek: parseWeekNumber(descWeeklySourceText),
         sourceUpdatedAt: descUpdated,
-        policyReason: "description-first",
+        policyReason: "description-legacy",
         markers: descMarkers.length > 0 ? descMarkers : ["weekly_공유사항_section"],
         textLength: descWeeklySourceText.length,
         textPreview: descWeeklySourceText.slice(0, 200),
@@ -416,12 +432,11 @@ export async function GET(req: NextRequest) {
       markers: pick?.markers ?? [],
       parsed,
       parseSummary,
-      // PR-Multi-1: detection 단계의 모든 source 후보 (description + qualifying comments).
+      // detection 단계의 모든 source 후보 (current field + legacy description + archived comments).
       // 단일 pick 정책은 무변경 — 본 필드는 UI 의 "Detected Sources" 노출 전용.
       sources: detectedSources,
       debug: {
-        // ─── customfield_10625 = "Weekly 공유사항" (참고용 — v5 resolution에서 제외) ───
-        // 실운영에서 거의 비어있음. source pick 에 사용되지 않으며 debug 확인 전용.
+        // ─── customfield_10625 = "Weekly 공유사항" (현재 Weekly SoT) ───
         weeklyCustomFieldId: WEEKLY_CUSTOM_FIELD_ID,
         weeklyCustomFieldName: WEEKLY_CUSTOM_FIELD_NAME,
         weeklyCustomFieldHasValue: !!cfWeeklyText,
@@ -469,13 +484,13 @@ export async function GET(req: NextRequest) {
             preview: t.slice(0, 150),
           };
         }),
-        // ─── 운영 정책 명시 (v5) ───
+        // ─── 운영 정책 명시 ───
         policyDescription:
-          "[v6 정책 2026-06-16] description Weekly 섹션 → 최우선. " +
-          "없으면 Automation Bot 의 최신 '<NN>주차 Weekly 공유사항' 댓글 사용 — " +
-          "schedule sync 대상 (이전 v5 의 comment-only skip 폐기). " +
+          "[2026-07-28 정책] customfield_10625 현재 Weekly → 최우선. " +
+          "없으면 description Weekly 섹션, 그것도 없으면 Automation Bot 의 최신 " +
+          "'<NN>주차 Weekly 공유사항' archive 댓글을 사용. " +
           "사람이 작성한 댓글 + marker 만 우연 매칭은 markedCommentQualifiesForSync=false 로 분류. " +
-          "customfield_10625는 참고용만 — source resolution에 사용 안 함.",
+          "감지된 archive 댓글은 sources[]에 지난 Weekly 후보로 보존.",
       },
     });
   } catch (e) {
