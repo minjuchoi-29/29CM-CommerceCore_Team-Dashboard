@@ -146,6 +146,12 @@ export type WeeklyReplayCandidate = {
   created?: string;
 };
 
+export const WEEKLY_SYNC_PARSER_VERSION = "schedule-v3";
+
+export function versionWeeklySourceId(sourceId: string): string {
+  return `${WEEKLY_SYNC_PARSER_VERSION}:${sourceId}`;
+}
+
 /** 과거 Automation 댓글은 오래된 순서로, 현재 live Weekly는 항상 마지막에 적용한다. */
 export function buildWeeklyReplaySources(
   comments: WeeklyReplayCandidate[],

@@ -237,6 +237,8 @@ export function mergeWeeklySync(
         phase: item.phase,
         resourceTeam: item.resourceTeam ?? null,
         statusHistory: [],
+        archivedAt: undefined,
+        archiveReason: undefined,
       };
       scheduleMap.set(key, newRow);
       traceEntry.outcome = "appended";
@@ -296,10 +298,10 @@ export function mergeWeeklySync(
       if (!sameStatus && item.status !== "확인필요") conflicts.push({ field: "status", oldV: existing.status, newV: toStorageStatus(newStatus) });
       if (!samePerson && item.assignee) conflicts.push({ field: "person", oldV: existing.person, newV: newPerson });
 
-      // Jira Weekly가 만든 행은 한 번의 Weekly 수정에서 날짜·상태가 함께 바뀌어도
-      // 하나의 원자적 최신화로 본다. 수동/가져온/확정/잠금 행은 계속 보호한다.
-      const autoApply = !isLocked && !isManualProtected
-        && (existing.source === "jira_weekly" || conflicts.length <= 1);
+      // Weekly가 관리할 수 있는 일정은 날짜·상태·담당자가 함께 바뀌어도
+      // 하나의 최신화로 즉시 반영한다. 과거 자동 일정(source 없음/legacy 포함)도
+      // 승인 큐에 남기지 않는다. 수동/가져온/확정/잠금 행만 계속 보호한다.
+      const autoApply = !isLocked && !isManualProtected;
       traceEntry.conflictCount = conflicts.length;
 
       for (const c of conflicts) {
@@ -333,6 +335,8 @@ export function mergeWeeklySync(
           statusHistory,
           stableTaskId: existing.stableTaskId ?? key,
           mergeKey: existing.mergeKey ?? buildMergeKey(ticketKey, existing.role),
+          archivedAt: undefined,
+          archiveReason: undefined,
         };
         // manual row의 source는 절대 jira_weekly로 변환하지 않음 (위에서 autoApply=false라 이 분기 진입 자체 안 함, 방어 코드)
         if ((existing.source === "legacy" || existing.source === undefined) && canAutoApplyToRow(existing)) {
@@ -353,6 +357,24 @@ export function mergeWeeklySync(
         traceEntry.outcome = isManualProtected ? "manual_guard" : "candidates_only";
       }
       mergeTrace.push(traceEntry);
+    }
+  }
+
+  // 같은 주차를 새 파서 정책으로 재처리했을 때 더 이상 일정으로 분류되지 않는
+  // 자동 행만 이력화한다. 다른 주차에서 단순히 누락된 행은 보존한다.
+  for (const [key, row] of scheduleMap.entries()) {
+    if (
+      row.source === "jira_weekly"
+      && row.sourceWeek === parsed.sourceWeek
+      && !processedKeys.has(key)
+      && !row.archivedAt
+    ) {
+      scheduleMap.set(key, {
+        ...row,
+        archivedAt: nowIso,
+        archiveReason: "parser_reclassified",
+      });
+      isIdempotent = false;
     }
   }
 

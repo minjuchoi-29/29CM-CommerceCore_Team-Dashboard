@@ -46,6 +46,9 @@ export interface ScheduleSourceMeta {
   phase?: SchedulePhase;
   /** 자유 text resource team (예: "Core AI BE", "BE-PP"). UI sublabel용. */
   resourceTeam?: string | null;
+  /** 같은 sourceWeek 재파싱에서 더 이상 일정으로 인정되지 않은 자동 행. */
+  archivedAt?: string;
+  archiveReason?: "parser_reclassified";
 }
 
 /**

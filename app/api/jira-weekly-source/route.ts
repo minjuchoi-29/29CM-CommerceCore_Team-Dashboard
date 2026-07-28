@@ -5,6 +5,7 @@ import type { WeeklyDetectedSource } from "@/lib/weekly-types";
 import {
   extractLatestWeeklySection,
   buildWeeklyReplaySources,
+  versionWeeklySourceId,
   isWeeklyAutomationComment,
   selectLatestQualifyingComment,
   selectWeeklySource,
@@ -411,7 +412,7 @@ export async function GET(req: NextRequest) {
     detectedSources.push(...commentSourcesSorted);
 
     const replayCommentSources = qualifyingComments.map(c => ({
-      sourceId: `comment:${c.id ?? `${c.created}:${c.updated}`}`,
+      sourceId: versionWeeklySourceId(`comment:${c.id ?? `${c.created}:${c.updated}`}`),
       text: c.text,
       source: "comment" as const,
       sourceWeek: parseWeekNumber(c.text),
@@ -419,9 +420,9 @@ export async function GET(req: NextRequest) {
       created: c.created,
     }));
     const currentReplaySource = pick ? {
-      sourceId: pick.source === "comment"
+      sourceId: versionWeeklySourceId(pick.source === "comment"
         ? `comment:${markedComment?.id ?? `${markedComment?.created}:${markedComment?.updated}`}`
-        : `${pick.source}:${pick.sourceUpdatedAt}`,
+        : `${pick.source}:${pick.sourceUpdatedAt}`),
       text: pick.text,
       source: pick.source,
       sourceWeek: parseWeekNumber(pick.text),

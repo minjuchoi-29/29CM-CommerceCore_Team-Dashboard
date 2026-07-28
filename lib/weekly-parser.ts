@@ -669,6 +669,8 @@ function isCoordinationOnlyLine(text: string): boolean {
  */
 function isScheduleDecisionOnlyLine(text: string): boolean {
   return /\bTBD\b/i.test(text)
+    || /(?:일정\s*)?상세\s*플래닝/i.test(text)
+    || /(?:개발\s*)?ETA\s*산정/i.test(text)
     || /(?:일정|마일스톤)\s*(?:확정|산정|확인)\s*(?:예정|필요|후)/i.test(text)
     || /(?:요구사항|기획|디자인)\s*리뷰\s*후[^.\n]*(?:일정|마일스톤)?\s*(?:확정|산정)/i.test(text);
 }
@@ -718,7 +720,9 @@ export function classifyLineWithCtx(
     return { type: "note", confidence: "low", content, rawText: line };
   }
 
-  const nonSchedule = matchesAny(content, NON_SCHEDULE_INDICATORS) || isCoordinationOnlyLine(content);
+  const nonSchedule = matchesAny(content, NON_SCHEDULE_INDICATORS)
+    || isCoordinationOnlyLine(content)
+    || isScheduleDecisionOnlyLine(content);
   const lowConf = matchesAny(content, LOW_CONFIDENCE_KEYWORDS);
   const isRisk = matchesAny(content, RISK_INDICATORS);
 

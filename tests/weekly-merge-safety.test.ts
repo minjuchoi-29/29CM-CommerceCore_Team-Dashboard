@@ -157,6 +157,30 @@ describe("P0 최신화 정책", () => {
     assert.ok(result.updateCandidates.every(candidate => candidate.resolved));
   });
 
+  test("legacy 자동 일정도 다중 변경을 승인 없이 자동 적용", () => {
+    const existing: ExtendedSchedule = {
+      role: "QA",
+      person: "",
+      start: "2026-08-03",
+      end: "2026-08-05",
+      status: "예정",
+      source: "legacy",
+      sourceWeek: "30주차",
+      phase: "QA",
+      resourceTeam: null,
+      stableTaskId: "TM-3375::QA::",
+    };
+    const parsed = parseWeekly("31주차\n[일정]\nQA: 7/27~7/29 진행중", TICKET);
+    const result = mergeWeeklySync(TICKET, parsed, [existing], [], BASE_DATE);
+
+    assert.equal(result.updatedSchedules[0].start, "2026-07-27");
+    assert.equal(result.updatedSchedules[0].end, "2026-07-29");
+    assert.equal(result.updatedSchedules[0].status, "진행중");
+    assert.equal(result.updateCandidates.length, 3);
+    assert.ok(result.updateCandidates.every(candidate => candidate.autoApply));
+    assert.ok(result.updateCandidates.every(candidate => candidate.resolved));
+  });
+
   test("다중 기간은 detail이 다른 두 Gantt 행으로 저장", () => {
     const parsed = parseWeekly(
       "28주차\n[일정]\nBE: 7/3~7/7 일정 산정 완료, 7/7~7/21 개발",
@@ -193,6 +217,35 @@ describe("P0 최신화 정책", () => {
     const actualDevelopment = updated.updatedSchedules.find(row => row.detail === "실제 개발");
     assert.equal(actualDevelopment?.status, "진행중");
     assert.equal(actualDevelopment?.sourceWeek, "29주차");
+  });
+
+  test("같은 주차 재파싱에서 제외된 자동 행만 이력화하고 수동 행은 보호", () => {
+    const existing: ExtendedSchedule[] = [
+      {
+        role: "BE", detail: "일정 상세 플래닝", person: "",
+        start: "2026-07-10", end: "2026-07-10", status: "예정",
+        source: "jira_weekly", sourceWeek: "30주차",
+        phase: "개발", resourceTeam: "BE",
+        stableTaskId: "TM-3375::개발::be",
+      },
+      {
+        role: "PM 리뷰", person: "",
+        start: "2026-07-10", end: "2026-07-10", status: "예정",
+        source: "manual", sourceWeek: "30주차",
+      },
+    ];
+    const parsed = parseWeekly([
+      "30주차",
+      "[일정]",
+      "MSS BE: 7/20~7/31 개발 진행중",
+    ].join("\n"), TICKET);
+    const result = mergeWeeklySync(TICKET, parsed, existing, [], BASE_DATE);
+
+    const archived = result.updatedSchedules.find(row => row.detail === "일정 상세 플래닝");
+    const manual = result.updatedSchedules.find(row => row.source === "manual");
+    assert.equal(archived?.archiveReason, "parser_reclassified");
+    assert.ok(archived?.archivedAt);
+    assert.equal(manual?.archivedAt, undefined);
   });
 });
 

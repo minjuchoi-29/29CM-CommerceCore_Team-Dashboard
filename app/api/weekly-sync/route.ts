@@ -3,6 +3,7 @@ import { redis } from "@/lib/redis";
 import { parseWeekly } from "@/lib/weekly-parser";
 import { mergeWeeklySync, getRowAllKeys } from "@/lib/weekly-merge";
 import { RedisLockTimeoutError, withRedisLock } from "@/lib/redis-lock";
+import { reconcileUpdateCandidates } from "@/lib/weekly-candidates";
 import type {
   ParsedWeekly, WeeklyNote, UpdateCandidate, WeeklySyncMeta,
 } from "@/lib/weekly-types";
@@ -70,9 +71,13 @@ async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly, source
     await redis.set("cc-weekly-notes", updatedNotes);
 
     // 6. cc-update-candidates — 기존 보존 + 신규 추가 (id 중복 제거)
-    const existingCandidateIds = new Set(allCandidates.map((c: UpdateCandidate) => c.id));
-    const freshCandidates = result.updateCandidates.filter(c => !existingCandidateIds.has(c.id));
-    const mergedCandidates = [...allCandidates, ...freshCandidates];
+    const mergedCandidates = reconcileUpdateCandidates(
+      allCandidates,
+      result.updateCandidates,
+      ticketKey,
+      parsed.sourceWeek,
+      new Date().toISOString(),
+    );
     await redis.set("cc-update-candidates", mergedCandidates);
 
     // 7. cc-weekly-sync-meta 갱신 + PR #39: trace summary 저장 (UI visibility 용)

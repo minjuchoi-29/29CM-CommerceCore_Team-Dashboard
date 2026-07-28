@@ -205,6 +205,36 @@ describe("대시보드 진행중 티켓 Weekly 형식 회귀 검증", () => {
     );
   });
 
+  test("TM-2922 — 일정 상세 플래닝·재산정은 제외하고 실행 기간만 유지", () => {
+    const parsed = parseWeekly([
+      "30주차 Weekly 공유사항",
+      "📅 일정",
+      "- BE",
+      "  - 7/10 일정 상세 플래닝",
+      "- MSS BE",
+      "  - 7/20~7/31 ITGG 개발 착수",
+      "- 29CM BE",
+      "  - 7/20~8/12 개발",
+      "- 디자인",
+      "  - 7/20~8/4 디자인 가이드 발행 예정",
+      "- 29CM FE",
+      "  - 8/4 착수 시점 기준, 일정 재산정 필요",
+      "- QA",
+      "  - 8/12~8/24 QA 리소스 펀딩 요청 예정",
+    ].join("\n"), "TM-2922");
+
+    assert.equal(parsed.scheduleItems.some(item => /플래닝|재산정/.test(item.rawText)), false);
+    assert.deepEqual(
+      parsed.scheduleItems.map(item => [item.phase, item.resourceTeam, item.startDate, item.endDate]),
+      [
+        ["개발", "MSS BE", "2026-07-20", "2026-07-31"],
+        ["개발", "29CM BE", "2026-07-20", "2026-08-12"],
+        ["디자인", "가이드 발행 예정", "2026-07-20", "2026-08-04"],
+        ["QA", "리소스 펀딩 요청 예정", "2026-08-12", "2026-08-24"],
+      ],
+    );
+  });
+
   test("TM-3616 — 콜론 앞 완료 상태를 보존", () => {
     const parsed = parseWeekly("📅 일정\n- 개발 완료: 8/21", "TM-3616");
     assert.deepEqual(

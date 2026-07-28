@@ -10,6 +10,8 @@ export type ScheduleDisplayRow = {
   lastSeenAt?: string;
   phase?: string;
   resourceTeam?: string | null;
+  archivedAt?: string;
+  archiveReason?: string;
 };
 
 export type CompactScheduleResult<T> = {
@@ -110,6 +112,7 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
   const latestWeeklyIndex = new Map<string, number>();
 
   rows.forEach((row, index) => {
+    if (row.source === "jira_weekly" && row.archivedAt) return;
     if (row.source !== "jira_weekly") return;
     const identity = weeklyIdentity(row);
     const previousIndex = latestWeeklyIndex.get(identity);
@@ -126,6 +129,11 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
   let noiseCount = 0;
 
   rows.forEach((row, index) => {
+    if (row.source === "jira_weekly" && row.archivedAt) {
+      history.push(row);
+      supersededCount += 1;
+      return;
+    }
     if (row.source === "jira_weekly" && hasInvalidDate(row)) {
       history.push(row);
       invalidCount += 1;

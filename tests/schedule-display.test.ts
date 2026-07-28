@@ -93,3 +93,15 @@ test("과거에 저장된 논의·Sync 자동 행은 현재 화면에서 제외�
   assert.deepEqual(result.current.map(row => row.source), ["manual"]);
   assert.equal(result.noiseCount, 3);
 });
+
+test("재파싱에서 이력화된 자동 행은 현재 일정에서 제외한다", () => {
+  const rows: ScheduleDisplayRow[] = [
+    { role: "BE", phase: "개발", start: "2026-07-10", end: "2026-07-10", status: "예정", source: "jira_weekly", archivedAt: "2026-07-28T00:00:00Z" },
+    { role: "MSS BE", phase: "개발", start: "2026-07-20", end: "2026-07-31", status: "진행중", source: "jira_weekly" },
+  ];
+
+  const result = compactSchedulesForDisplay(rows, futureNow);
+
+  assert.deepEqual(result.current.map(row => row.role), ["MSS BE"]);
+  assert.deepEqual(result.history.map(row => row.role), ["BE"]);
+});

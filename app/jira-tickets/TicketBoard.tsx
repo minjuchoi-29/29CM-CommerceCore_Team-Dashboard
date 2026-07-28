@@ -200,6 +200,9 @@ function isCleanupCandidate(row: RoleSchedule): { isCleanup: boolean; reason?: s
   if (!EXEC.has(row.status))    return { isCleanup: true, reason: `status "${row.status}" — 실행성 아님` };
   if (NON_SCHEDULE_RE.test(combined)) return { isCleanup: true, reason: "non_schedule_indicator — 설명/조건성 문장" };
   if (/(논의|회의|미팅|sync|리뷰)/i.test(combined)) return { isCleanup: true, reason: "coordination_only — 논의·리뷰·Sync" };
+  if (/(?:일정\s*)?상세\s*플래닝|(?:개발\s*)?ETA\s*산정/i.test(combined)) {
+    return { isCleanup: true, reason: "schedule_decision_only — 일정 산정·상세 플래닝" };
+  }
   if (phase === "QA" && /통합검수/.test(combined) && /(정책|기획|요구사항)/.test(combined)) {
     return { isCleanup: true, reason: "misclassified_phase — 업무명의 검수를 QA로 오인" };
   }
@@ -1873,15 +1876,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   };
   const [weeklySyncRun, setWeeklySyncRun] = useState<WeeklySyncRun | null>(null);
   const [weeklySyncRunOpen, setWeeklySyncRunOpen] = useState(false);
-  // Phase 4: Update Candidate Review 모달 / 진행 중인 candidateId set
+  // Weekly의 액션/리스크 메모 확인 패널
   const [candidatePanelOpen, setCandidatePanelOpen] = useState(false);
   const [candidatesInFlight, setCandidatesInFlight] = useState<Set<string>>(new Set());
-  // Phase C: checkbox 선택 / kind 필터 (note는 별도 참고 섹션으로 분리되어 filter 옵션에서 제외)
+  // checkbox 선택 / kind 필터 (일정은 자동 반영하므로 검토 대상에서 제외)
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
-  const [candidateKindFilter, setCandidateKindFilter] = useState<"all" | "schedule" | "action" | "risk">("all");
+  const [candidateKindFilter, setCandidateKindFilter] = useState<"all" | "action" | "risk">("all");
   // 참고 메모 영역 펼침 (기본 collapsed — note/low/autoApply 비추천 등은 일정 반영 후보 아님)
   const [referenceExpanded, setReferenceExpanded] = useState(false);
-  // Phase D: Cleanup 패널 (자격 미달 jira_weekly row 정리)
+  // 이전 cleanup modal은 더 이상 진입점을 노출하지 않는다. 선언은 저장된 화면 상태와의
+  // 호환을 위해 다음 UI 정리 전까지 유지한다.
   const [cleanupPanelOpen, setCleanupPanelOpen] = useState(false);
   const [selectedCleanupIds, setSelectedCleanupIds] = useState<Set<string>>(new Set());
   const [cleanupInFlight, setCleanupInFlight] = useState<Set<string>>(new Set());
@@ -2306,12 +2310,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }
 
         // 사용자 토스트는 운영 액션만 — debug count는 console로만.
-        const msg =
-          errorTotal > 0 && candidatesTotal === 0
-            ? `Weekly Sync 일부 실패 (${errorTotal}건)`
-            : candidatesTotal > 0
-              ? `⚡ 검토 필요한 일정 변경 ${candidatesTotal}건`
-              : `Weekly Sync 완료`;
+        const msg = errorTotal > 0
+          ? `Weekly Sync 일부 실패 (${errorTotal}건)`
+          : `Weekly Sync 완료 · 일정 자동 최신화`;
         setWeeklySyncMsg(msg);
         setTimeout(() => setWeeklySyncMsg(null), 8_000);
         console.log(
@@ -2395,12 +2396,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Phase D: cleanup 후보 추출 — source=jira_weekly + 자격 미달 row.
-  // 자동 삭제 금지. 사용자가 명시적으로 선택 후 삭제.
+  // Legacy cleanup modal compatibility. 신규 UI에서는 진입점을 노출하지 않으며,
+  // 자격 미달 자동 일정은 sync 단계에서 history로 이동한다.
   type CleanupCandidate = {
     id: string;
     ticketKey: string;
-    rowKey: string;        // 삭제 시 row 매칭용 합성 키
+    rowKey: string;
     row: RoleSchedule;
     reason: string;
   };
@@ -2408,55 +2409,38 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return r.mergeKey ?? `${r.role}|||${r.start ?? ""}|||${r.end ?? ""}|||${r.person ?? ""}`;
   }
   function buildCleanupCandidates(): CleanupCandidate[] {
-    // isCleanupCandidate(row) helper로 통일 — Gantt 필터와 cleanup panel이 동일 정책.
     const out: CleanupCandidate[] = [];
     for (const [ticketKey, rows] of Object.entries(schedules)) {
-      const arr = Array.isArray(rows) ? rows : [];
-      for (const row of arr) {
+      for (const row of Array.isArray(rows) ? rows : []) {
         const check = isCleanupCandidate(row);
         if (!check.isCleanup) continue;
         const rowKey = makeRowKey(row);
-        out.push({
-          id: `${ticketKey}::${rowKey}`,
-          ticketKey, rowKey, row,
-          reason: check.reason ?? "qualification failed",
-        });
+        out.push({ id: `${ticketKey}::${rowKey}`, ticketKey, rowKey, row, reason: check.reason ?? "qualification failed" });
       }
     }
     return out;
   }
-  // cleanup 단일 row 삭제 (race-safe: KV read → filter → write)
   const deleteCleanupRow = useCallback(async (ticketKey: string, rowKey: string, id: string) => {
-    setCleanupInFlight(prev => { const n = new Set(prev); n.add(id); return n; });
-    // optimistic
-    setSchedules(prev => {
-      const arr = (prev[ticketKey] ?? []).filter(r => makeRowKey(r) !== rowKey);
-      return { ...prev, [ticketKey]: arr };
-    });
+    setCleanupInFlight(prev => new Set(prev).add(id));
     try {
-      const r = await fetch("/api/kv?keys=cc-schedules");
-      const d = await r.json();
+      const response = await fetch("/api/kv?keys=cc-schedules");
+      const data = await response.json();
       const all: Record<string, RoleSchedule[]> =
-        d["cc-schedules"] && typeof d["cc-schedules"] === "object" && !Array.isArray(d["cc-schedules"])
-          ? d["cc-schedules"] : {};
-      const arr = (all[ticketKey] ?? []).filter(rr => makeRowKey(rr) !== rowKey);
-      const merged = { ...all, [ticketKey]: arr };
+        data["cc-schedules"] && typeof data["cc-schedules"] === "object" && !Array.isArray(data["cc-schedules"])
+          ? data["cc-schedules"] : {};
+      const merged = { ...all, [ticketKey]: (all[ticketKey] ?? []).filter(row => makeRowKey(row) !== rowKey) };
       await fetch("/api/kv", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key: "cc-schedules", value: merged }),
       });
-      console.log(`[cleanup] deleted ${ticketKey}/${rowKey}`);
-    } catch (e) {
-      console.error(`[cleanup] delete failed ${ticketKey}/${rowKey}:`, e);
-      // revert: KV에서 다시 받아 setSchedules
-      try {
-        const r2 = await fetch("/api/kv?keys=cc-schedules");
-        const d2 = await r2.json();
-        if (d2["cc-schedules"]) setSchedules(d2["cc-schedules"]);
-      } catch {}
+      setSchedules(merged);
     } finally {
-      setCleanupInFlight(prev => { const n = new Set(prev); n.delete(id); return n; });
+      setCleanupInFlight(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   }, []);
 
@@ -2500,43 +2484,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, []);
 
-  // Phase 4: Update Candidate 승인/기각 처리
-  // PUT /api/weekly-sync → optimistic update → 실패 시 revert + KV reload
+  // 이전 일정 승인 modal 호환용. 신규 UI에서는 일정 승인 진입점을 노출하지 않는다.
   const resolveCandidate = useCallback(async (candidateId: string, action: "apply" | "dismiss") => {
-    setCandidatesInFlight(prev => {
-      const next = new Set(prev);
-      next.add(candidateId);
-      return next;
-    });
-    // optimistic: candidate를 resolved로 표시
-    setUpdateCandidates(prev => prev.map(c =>
-      c.id === candidateId
-        ? { ...c, resolved: true, resolvedAt: new Date().toISOString() }
-        : c,
-    ));
+    setCandidatesInFlight(prev => new Set(prev).add(candidateId));
     try {
-      const res = await fetch("/api/weekly-sync", {
+      const response = await fetch("/api/weekly-sync", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ candidateId, action }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      // apply의 경우 cc-schedules가 갱신됐으므로 함께 재로드
-      const keys = action === "apply"
-        ? "cc-schedules,cc-update-candidates"
-        : "cc-update-candidates";
-      const kvRes = await fetch(`/api/kv?keys=${keys}`);
-      const d = await kvRes.json();
-      if (action === "apply" && d["cc-schedules"]) setSchedules(d["cc-schedules"]);
-      if (Array.isArray(d["cc-update-candidates"]))
-        setUpdateCandidates(d["cc-update-candidates"] as UpdateCandidate[]);
-      console.log(`[resolveCandidate] ${candidateId} ${action} → ok`);
-    } catch (e) {
-      console.error(`[resolveCandidate] ${candidateId} ${action} failed:`, e);
-      // revert
-      setUpdateCandidates(prev => prev.map(c =>
-        c.id === candidateId ? { ...c, resolved: false, resolvedAt: undefined } : c,
-      ));
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
     } finally {
       setCandidatesInFlight(prev => {
         const next = new Set(prev);
@@ -2591,28 +2548,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   function buildDisplayCandidates(): DisplayCandidate[] {
     const titleByKey = new Map(tickets.map(t => [t.key, t.summary]));
     const out: DisplayCandidate[] = [];
-
-    // 일정 후보: UpdateCandidate
-    for (const c of updateCandidates) {
-      if (c.resolved) continue;
-      const role = c.mergeKey.split("::")[1] ?? "";
-      out.push({
-        id: c.id,
-        kind: "schedule",
-        confidence: c.autoApply ? "high" : "medium",
-        ticketKey: c.ticketKey,
-        ticketSummary: titleByKey.get(c.ticketKey) ?? "",
-        sourceWeek: c.sourceWeek,
-        role,
-        field: c.field,
-        oldValue: c.oldValue,
-        newValue: c.newValue,
-        autoApply: c.autoApply,
-        reason: c.autoApply
-          ? `기존 ${role}/${c.field} 값과 Weekly 값 차이 — 자동 적용 가능 (conflict 1건)`
-          : `기존 ${role}/${c.field} 값과 Weekly 값 충돌 — 검토 필요 (conflict 2건+ 또는 manual locked)`,
-      });
-    }
 
     // action/risk/note: WeeklyNote (status=open만)
     for (const [ticketKey, notes] of Object.entries(weeklyNotes)) {
@@ -5333,10 +5268,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     topAction: ReturnType<typeof getActionItems>[0] | null;
     indicators: {
       phase: NonNullable<RoleSchedule["phase"]> | null;
-      candidateCount: number;
       actionCount: number;
       riskCount: number;
-      cleanupCount: number;
     };
   }[]>(() => {
     const base = filtered.map(t => {
@@ -5353,16 +5286,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         fromSched === "Kick-Off" && !!fromStatus && fromStatus !== "Kick-Off";
       const phase: NonNullable<RoleSchedule["phase"]> | null =
         schedIsStaleKickoff ? fromStatus : (fromSched ?? fromStatus);
-      // candidate / action / risk / cleanup 카운트
-      const candidateCount = updateCandidates.filter(c => c.ticketKey === t.key && !c.resolved).length;
+      // 자동 일정 변경/정리는 배지로 노출하지 않고, 사람의 판단이 필요한 정보만 표시한다.
       const notes = (weeklyNotes[t.key] ?? []).filter(n => n.status === "open");
       const actionCount = notes.filter(n => n.type === "next_action").length;
       const riskCount   = notes.filter(n => n.type === "risk").length;
-      const cleanupCount = rows.filter(r => isCleanupCandidate(r).isCleanup).length;
       return {
         ticket: t,
         topAction: getActionItems(t, planning[t.key], rows.length > 0 ? rows : (t.roles ?? []), etrMap[t.key])[0] ?? null,
-        indicators: { phase, candidateCount, actionCount, riskCount, cleanupCount },
+        indicators: { phase, actionCount, riskCount },
       };
     });
     if (!focusForKey) return base;
@@ -5374,7 +5305,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const pb = b.topAction?.priority ?? 999;
       return pa - pb;
     });
-  }, [filtered, focusForKey, selected?.key, planning, schedules, etrMap, updateCandidates, weeklyNotes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, focusForKey, selected?.key, planning, schedules, etrMap, weeklyNotes]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── changesMode: 스냅샷 로드 → Transition 계산 ────────────────
   useEffect(() => {
@@ -6021,34 +5952,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </svg>
               {fetching ? "Syncing…" : "Jira Sync"}
             </button>
-            {/* ⚡ 일정 변경 감지 — 클릭 시 검토 패널 (Phase 4) */}
-            {updateCandidates.filter(c => !c.resolved).length > 0 && (
+            {/* Weekly 일정은 자동 반영한다. 사람의 판단이 필요한 액션/리스크만 노출한다. */}
+            {Object.values(weeklyNotes).flat().filter(
+              note => note.status === "open" && (note.type === "next_action" || note.type === "risk")
+            ).length > 0 && (
               <button
                 type="button"
                 onClick={() => setCandidatePanelOpen(true)}
                 className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition hover:brightness-110 active:scale-95"
                 style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }}
-                title="클릭하여 Weekly에서 들어온 일정 변경 제안을 검토 / 승인 / 기각"
+                title="Weekly에서 발견한 액션과 리스크 확인"
               >
-                ⚡ 일정 변경 {updateCandidates.filter(c => !c.resolved).length}건
+                확인할 액션·리스크 {Object.values(weeklyNotes).flat().filter(
+                  note => note.status === "open" && (note.type === "next_action" || note.type === "risk")
+                ).length}건
               </button>
             )}
-            {/* 🧹 정리 후보 — 자격 미달 jira_weekly row 정리 (Phase D) */}
-            {(() => {
-              const cleanupCount = buildCleanupCandidates().length;
-              if (cleanupCount === 0) return null;
-              return (
-                <button
-                  type="button"
-                  onClick={() => setCleanupPanelOpen(true)}
-                  className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition hover:brightness-110 active:scale-95"
-                  style={{ background: "rgba(148,163,184,0.10)", border: "1px solid rgba(148,163,184,0.35)", color: "#94a3b8" }}
-                  title="자격 미달로 분류된 weekly schedule row를 검토 / 삭제 (자동 삭제 안 함)"
-                >
-                  🧹 정리 후보 {cleanupCount}건
-                </button>
-              );
-            })()}
 
             {/* ── Candidate Review 모달 (Phase C) ─────────────────── */}
             {candidatePanelOpen && (() => {
@@ -6105,7 +6024,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   ? filtered.filter(c => selectedCandidateIds.has(c.id))
                   : filtered;
                 if (targets.length === 0) return;
-                if (!confirm(`${targets.length}건을 ${action === "apply" ? "승인" : "기각"}하시겠습니까?`)) return;
+                if (!confirm(`${targets.length}건을 확인 완료로 처리하시겠습니까?`)) return;
                 for (const c of targets) {
                   if (c.kind === "schedule") {
                     await resolveCandidate(c.id, action);
@@ -6135,7 +6054,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     >
                       <div className="flex items-center justify-between mb-2.5">
                         <h2 className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-                          Weekly Sync 후보 검토
+                          Weekly 액션·리스크
                         </h2>
                         <button
                           type="button"
@@ -6150,7 +6069,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       <div className="flex items-center flex-wrap gap-1.5 mb-2">
                         {([
                           { key: "all" as const,      label: `전체 ${counts.actionable}`, color: "var(--text-secondary)" },
-                          { key: "schedule" as const, label: `일정 ${counts.schedule}`,   color: KIND_STYLE.schedule.color },
                           { key: "action" as const,   label: `액션 ${counts.action}`,     color: KIND_STYLE.action.color },
                           { key: "risk" as const,     label: `리스크 ${counts.risk}`,     color: KIND_STYLE.risk.color },
                         ]).map(t => {
@@ -6221,18 +6139,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
                           style={{ background: "#10b981", color: "white" }}
                         >
-                          ✓ 선택 승인
+                          ✓ 선택 확인 완료
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => doBulk("dismiss", true)}
-                          disabled={selectedCandidateIds.size === 0}
-                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
-                          style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-secondary)" }}
-                        >
-                          ✕ 선택 기각
-                        </button>
-                        <span className="text-[10px] mx-1" style={{ color: "var(--text-muted)" }}>|</span>
                         <button
                           type="button"
                           onClick={() => doBulk("apply", false)}
@@ -6240,16 +6148,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition hover:brightness-110"
                           style={{ background: "rgba(16,185,129,0.18)", border: "1px solid rgba(16,185,129,0.45)", color: "#10b981" }}
                         >
-                          전체 승인
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => doBulk("dismiss", false)}
-                          disabled={filtered.length === 0}
-                          className="px-2.5 py-1 text-[11px] rounded font-medium disabled:opacity-40 disabled:cursor-not-allowed transition"
-                          style={{ background: "transparent", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
-                        >
-                          전체 기각
+                          전체 확인 완료
                         </button>
                       </div>
                     </div>
@@ -6260,8 +6159,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <div className="text-center py-8 space-y-1">
                           <p className="text-xs" style={{ color: "var(--text-muted)" }}>
                             {counts.actionable === 0
-                              ? "자동 반영할 일정 후보가 없습니다."
-                              : "현재 필터에 해당하는 후보가 없습니다."}
+                              ? "확인할 액션·리스크가 없습니다."
+                              : "현재 필터에 해당하는 항목이 없습니다."}
                           </p>
                           {counts.actionable === 0 && counts.reference > 0 && (
                             <p className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
@@ -7823,10 +7722,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       /* Focus Mode 미니 레일: phase 배지 + ticket key + ETA + indicators + title */
                       (() => {
                         const phase = indicators?.phase ?? null;
-                        const candidateCount = indicators?.candidateCount ?? 0;
                         const actionCount    = indicators?.actionCount    ?? 0;
                         const riskCount      = indicators?.riskCount      ?? 0;
-                        const cleanupCount   = indicators?.cleanupCount   ?? 0;
                         const phaseStyle = phase ? PHASE_QUEUE_STYLE[phase] : null;
                         // ETA 표시 (M/D)
                         const etaShort = t.eta && t.eta !== "-"
@@ -7835,7 +7732,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         const etaColor = etaWarnLevel === "overdue"  ? "#f87171"
                                        : etaWarnLevel === "imminent" ? "#fbbf24"
                                        : "var(--text-muted)";
-                        const hasIndicators = candidateCount + actionCount + riskCount + cleanupCount > 0;
+                        const hasIndicators = actionCount + riskCount > 0;
                         return (
                           <div className="flex flex-col gap-1 min-w-0 flex-1">
                             {/* Row 1: phase 배지 + ticket key + JIRA link */}
@@ -7879,11 +7776,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     {etaWarnLevel === "imminent" && <span className="ml-0.5">▲</span>}
                                   </span>
                                 )}
-                                {candidateCount > 0 && (
-                                  <span title={`Weekly 일정 변경 후보 ${candidateCount}건`} style={{ color: "#fbbf24" }}>
-                                    ⚡{candidateCount}
-                                  </span>
-                                )}
                                 {riskCount > 0 && (
                                   <span title={`리스크 ${riskCount}건`} style={{ color: "#f87171" }}>
                                     ⚠{riskCount}
@@ -7892,11 +7784,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 {actionCount > 0 && (
                                   <span title={`액션 필요 ${actionCount}건`} style={{ color: "#fbbf24" }}>
                                     ☐{actionCount}
-                                  </span>
-                                )}
-                                {cleanupCount > 0 && (
-                                  <span title={`정리 필요 ${cleanupCount}건`} style={{ color: "#94a3b8" }}>
-                                    🧹{cleanupCount}
                                   </span>
                                 )}
                               </div>
@@ -7939,12 +7826,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       */
                       (() => {
                         const phase          = indicators?.phase ?? null;
-                        const candidateCount = indicators?.candidateCount ?? 0;
                         const actionCount    = indicators?.actionCount    ?? 0;
                         const riskCount      = indicators?.riskCount      ?? 0;
-                        const cleanupCount   = indicators?.cleanupCount   ?? 0;
                         const phaseStyle     = phase ? PHASE_QUEUE_STYLE[phase] : null;
-                        const hasIndicators  = candidateCount + actionCount + riskCount + cleanupCount > 0;
+                        const hasIndicators  = actionCount + riskCount > 0;
                         const etaShort = t.eta && t.eta !== "-"
                           ? `${parseInt(t.eta.split("-")[1])}/${parseInt(t.eta.split("-")[2])}`
                           : null;
@@ -8039,11 +7924,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               {/* Row 2: indicators + transition badges (있을 때만) */}
                               {(hasIndicators || (changesMode && (transitionNewlyAdded.has(t.key) || transitionMap.get(t.key)?.length))) && (
                                 <div className="flex items-center gap-2 flex-wrap mb-1 text-[11px]">
-                                  {candidateCount > 0 && (
-                                    <span title={`Weekly 일정 변경 후보 ${candidateCount}건`} style={{ color: "#fbbf24" }}>
-                                      ⚡{candidateCount}
-                                    </span>
-                                  )}
                                   {riskCount > 0 && (
                                     <span title={`리스크 ${riskCount}건`} style={{ color: "#f87171" }}>
                                       ⚠{riskCount}
@@ -8052,11 +7932,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   {actionCount > 0 && (
                                     <span title={`액션 필요 ${actionCount}건`} style={{ color: "#fbbf24" }}>
                                       ☐{actionCount}
-                                    </span>
-                                  )}
-                                  {cleanupCount > 0 && (
-                                    <span title={`정리 필요 ${cleanupCount}건`} style={{ color: "#94a3b8" }}>
-                                      🧹{cleanupCount}
                                     </span>
                                   )}
                                   {/* Transition badges (changesMode) */}
@@ -9238,31 +9113,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >편집</button>
                         )}
                       </div>
-                      {/* Schedule Reconciliation Phase 1: Focus Mode 미적용 candidate 배지 */}
-                      {(() => {
-                        const fmPending = updateCandidates.filter(
-                          c => c.ticketKey === selected.key && !c.resolved
-                        ).length;
-                        if (fmPending === 0) return null;
-                        return (
-                          <button
-                            type="button"
-                            onClick={() => setCandidatePanelOpen(true)}
-                            className="mb-2 w-full flex items-center justify-between rounded-lg px-3 py-2 transition hover:brightness-110 active:scale-[0.99] cursor-pointer"
-                            style={{
-                              background: "rgba(99,102,241,0.10)",
-                              border: "1.5px solid rgba(99,102,241,0.45)",
-                            }}
-                            title="클릭하여 Weekly 에서 추출된 미적용 일정 후보를 확인 / 적용"
-                          >
-                            <span className="flex items-center gap-2 text-[12px] font-semibold" style={{ color: "#a5b4fc" }}>
-                              <span aria-hidden>✨</span>
-                              <span>미적용 Weekly 일정 신호 <span className="font-mono">{fmPending}</span>건</span>
-                            </span>
-                            <span className="text-[11px] font-medium" style={{ color: "#a5b4fc" }}>확인 →</span>
-                          </button>
-                        );
-                      })()}
                       {/* PR #39 — Weekly Sync Visibility: Focus Mode 의 trace summary */}
                       <WeeklySyncSummary meta={weeklySyncMeta[selected.key]} />
                       {fmRoles.length > 0 ? (
@@ -10676,8 +10526,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 ══════════════════════════════════════════ */}
             {detailTab === "ops" && (<>
               {/* ── Phase 4: ticket-specific Weekly 일정 변경 제안 ── */}
-              {(() => {
-                const tCand = updateCandidates.filter(c => !c.resolved && c.ticketKey === selected.key);
+              {false && (() => {
+                const tCand = updateCandidates.filter(c => !c.resolved && c.ticketKey === selected!.key);
                 if (tCand.length === 0) return null;
                 const FIELD_LABEL: Record<string, string> = {
                   start: "시작일", end: "종료일", status: "상태", person: "담당자",
@@ -11358,33 +11208,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     const displayRoles = isSummary
                       ? allRoles.filter(r => MILESTONE_ROLES.includes(r.role))
                       : allRoles;
-                    // Schedule Reconciliation Phase 1: 현재 ticket 의 미적용 UpdateCandidate 카운트
-                    const ticketPendingCandidates = updateCandidates.filter(
-                      c => c.ticketKey === selected.key && !c.resolved
-                    ).length;
                     return (
                       <>
-                        {ticketPendingCandidates > 0 && (
-                          <button
-                            type="button"
-                            onClick={() => setCandidatePanelOpen(true)}
-                            className="mb-2 w-full flex items-center justify-between rounded-lg px-3 py-2 transition hover:brightness-110 active:scale-[0.99] cursor-pointer"
-                            style={{
-                              background: "rgba(99,102,241,0.10)",
-                              border: "1.5px solid rgba(99,102,241,0.45)",
-                              boxShadow: "0 2px 8px rgba(99,102,241,0.10)",
-                            }}
-                            title="클릭하여 Weekly 에서 추출된 미적용 일정 후보를 확인 / 적용"
-                          >
-                            <span className="flex items-center gap-2 text-[12.5px] font-semibold" style={{ color: "#a5b4fc" }}>
-                              <span aria-hidden>✨</span>
-                              <span>미적용 Weekly 일정 신호 <span className="font-mono">{ticketPendingCandidates}</span>건</span>
-                            </span>
-                            <span className="text-[11.5px] font-medium" style={{ color: "#a5b4fc" }}>
-                              확인 →
-                            </span>
-                          </button>
-                        )}
                         {/* PR #39 — Weekly Sync Visibility: 직전 sync trace summary */}
                         <WeeklySyncSummary meta={weeklySyncMeta[selected.key]} />
 

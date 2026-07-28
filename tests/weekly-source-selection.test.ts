@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildWeeklyReplaySources,
+  versionWeeklySourceId,
   selectWeeklySource,
   type WeeklySourceCandidate,
 } from "../lib/weekly-source";
@@ -124,4 +125,8 @@ describe("buildWeeklyReplaySources — archived Weekly replay", () => {
     };
     assert.equal(buildWeeklyReplaySources([comment], comment).length, 1);
   });
+});
+
+it("source ID에 파서 버전을 포함해 정책 변경 시 한 번 재처리", () => {
+  assert.equal(versionWeeklySourceId("comment:1119512"), "schedule-v3:comment:1119512");
 });
