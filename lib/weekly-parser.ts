@@ -117,31 +117,34 @@ export function extractPhaseAndResource(raw: string): { phase: SchedulePhase; re
   // Launch: 론치 / 런치 / 런칭 / 오픈 / 대고객 (오픈|런칭)
   if (/launch|론치|런치|런칭|오픈|대고객/i.test(s)) return { phase: "Launch", resourceTeam: null };
 
-  // 2. QA (phase + 선택적 resource)
-  if (/\bqa\b|qc|테스트|test|검수|검증/i.test(s)) {
-    const stripped = s.replace(/\bqa\b|qc|테스트|test|검수|검증/gi, "").replace(/[-:\s]+/g, " ").trim();
+  // 2. 기획 — "통합검수 정책"처럼 업무명에 검수가 포함돼도 정책/요구사항이
+  // 명시된 경우 QA보다 기획 의도가 우선한다.
+  if (/\bpm\b|product\s*manager|기획서?|planning|요구사항|정책|product|requirement/i.test(s)
+      && !DEV_RESOURCE_PATTERNS.some(re => re.test(s))) {
+    const stripped = s.replace(/\bpm\b|product\s*manager|기획서?|planning|요구사항|정책|product|requirement|작성\s*중/gi, "").replace(/\(?\s*ETA\b[^)]*\)?/gi, "").replace(/[-:\s]+/g, " ").trim();
+    return { phase: "기획", resourceTeam: stripped || null };
+  }
+
+  // 3. QA (phase + 선택적 resource). "검수"는 독립 단어일 때만 QA로 본다.
+  const qaWord = /\bqa\b|\bqc\b|테스트|\btest\b|(?:^|[\s:/()_-])검수(?:$|[\s:/()_-])|(?:^|[\s:/()_-])검증(?:$|[\s:/()_-])/i;
+  if (qaWord.test(s)) {
+    const stripped = s.replace(/\bqa\b|\bqc\b|테스트|\btest\b|(?:^|[\s:/()_-])검수(?=$|[\s:/()_-])|(?:^|[\s:/()_-])검증(?=$|[\s:/()_-])/gi, " ").replace(/[-:\s]+/g, " ").trim();
     return { phase: "QA", resourceTeam: stripped || null };
   }
 
-  // 3. 디자인
+  // 4. 디자인
   if (/디자인|design|\bui\b|\bux\b|^pd$/i.test(s)) {
     const stripped = s.replace(/디자인|design|\bui\b|\bux\b|^pd$/gi, "").replace(/[-:\s]+/g, " ").trim();
     return { phase: "디자인", resourceTeam: stripped || null };
   }
 
-  // 4. 개발 — dev resource pattern 매칭 또는 개발 키워드
+  // 5. 개발 — dev resource pattern 매칭 또는 개발 키워드
   // (기획보다 먼저 체크 — "Core AI BE 기획"처럼 섞여 있어도 dev resource 우선)
   const hasDevResource = DEV_RESOURCE_PATTERNS.some(re => re.test(s));
   const hasDevKeyword  = /개발|코드\s*리뷰|development|api/i.test(s) || /^dev$/i.test(s);
   if (hasDevResource || hasDevKeyword) {
     const isJustDev = /^(개발|dev|development|코드리뷰|코드\s*리뷰)(\s*(완료|진행\s*중|예정))?$/i.test(s);
     return { phase: "개발", resourceTeam: isJustDev ? null : s };
-  }
-
-  // 5. 기획
-  if (/\bpm\b|product\s*manager|기획서?|planning|요구사항|정책|product|requirement/i.test(s)) {
-    const stripped = s.replace(/\bpm\b|product\s*manager|기획서?|planning|요구사항|정책|product|requirement|작성\s*중/gi, "").replace(/\(?\s*ETA\b[^)]*\)?/gi, "").replace(/[-:\s]+/g, " ").trim();
-    return { phase: "기획", resourceTeam: stripped || null };
   }
 
   // 6. fallback — schedule 자격 없음 (ALLOWED_PHASES 미포함)
@@ -213,7 +216,7 @@ export function normalizeStatus(raw: string): ScheduleStatus {
 
   // 진행중 — 진행 중 / in progress / 작업 중 / 잔여 / 착수 / 진입 / 시작 / 킥오프
   // (작업 시작/진행 의미하는 verb 들은 모두 active 상태로 정규화)
-  if (/^(진행\s*중|in\s*progress|작업\s*중|작성\s*중)$/i.test(s)) return "진행중";
+  if (/^(진행\s*중|in\s*progress|작업\s*중|작성\s*중|정리\s*중)$/i.test(s)) return "진행중";
   if (/(잔여|착수|진입|시작|킥\s*오프)/i.test(s))         return "진행중";
 
   // Parser Coverage v1.1 (2026-06-17) — phase+ing 결합 키워드.
@@ -257,8 +260,10 @@ export function normalizeRole(raw: string): string {
   if (/kick[-\s]?off|킥\s*오프/i.test(s)) return "Kick-Off";
   if (/launch|론치|런치|오픈/i.test(s)) return "Launch";
   if (/release|릴리즈|릴리스|배포/i.test(s)) return "Release";
+  // Planning nouns take precedence over business names that merely contain "검수".
+  if (/\bpm\b|기획서?|planning|요구사항|정책|requirement/i.test(s)) return "기획";
   // QA
-  if (/\bqa\b|qc|테스트|test|검수|검증/i.test(s)) return "QA";
+  if (/\bqa\b|\bqc\b|테스트|\btest\b|(?:^|[\s:/()_-])(?:검수|검증)(?:$|[\s:/()_-])/i.test(s)) return "QA";
   // Dev
   if (/be[-\s]?pp/i.test(s))   return "BE-PP";
   if (/be[-\s]?sp/i.test(s))   return "BE-SP";
@@ -623,7 +628,7 @@ const STATUS_KEYWORDS = [
   // 완료 (longest first)
   "완료됨", "완료",
   // 진행 (작업 중 / 진행 중 변형 + 잔여)
-  "진행 중", "진행중", "작업 중", "작업중", "작성 중", "작성중", "잔여 작업", "잔여",
+  "진행 중", "진행중", "작업 중", "작업중", "작성 중", "작성중", "정리 중", "정리중", "잔여 작업", "잔여",
   // Parser Coverage v1.1 (2026-06-17) — phase+ing 결합 키워드 추가.
   // "6/8 개발중" 등 운영 자연어 패턴이 normalize 시 "예정" 기본값 대신 정확한
   // status 로 분류되도록. 각 키워드의 normalizeStatus 매핑은 동일 파일에서 갱신.
@@ -655,7 +660,7 @@ function findStatusKeyword(text: string): { kw: string; index: number } | null {
 }
 
 function isCoordinationOnlyLine(text: string): boolean {
-  return /(논의|회의|미팅|sync|리뷰)/i.test(text) && !findStatusKeyword(text);
+  return /(논의|회의|미팅|sync|리뷰)/i.test(text);
 }
 
 /**

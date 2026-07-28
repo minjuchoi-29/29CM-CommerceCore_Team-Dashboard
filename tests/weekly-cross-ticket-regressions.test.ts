@@ -175,6 +175,36 @@ describe("대시보드 진행중 티켓 Weekly 형식 회귀 검증", () => {
     );
   });
 
+  test("TM-2564 — 통합검수는 QA가 아니며 논의 문장은 일정으로 만들지 않음", () => {
+    const parsed = parseWeekly([
+      "31주차 Weekly 공유사항",
+      "📅 일정",
+      "- 통합검수 정책 플로우 정리중 (ETA 7/31)",
+      "- 통합 성과 지표 논의 예정 7/31",
+    ].join("\n"), "TM-2564");
+
+    assert.equal(parsed.scheduleItems.some(item => item.phase === "QA"), false);
+    assert.equal(parsed.scheduleItems.some(item => /논의/.test(item.rawText)), false);
+    assert.deepEqual(
+      parsed.scheduleItems.map(item => [item.phase, item.startDate, item.status]),
+      [["기획", "2026-07-31", "진행중"]],
+    );
+  });
+
+  test("TM-2922 — 날짜와 예정 상태가 있어도 리뷰·Sync는 일정이 아님", () => {
+    const parsed = parseWeekly([
+      "📅 일정",
+      "- PM: 7/28 PRD 리뷰 및 ETA 산정 예정",
+      "- 디자인: 7/29 1차 Sync 예정",
+      "- 29CM BE: 7/20~8/12 개발 진행중",
+    ].join("\n"), "TM-2922");
+
+    assert.deepEqual(
+      parsed.scheduleItems.map(item => [item.phase, item.resourceTeam]),
+      [["개발", "29CM BE"]],
+    );
+  });
+
   test("TM-3616 — 콜론 앞 완료 상태를 보존", () => {
     const parsed = parseWeekly("📅 일정\n- 개발 완료: 8/21", "TM-3616");
     assert.deepEqual(

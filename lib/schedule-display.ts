@@ -17,6 +17,8 @@ export type CompactScheduleResult<T> = {
   history: T[];
   supersededCount: number;
   completedCount: number;
+  invalidCount: number;
+  noiseCount: number;
 };
 
 const MILESTONE_PHASES = new Set(["Kick-Off", "Release", "Launch"]);
@@ -72,6 +74,27 @@ function rowDate(row: ScheduleDisplayRow): number | null {
   return Number.isNaN(timestamp) ? null : timestamp;
 }
 
+function hasInvalidDate(row: ScheduleDisplayRow): boolean {
+  const values = [row.start, row.end].filter((value): value is string => !!value);
+  for (const value of values) {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return true;
+    const year = Number(match[1]);
+    const parsed = new Date(`${value}T00:00:00`);
+    if (year < 2000 || year > new Date().getFullYear() + 5 || Number.isNaN(parsed.getTime())) {
+      return true;
+    }
+  }
+  return !!row.start && !!row.end && row.end < row.start;
+}
+
+function isCoordinationNoise(row: ScheduleDisplayRow): boolean {
+  if (row.source !== "jira_weekly") return false;
+  const text = `${row.role} ${row.detail ?? ""}`;
+  return /(논의|회의|미팅|sync|리뷰)/i.test(text)
+    || (row.phase === "QA" && /통합검수/.test(text) && /(정책|기획|요구사항)/.test(text));
+}
+
 /**
  * 화면 표시만 정리한다. 저장 데이터는 변경하지 않는다.
  *
@@ -99,8 +122,20 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
   const history: T[] = [];
   let supersededCount = 0;
   let completedCount = 0;
+  let invalidCount = 0;
+  let noiseCount = 0;
 
   rows.forEach((row, index) => {
+    if (row.source === "jira_weekly" && hasInvalidDate(row)) {
+      history.push(row);
+      invalidCount += 1;
+      return;
+    }
+    if (isCoordinationNoise(row)) {
+      history.push(row);
+      noiseCount += 1;
+      return;
+    }
     if (row.source === "jira_weekly") {
       const latestIndex = latestWeeklyIndex.get(weeklyIdentity(row));
       if (latestIndex !== index) {
@@ -121,5 +156,5 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
     current.push(row);
   });
 
-  return { current, history, supersededCount, completedCount };
+  return { current, history, supersededCount, completedCount, invalidCount, noiseCount };
 }

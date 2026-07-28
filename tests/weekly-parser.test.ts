@@ -262,12 +262,14 @@ describe("parseWeekly — TM-2727 (nested QA bulletList, no section markers)", (
 describe("parseWeekly — TM-2756 (flat paragraphs, role-prefixed lines)", () => {
   const result = parseWeekly(loadText("TM-2756"), "TM-2756");
 
-  test("scheduleItems contains 기획 line", () => {
+  test("기획 리뷰 예정은 협업 이벤트이므로 세부 일정에서 제외", () => {
     const planning = result.scheduleItems.find(s => s.phase === "기획");
-    assert.ok(planning, "기획 schedule candidate present");
-    assert.equal(planning!.phaseSource, "roleRaw");
-    assert.equal(planning!.status, "예정");
-    assert.ok(planning!.startDate);
+    assert.equal(planning, undefined);
+    assert.equal(
+      result.classifiedLines?.some(line =>
+        line.content.includes("기획") && /리뷰/.test(line.content)),
+      true,
+    );
   });
 
   test("디자인 line classified but NOT in scheduleItems (no date, 확인필요 status)", () => {

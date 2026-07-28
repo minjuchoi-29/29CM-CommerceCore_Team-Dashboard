@@ -199,7 +199,21 @@ function isCleanupCandidate(row: RoleSchedule): { isCleanup: boolean; reason?: s
   if (!phase || phase === "기타") return { isCleanup: true, reason: `phase "${phase ?? "(없음)"}" — 운영 단계 인식 실패` };
   if (!EXEC.has(row.status))    return { isCleanup: true, reason: `status "${row.status}" — 실행성 아님` };
   if (NON_SCHEDULE_RE.test(combined)) return { isCleanup: true, reason: "non_schedule_indicator — 설명/조건성 문장" };
+  if (/(논의|회의|미팅|sync|리뷰)/i.test(combined)) return { isCleanup: true, reason: "coordination_only — 논의·리뷰·Sync" };
+  if (phase === "QA" && /통합검수/.test(combined) && /(정책|기획|요구사항)/.test(combined)) {
+    return { isCleanup: true, reason: "misclassified_phase — 업무명의 검수를 QA로 오인" };
+  }
   if (!row.start && !row.end)   return { isCleanup: true, reason: "no date — 날짜 미확정" };
+  const dateValues = [row.start, row.end].filter(Boolean);
+  if (dateValues.some(value => {
+    const match = value.match(/^(\d{4})-\d{2}-\d{2}$/);
+    if (!match) return true;
+    const year = Number(match[1]);
+    return year < 2000 || year > new Date().getFullYear() + 5
+      || Number.isNaN(new Date(`${value}T00:00:00`).getTime());
+  }) || (!!row.start && !!row.end && row.end < row.start)) {
+    return { isCleanup: true, reason: "invalid_date — 날짜 범위 오류" };
+  }
   if (row.confidence === "low") return { isCleanup: true, reason: "low confidence" };
   return { isCleanup: false };
 }

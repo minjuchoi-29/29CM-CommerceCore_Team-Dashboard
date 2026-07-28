@@ -65,3 +65,31 @@ test("완료된 과거 일정은 이력으로 이동한다", () => {
   assert.deepEqual(result.history.map(row => row.role), ["디자인"]);
   assert.equal(result.completedCount, 1);
 });
+
+test("잘못된 연도 또는 종료일이 시작일보다 빠른 자동 일정은 현재 화면에서 제외한다", () => {
+  const rows: ScheduleDisplayRow[] = [
+    { role: "BE", phase: "개발", start: "0026-06-28", end: "2026-07-01", status: "진행중", source: "jira_weekly" },
+    { role: "QA", phase: "QA", start: "2026-08-10", end: "2026-08-01", status: "예정", source: "jira_weekly" },
+    { role: "기획", phase: "기획", start: "2026-07-01", end: "2026-07-31", status: "진행중", source: "jira_weekly" },
+  ];
+
+  const result = compactSchedulesForDisplay(rows, futureNow);
+
+  assert.deepEqual(result.current.map(row => row.role), ["기획"]);
+  assert.deepEqual(result.history.map(row => row.role), ["BE", "QA"]);
+  assert.equal(result.invalidCount, 2);
+});
+
+test("과거에 저장된 논의·Sync 자동 행은 현재 화면에서 제외하되 수동 행은 보호한다", () => {
+  const rows: ScheduleDisplayRow[] = [
+    { role: "개발", detail: "PRD 리뷰 및 개발 논의 진행", phase: "개발", start: "2026-06-26", end: "2026-06-26", status: "진행중", source: "jira_weekly" },
+    { role: "QA", detail: "통합 성과 지표 논의 예정", phase: "QA", start: "2026-07-09", end: "2026-07-09", status: "예정", source: "jira_weekly" },
+    { role: "QA", detail: "통합검수 정책 플로우 정리중", phase: "QA", start: "2026-06-18", end: "2026-06-18", status: "진행중", source: "jira_weekly" },
+    { role: "개발", detail: "개발팀 Sync", phase: "개발", start: "2026-07-01", end: "2026-07-01", status: "예정", source: "manual" },
+  ];
+
+  const result = compactSchedulesForDisplay(rows, futureNow);
+
+  assert.deepEqual(result.current.map(row => row.source), ["manual"]);
+  assert.equal(result.noiseCount, 3);
+});
