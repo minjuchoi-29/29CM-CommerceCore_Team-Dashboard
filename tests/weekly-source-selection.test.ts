@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildWeeklyReplaySources,
   selectWeeklySource,
   type WeeklySourceCandidate,
 } from "../lib/weekly-source";
@@ -73,5 +74,54 @@ describe("selectWeeklySource — current Weekly policy", () => {
     assert.equal(qa?.startDate, "2026-07-27");
     assert.equal(qa?.endDate, "2026-07-29");
     assert.equal(launch?.startDate, "2026-08-06");
+  });
+});
+
+describe("buildWeeklyReplaySources — archived Weekly replay", () => {
+  it("Automation 댓글은 오래된 순서로, 현재 Weekly는 마지막에 둠", () => {
+    const sources = buildWeeklyReplaySources(
+      [
+        {
+          sourceId: "comment:30",
+          text: "30주차",
+          source: "comment",
+          sourceWeek: "30주차",
+          sourceUpdatedAt: "2026-07-24",
+          created: "2026-07-24",
+        },
+        {
+          sourceId: "comment:28",
+          text: "28주차",
+          source: "comment",
+          sourceWeek: "28주차",
+          sourceUpdatedAt: "2026-07-10",
+          created: "2026-07-10",
+        },
+      ],
+      {
+        sourceId: "customfield:current",
+        text: "현재 Weekly",
+        source: "customfield",
+        sourceWeek: "31주차",
+        sourceUpdatedAt: "2026-07-28",
+      },
+    );
+
+    assert.deepEqual(
+      sources.map(source => source.sourceId),
+      ["comment:28", "comment:30", "customfield:current"],
+    );
+  });
+
+  it("현재 fallback이 이미 포함된 comment면 중복하지 않음", () => {
+    const comment = {
+      sourceId: "comment:30",
+      text: "30주차",
+      source: "comment" as const,
+      sourceWeek: "30주차",
+      sourceUpdatedAt: "2026-07-24",
+      created: "2026-07-24",
+    };
+    assert.equal(buildWeeklyReplaySources([comment], comment).length, 1);
   });
 });

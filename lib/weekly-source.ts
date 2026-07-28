@@ -128,6 +128,7 @@ export function isWeeklyAutomationComment(
 }
 
 export type WeeklyCommentCandidate = {
+  id?: string;
   text: string;
   updated: string;
   created: string;
@@ -135,6 +136,29 @@ export type WeeklyCommentCandidate = {
   markers: string[];
   qualifiesForSync: boolean;
 };
+
+export type WeeklyReplayCandidate = {
+  sourceId: string;
+  text: string;
+  source: "customfield" | "description" | "comment";
+  sourceWeek: string;
+  sourceUpdatedAt: string;
+  created?: string;
+};
+
+/** 과거 Automation 댓글은 오래된 순서로, 현재 live Weekly는 항상 마지막에 적용한다. */
+export function buildWeeklyReplaySources(
+  comments: WeeklyReplayCandidate[],
+  current: WeeklyReplayCandidate | null,
+): WeeklyReplayCandidate[] {
+  const ordered = [...comments].sort((a, b) =>
+    (a.created ?? a.sourceUpdatedAt).localeCompare(b.created ?? b.sourceUpdatedAt)
+  );
+  if (current && !ordered.some(source => source.sourceId === current.sourceId)) {
+    ordered.push(current);
+  }
+  return ordered;
+}
 
 /** Comments must already be ordered newest-first by Jira. */
 export function selectLatestQualifyingComment<T extends WeeklyCommentCandidate>(

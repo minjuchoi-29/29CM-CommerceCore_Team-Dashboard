@@ -314,6 +314,7 @@ const SECTION_MARKER_ALIASES: Array<{ section: SectionGroup; alias: string }> = 
   { section: "progress", alias: "진행중" },
   { section: "progress", alias: "진행 현황" },
   { section: "progress", alias: "Progress" },
+  { section: "progress", alias: "Progress Detail" },
   { section: "progress", alias: "주요 진행" },
   { section: "progress", alias: "현황" },
   // schedule
@@ -326,6 +327,7 @@ const SECTION_MARKER_ALIASES: Array<{ section: SectionGroup; alias: string }> = 
   { section: "schedule", alias: "주요 일정" },
   { section: "schedule", alias: "이번주 일정" },
   { section: "schedule", alias: "금주 일정" },
+  { section: "schedule", alias: "Milestone" },
   // risk
   { section: "risk", alias: "이슈/리스크" },
   { section: "risk", alias: "이슈·리스크" },
@@ -339,6 +341,7 @@ const SECTION_MARKER_ALIASES: Array<{ section: SectionGroup; alias: string }> = 
   { section: "nextAction", alias: "다음 액션" },
   { section: "nextAction", alias: "다음액션" },
   { section: "nextAction", alias: "Next Action" },
+  { section: "nextAction", alias: "Next Step" },
   { section: "nextAction", alias: "Action Item" },
   { section: "nextAction", alias: "ActionItem" },
   { section: "nextAction", alias: "액션 아이템" },
@@ -348,7 +351,7 @@ const SECTION_MARKER_ALIASES: Array<{ section: SectionGroup; alias: string }> = 
 function normalizeForMarkerMatch(s: string): string {
   // [...], <...>, plain alias 모두 지원. 양쪽 공백, 콜론, 줄 끝 허용.
   return s
-    .replace(/^[\[<*🧭#]\s*/, "")  // leading bracket / asterisk / 🧭 / # 제거
+    .replace(/^[\[<*🧭#\-•·●○◦]\s*/, "")  // leading bracket / bullet / 🧭 / # 제거
     .replace(/\s*[\]>:]\s*$/, "")  // trailing bracket / colon 제거
     .replace(/^\s*\d+\s*주차\s*/, "")  // "21주차 일정" 같은 prefix 제거
     .trim();

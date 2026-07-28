@@ -182,10 +182,24 @@ export function mergeWeeklySync(
 
   for (const item of parsed.scheduleItems) {
     // 우선순위: parser가 계산한 stableTaskId → legacy mergeKey fallback
-    const key = item.stableTaskId ?? buildMergeKey(ticketKey, item.normalizedRole);
+    let key = item.stableTaskId ?? buildMergeKey(ticketKey, item.normalizedRole);
+    let existing = scheduleMap.get(key);
+    // 과거 Weekly에서 "일정 산정 / 실제 개발"로 세분화된 뒤 최신 Weekly가
+    // "BE: 완료"처럼 역할만 적는 경우, generic 중복 행을 만들지 않고 실제 개발 행을 갱신한다.
+    if (!existing && !item.taskLabel && item.phase && !MILESTONE_PHASES.has(item.phase)) {
+      const sameLane = Array.from(scheduleMap.entries()).filter(([, row]) =>
+        row.phase === item.phase
+        && (row.resourceTeam ?? null) === (item.resourceTeam ?? null)
+      );
+      const preferred = sameLane.find(([, row]) => /^(실제\s*)?개발$/i.test(row.detail ?? ""));
+      const fallback = sameLane.length === 1 ? sameLane[0] : undefined;
+      const matched = preferred ?? fallback;
+      if (matched) {
+        [key, existing] = matched;
+      }
+    }
     processedKeys.add(key);
 
-    const existing = scheduleMap.get(key);
     const traceEntry: MergeTraceEntry = {
       itemRawText: item.rawText,
       itemStableTaskId: item.stableTaskId,
@@ -199,10 +213,14 @@ export function mergeWeeklySync(
     };
 
     if (!existing) {
+      // 날짜 없는 완료/진행 신호는 기존 동일 행을 갱신할 때만 사용한다.
+      // sign-off 완료 같은 진행 보고가 빈 신규 일정으로 생성되는 것을 차단한다.
+      if (!item.startDate) continue;
       // ── 신규 row append ──────────────────────────────────────
       isIdempotent = false;
       const newRow: ExtendedSchedule = {
         role: item.normalizedRole,
+        detail: item.taskLabel ?? undefined,
         person: item.assignee ?? "",
         start: item.startDate ?? "",
         end: item.endDate ?? item.startDate ?? "",
@@ -278,7 +296,10 @@ export function mergeWeeklySync(
       if (!sameStatus && item.status !== "확인필요") conflicts.push({ field: "status", oldV: existing.status, newV: toStorageStatus(newStatus) });
       if (!samePerson && item.assignee) conflicts.push({ field: "person", oldV: existing.person, newV: newPerson });
 
-      const autoApply = !isLocked && !isManualProtected && conflicts.length <= 1;
+      // Jira Weekly가 만든 행은 한 번의 Weekly 수정에서 날짜·상태가 함께 바뀌어도
+      // 하나의 원자적 최신화로 본다. 수동/가져온/확정/잠금 행은 계속 보호한다.
+      const autoApply = !isLocked && !isManualProtected
+        && (existing.source === "jira_weekly" || conflicts.length <= 1);
       traceEntry.conflictCount = conflicts.length;
 
       for (const c of conflicts) {
@@ -292,8 +313,9 @@ export function mergeWeeklySync(
           oldValue: c.oldV,
           newValue: c.newV,
           autoApply,
-          resolved: false,
+          resolved: autoApply,
           createdAt: nowIso,
+          resolvedAt: autoApply ? nowIso : undefined,
         });
       }
 
@@ -304,6 +326,7 @@ export function mergeWeeklySync(
           end:    newEnd,
           status: toStorageStatus(newStatus),
           person: newPerson,
+          detail: item.taskLabel ?? existing.detail,
           sourceWeek: parsed.sourceWeek,
           sourceUpdatedAt: nowIso,
           lastSeenAt: nowIso,

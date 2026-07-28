@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   parseWeekly,
+  parseScheduleLinesWithCtx,
   parseScheduleLineWithCtx,
   resolvePhaseWithContext,
   classifyLineWithCtx,
@@ -134,6 +135,46 @@ describe("parseScheduleLineWithCtx", () => {
     assert.equal(item!.phase, "기획");
     assert.equal(item!.phaseSource, "roleRaw");
     assert.equal(item!.startDate, `${new Date().getFullYear()}-05-21`);
+  });
+});
+
+describe("parseScheduleLinesWithCtx — 한 역할의 다중 기간", () => {
+  test("BE 일정 산정과 실제 개발을 서로 다른 일정으로 확장", () => {
+    const items = parseScheduleLinesWithCtx(
+      "BE: 7/3~7/7 일정 산정 완료, 7/7~7/21 개발",
+      undefined,
+      2026,
+      "TM-3375",
+    );
+
+    assert.equal(items.length, 2);
+    assert.deepEqual(
+      items.map(item => ({
+        start: item.startDate,
+        end: item.endDate,
+        status: item.status,
+        taskLabel: item.taskLabel,
+      })),
+      [
+        { start: "2026-07-03", end: "2026-07-07", status: "완료", taskLabel: "일정 산정" },
+        { start: "2026-07-07", end: "2026-07-21", status: "예정", taskLabel: "실제 개발" },
+      ],
+    );
+    assert.notEqual(items[0].stableTaskId, items[1].stableTaskId);
+    assert.match(items[0].stableTaskId ?? "", /be-일정-산정$/);
+    assert.match(items[1].stableTaskId ?? "", /be-실제-개발$/);
+  });
+
+  test("parseWeekly 결과에도 두 일정이 모두 유지됨", () => {
+    const parsed = parseWeekly(
+      "28주차 Weekly 공유사항\n[일정]\nBE: 7/3~7/7 일정 산정 완료, 7/7~7/21 개발",
+      "TM-3375",
+    );
+    assert.equal(parsed.scheduleItems.length, 2);
+    assert.deepEqual(
+      parsed.scheduleItems.map(item => item.taskLabel),
+      ["일정 산정", "실제 개발"],
+    );
   });
 });
 

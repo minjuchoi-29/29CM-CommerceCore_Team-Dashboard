@@ -106,6 +106,96 @@ describe("manual row guard — weekly sync가 manual row를 덮어쓰지 않음"
   });
 });
 
+describe("P0 최신화 정책", () => {
+  const TICKET = "TM-3375";
+  const BASE_DATE = new Date("2026-07-28T00:00:00Z");
+
+  test("날짜 없는 완료 신호가 기존 jira_weekly 일정의 날짜를 보존하고 상태만 완료 처리", () => {
+    const existing: ExtendedSchedule = {
+      role: "BE",
+      person: "",
+      start: "2026-07-07",
+      end: "2026-07-21",
+      status: "진행중",
+      source: "jira_weekly",
+      sourceWeek: "29주차",
+      phase: "개발",
+      resourceTeam: "BE",
+      stableTaskId: "TM-3375::개발::be",
+    };
+    const parsed = parseWeekly("30주차\n[일정]\nBE: 완료", TICKET);
+    const result = mergeWeeklySync(TICKET, parsed, [existing], [], BASE_DATE);
+
+    assert.equal(result.updatedSchedules.length, 1);
+    assert.equal(result.updatedSchedules[0].start, "2026-07-07");
+    assert.equal(result.updatedSchedules[0].end, "2026-07-21");
+    assert.equal(result.updatedSchedules[0].status, "완료");
+  });
+
+  test("jira_weekly 행의 시작·종료·상태 변경을 한 번에 자동 적용", () => {
+    const existing: ExtendedSchedule = {
+      role: "QA",
+      person: "",
+      start: "2026-08-03",
+      end: "2026-08-05",
+      status: "예정",
+      source: "jira_weekly",
+      sourceWeek: "30주차",
+      phase: "QA",
+      resourceTeam: null,
+      stableTaskId: "TM-3375::QA::",
+    };
+    const parsed = parseWeekly("31주차\n[일정]\nQA: 7/27~7/29 진행중", TICKET);
+    const result = mergeWeeklySync(TICKET, parsed, [existing], [], BASE_DATE);
+
+    assert.equal(result.updatedSchedules[0].start, "2026-07-27");
+    assert.equal(result.updatedSchedules[0].end, "2026-07-29");
+    assert.equal(result.updatedSchedules[0].status, "진행중");
+    assert.equal(result.mergeTrace?.[0].outcome, "updated");
+    assert.equal(result.updateCandidates.length, 3);
+    assert.ok(result.updateCandidates.every(candidate => candidate.autoApply));
+    assert.ok(result.updateCandidates.every(candidate => candidate.resolved));
+  });
+
+  test("다중 기간은 detail이 다른 두 Gantt 행으로 저장", () => {
+    const parsed = parseWeekly(
+      "28주차\n[일정]\nBE: 7/3~7/7 일정 산정 완료, 7/7~7/21 개발",
+      TICKET,
+    );
+    const result = mergeWeeklySync(TICKET, parsed, [], [], BASE_DATE);
+
+    assert.equal(result.updatedSchedules.length, 2);
+    assert.deepEqual(
+      result.updatedSchedules.map(row => row.detail),
+      ["일정 산정", "실제 개발"],
+    );
+  });
+
+  test("후속 BE 역할 단위 업데이트는 실제 개발 행을 갱신하고 중복 행을 만들지 않음", () => {
+    const week28 = parseWeekly(
+      "28주차\n[일정]\nBE: 7/3~7/7 일정 산정 완료, 7/7~7/21 개발",
+      TICKET,
+    );
+    const initial = mergeWeeklySync(TICKET, week28, [], [], BASE_DATE);
+    const week29 = parseWeekly(
+      "29주차\n[일정]\nBE: 7/7~7/21 진행중",
+      TICKET,
+    );
+    const updated = mergeWeeklySync(
+      TICKET,
+      week29,
+      initial.updatedSchedules,
+      [],
+      BASE_DATE,
+    );
+
+    assert.equal(updated.updatedSchedules.length, 2);
+    const actualDevelopment = updated.updatedSchedules.find(row => row.detail === "실제 개발");
+    assert.equal(actualDevelopment?.status, "진행중");
+    assert.equal(actualDevelopment?.sourceWeek, "29주차");
+  });
+});
+
 // ─── mergeTrace outcome 검증 ─────────────────────────────────
 
 describe("mergeTrace — 각 outcome 분기 정확히 기록", () => {

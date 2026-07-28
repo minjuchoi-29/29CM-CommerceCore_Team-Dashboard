@@ -18,7 +18,7 @@ import {
   selectCompareSnapshot,
   summarizeTransitions,
 } from "@/lib/transitions";
-import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText, WeeklySyncMeta, WeeklyDetectedSource } from "@/lib/weekly-types";
+import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText, WeeklySyncMeta, WeeklyDetectedSource, WeeklyReplaySource } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
 import { isTicketPastRolePhase } from "@/lib/derived/phase-order";
 import {
@@ -2214,32 +2214,53 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 commentSourceCount++;  // 운영 가시성 — merge 는 진행 (v6 정책).
               }
 
-              const syncRes = await fetch("/api/weekly-sync", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ ticketKey: t.key, weeklyText: src.text }),
-              });
-              if (!syncRes.ok) {
+              const replaySources: WeeklyReplaySource[] = Array.isArray(src.syncSources) && src.syncSources.length > 0
+                ? src.syncSources
+                : [{
+                    sourceId: `${src.source ?? "unknown"}:${src.sourceUpdatedAt ?? ""}`,
+                    text: src.text,
+                    source: src.source ?? "comment",
+                    sourceWeek: src.parseSummary?.sourceWeek ?? "",
+                    sourceUpdatedAt: src.sourceUpdatedAt ?? "",
+                  }];
+              let result: Record<string, unknown> = {};
+              let syncFailed = false;
+              for (const replaySource of replaySources) {
+                const syncRes = await fetch("/api/weekly-sync", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    ticketKey: t.key,
+                    weeklyText: replaySource.text,
+                    sourceId: replaySource.sourceId,
+                  }),
+                });
+                if (!syncRes.ok) {
+                  syncFailed = true;
+                  break;
+                }
+                result = await syncRes.json() as Record<string, unknown>;
+              }
+              if (syncFailed) {
                 errorTotal++;
                 skipReasons.set(t.key, "sync_error");
                 setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, skippedSyncError: prev.skippedSyncError + 1 } : prev);
                 return;
               }
-              const result = await syncRes.json();
 
               const parsedCnt = src.parseSummary?.schedulesCount ?? 0;
               parsedTotal      += parsedCnt;
-              updatedTotal     += result.schedulesUpdated  ?? 0;
-              candidatesTotal  += result.updateCandidates  ?? 0;
-              appliedTotal     += result.appliedUpdates    ?? 0;
+              updatedTotal     += Number(result.schedulesUpdated  ?? 0);
+              candidatesTotal  += Number(result.updateCandidates  ?? 0);
+              appliedTotal     += Number(result.appliedUpdates    ?? 0);
 
               successKeys.add(t.key);
               setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, applied: prev.applied + 1 } : prev);
 
               console.log(
                 `[WeeklySync] ${t.key} src=${src.source} ` +
-                `parsed=${parsedCnt} updated=${result.schedulesUpdated ?? 0} ` +
-                `candidates=${result.updateCandidates ?? 0} ` +
+                `parsed=${parsedCnt} updated=${Number(result.schedulesUpdated ?? 0)} ` +
+                `candidates=${Number(result.updateCandidates ?? 0)} ` +
                 (result.isIdempotent ? "(idempotent)" : ""),
               );
             } catch (e) {
@@ -4804,6 +4825,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료", "개발완료"]);
   const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료"]);
+  const PLANNING_HOLD_STATUSES = new Set(["HOLD", "Postponed", "Blocked"]);
 
   // key 기준 중복 제거 (배치 + 커스텀 동시 로드 시 race condition 방어)
   const dedupedTickets = useMemo(() => {
@@ -4921,6 +4943,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
       const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
       if (isTicketDone) { counts["완료"]++; continue; }
+      if (PLANNING_HOLD_STATUSES.has(t.status)) { counts["플래닝 대기·검토"]++; continue; }
       if (bothDone || isJiraActive) counts["진행 중"]++;
       else counts["플래닝 대기·검토"]++;
     }
@@ -4945,7 +4968,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 요약 카드·필터 기준 — 상단 탭 planningCounts와 동일하게 PLANNING_DONE_STATUSES 사용
   const DONE_STATUSES      = [...PLANNING_DONE_STATUSES];
   const INPROGRESS_STATUSES = ["개발중", "In Progress", "QA중"];
-  const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
+  const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "Blocked", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
 
   // 완료 티켓의 우선순위는 의미 없으므로 진행중·대기 티켓만 남김
   /** Planning priority — 활성 ticket 만 (완료 제외) */
@@ -5010,8 +5033,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
         const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
         const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
-        if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone)) return false;
-        if (planningTab === "플래닝 대기·검토" && (bothDone || isJiraActive)) return false;
+        const isTicketHold = PLANNING_HOLD_STATUSES.has(t.status);
+        if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone && !isTicketHold)) return false;
+        if (planningTab === "플래닝 대기·검토" && ((bothDone || isJiraActive) && !isTicketHold)) return false;
         if (planningTab === "완료" && !isTicketDone) return false;
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
@@ -5253,9 +5277,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
       const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
       const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
+      const isTicketHold = PLANNING_HOLD_STATUSES.has(t.status);
       switch (tab) {
-        case "진행 중":          return (bothDone || isJiraActive) && !isTicketDone;
-        case "플래닝 대기·검토":  return !(bothDone || isJiraActive);
+        case "진행 중":          return (bothDone || isJiraActive) && !isTicketDone && !isTicketHold;
+        case "플래닝 대기·검토":  return isTicketHold || !(bothDone || isJiraActive);
         case "완료":             return isTicketDone;
       }
     };

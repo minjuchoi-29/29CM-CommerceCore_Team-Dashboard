@@ -85,6 +85,12 @@ export interface ParsedScheduleItem {
   endDate: string | null;
   status: ScheduleStatus;
   assignee: string | null;
+  /**
+   * 같은 역할 한 줄에 여러 기간이 있을 때 각 기간을 구분하는 세부 작업명.
+   * 예: "BE: 7/3~7/7 일정 산정, 7/7~7/21 개발"
+   *   → "일정 산정", "실제 개발"
+   */
+  taskLabel?: string | null;
   rawText: string;
   isCancelled: boolean;
   /** schedule candidate 신뢰도 — schedule row 후보화 시 사용 */
@@ -208,6 +214,16 @@ export interface WeeklySyncMeta {
   //   lastSkipReason 이 undefined 면 직전 시도가 성공 (또는 attempt 기록 없음).
   lastAttemptAt?: string;
   lastSkipReason?: "no_marker" | "src_error" | "sync_error";
+  /** 오래된 Weekly 댓글 재생 시 같은 source를 두 번 적용하지 않기 위한 bounded ledger. */
+  appliedSourceIds?: string[];
+}
+
+export interface WeeklyReplaySource {
+  sourceId: string;
+  text: string;
+  source: "customfield" | "description" | "comment";
+  sourceWeek: string;
+  sourceUpdatedAt: string;
 }
 
 /** 직전 sync 의 outcome 별 카운트. */

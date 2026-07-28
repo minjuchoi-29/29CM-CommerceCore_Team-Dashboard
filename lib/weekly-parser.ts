@@ -59,12 +59,14 @@ export function buildStableTaskId(
   phase: SchedulePhase,
   resourceTeam: string | null,
   startDate?: string | null,
+  taskLabel?: string | null,
 ): string {
   if (MILESTONE_PHASES.has(phase)) {
     const suffix = startDate || semanticSlug(resourceTeam || "");
     return `${ticketKey}::${phase}::${suffix}`;
   }
-  return `${ticketKey}::${phase}::${semanticSlug(resourceTeam || "")}`;
+  const semanticParts = [resourceTeam, taskLabel].filter(Boolean).join(" ");
+  return `${ticketKey}::${phase}::${semanticSlug(semanticParts)}`;
 }
 
 // 명시적 dev resource 명칭 — 발견되면 phase="개발"로 분류하고 raw 전체를 resourceTeam에 보관.
@@ -76,8 +78,17 @@ const DEV_RESOURCE_PATTERNS: RegExp[] = [
   /메가존/, /sotatek/i, /core/i, /platform/i,
   /\bcfe\b/i, /\bdfe\b/i, /\bsp\b/i, /\bpp\b/i,
   /mobile/i, /모바일/, /\bda\b/i, /\bcse\b/i,
-  /engineering/i,
+  /engineering/i, /frontend/i, /backend/i,
 ];
+
+function explicitResourceForParentContext(
+  raw: string,
+  parsed: { phase: SchedulePhase; resourceTeam: string | null },
+): string | null {
+  if (!parsed.resourceTeam) return null;
+  if (parsed.phase !== "개발") return parsed.resourceTeam;
+  return DEV_RESOURCE_PATTERNS.some(re => re.test(raw)) ? parsed.resourceTeam : null;
+}
 
 /**
  * raw role text를 phase + resourceTeam으로 분리.
@@ -113,8 +124,8 @@ export function extractPhaseAndResource(raw: string): { phase: SchedulePhase; re
   }
 
   // 3. 디자인
-  if (/디자인|design|\bui\b|\bux\b/i.test(s)) {
-    const stripped = s.replace(/디자인|design|\bui\b|\bux\b/gi, "").replace(/[-:\s]+/g, " ").trim();
+  if (/디자인|design|\bui\b|\bux\b|^pd$/i.test(s)) {
+    const stripped = s.replace(/디자인|design|\bui\b|\bux\b|^pd$/gi, "").replace(/[-:\s]+/g, " ").trim();
     return { phase: "디자인", resourceTeam: stripped || null };
   }
 
@@ -123,13 +134,13 @@ export function extractPhaseAndResource(raw: string): { phase: SchedulePhase; re
   const hasDevResource = DEV_RESOURCE_PATTERNS.some(re => re.test(s));
   const hasDevKeyword  = /개발|코드\s*리뷰|development|api/i.test(s) || /^dev$/i.test(s);
   if (hasDevResource || hasDevKeyword) {
-    const isJustDev = /^(개발|dev|development|코드리뷰|코드\s*리뷰)$/i.test(s);
+    const isJustDev = /^(개발|dev|development|코드리뷰|코드\s*리뷰)(\s*(완료|진행\s*중|예정))?$/i.test(s);
     return { phase: "개발", resourceTeam: isJustDev ? null : s };
   }
 
   // 5. 기획
-  if (/기획|planning|요구사항|정책|product|requirement/i.test(s)) {
-    const stripped = s.replace(/기획|planning|요구사항|정책|product|requirement/gi, "").replace(/[-:\s]+/g, " ").trim();
+  if (/\bpm\b|product\s*manager|기획서?|planning|요구사항|정책|product|requirement/i.test(s)) {
+    const stripped = s.replace(/\bpm\b|product\s*manager|기획서?|planning|요구사항|정책|product|requirement|작성\s*중/gi, "").replace(/\(?\s*ETA\b[^)]*\)?/gi, "").replace(/[-:\s]+/g, " ").trim();
     return { phase: "기획", resourceTeam: stripped || null };
   }
 
@@ -176,6 +187,7 @@ const NON_SCHEDULE_INDICATORS = [
   "yellow → green", "green → yellow",
   "blocker", "리소스 부족", "리소스 재산정",
   "정책 이슈", "조건부 진행", "전제 조건", "선행 조건",
+  "DFD", "마일스톤 산정",
 ];
 
 // 리스크/이슈 시그널 — note 대신 risk로 분류
@@ -201,7 +213,7 @@ export function normalizeStatus(raw: string): ScheduleStatus {
 
   // 진행중 — 진행 중 / in progress / 작업 중 / 잔여 / 착수 / 진입 / 시작 / 킥오프
   // (작업 시작/진행 의미하는 verb 들은 모두 active 상태로 정규화)
-  if (/^(진행\s*중|in\s*progress|작업\s*중)$/i.test(s)) return "진행중";
+  if (/^(진행\s*중|in\s*progress|작업\s*중|작성\s*중)$/i.test(s)) return "진행중";
   if (/(잔여|착수|진입|시작|킥\s*오프)/i.test(s))         return "진행중";
 
   // Parser Coverage v1.1 (2026-06-17) — phase+ing 결합 키워드.
@@ -311,7 +323,7 @@ function extractDateRange(text: string, fallbackYear?: number): {
   start: string | null; end: string | null; raw: string; isRange: boolean;
 } | null {
   // 범위: M/D(요일)? ~ M/D(요일)? 또는 YYYY-MM-DD ~ YYYY-MM-DD
-  const rangeRe = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*~\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/;
+  const rangeRe = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/;
   const r = text.match(rangeRe);
   if (r) {
     return { start: parseDate(r[1], fallbackYear), end: parseDate(r[2], fallbackYear), raw: r[0], isRange: true };
@@ -326,18 +338,208 @@ function extractDateRange(text: string, fallbackYear?: number): {
   return null;
 }
 
+const DATE_RANGE_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/g;
+const DATE_TOKEN_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?(?:\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?)?/g;
+
+function normalizeTaskLabel(text: string, phase: SchedulePhase): string | null {
+  const cleaned = text
+    .replace(DATE_RANGE_GLOBAL_RE, " ")
+    .replace(/진행\s*중|in\s*progress|예정|완료|done|completed|종료|마감/gi, " ")
+    .replace(/^[,;/·\s]+|[,;/·\s]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return null;
+  if (phase === "개발" && /^(개발|development)$/i.test(cleaned)) return "실제 개발";
+  return cleaned;
+}
+
+function finalizeExpandedItem(
+  item: ParsedScheduleItem,
+  line: string,
+  ticketKey: string | undefined,
+  resourceTeam?: string | null,
+): ParsedScheduleItem {
+  item.rawText = line;
+  if (!item.phase) return item;
+
+  if (resourceTeam !== undefined) {
+    item.resourceTeam = resourceTeam;
+    item.normalizedRole = deriveNormalizedRole(item.phase, resourceTeam);
+  }
+  if (ticketKey) {
+    item.stableTaskId = buildStableTaskId(
+      ticketKey,
+      item.phase,
+      item.resourceTeam ?? null,
+      MILESTONE_PHASES.has(item.phase) ? item.startDate : null,
+      item.taskLabel,
+    );
+  }
+  return item;
+}
+
+/**
+ * 운영형 복합 개발 라인을 팀별 일정으로 확장한다.
+ * - "7/22~ 개발중 (Pricing, Purchase, CMFE)"
+ * - "Pricing, Purchase 개발완료 / Commerce FE 개발중"
+ */
+function parseMultiTeamDevelopmentLine(
+  line: string,
+  fallbackYear?: number,
+  ticketKey?: string,
+): ParsedScheduleItem[] {
+  const parenthesized = line.match(/\(([^)]+)\)/);
+  const sharedDate = extractDateRange(line, fallbackYear);
+  const sharedStatus = findStatusKeyword(line)?.kw;
+  if (
+    parenthesized
+    && sharedStatus
+    && /개발/i.test(line)
+  ) {
+    const teams = parenthesized[1].split(/\s*,\s*/).map(team => team.trim()).filter(Boolean);
+    if (teams.length > 1) {
+      return teams.flatMap(team => {
+        const parsed = parseScheduleLineWithCtx(
+          `개발: ${sharedDate?.raw ?? ""} ${sharedStatus}`.trim(),
+          undefined,
+          fallbackYear,
+          ticketKey,
+        );
+        return parsed ? [finalizeExpandedItem(parsed, line, ticketKey, team)] : [];
+      });
+    }
+  }
+
+  if (!line.includes("/")) return [];
+  const clauses = line.split(/\s+\/\s+/);
+  const expanded: ParsedScheduleItem[] = [];
+  for (const clause of clauses) {
+    const match = clause.trim().match(/^(.+?)\s+(개발\s*완료|개발\s*중|개발완료|개발중)$/i);
+    if (!match) continue;
+    const teams = match[1].split(/\s*,\s*/).map(team => team.trim()).filter(Boolean);
+    const statusRaw = /완료/.test(match[2]) ? "완료" : "진행중";
+    for (const team of teams) {
+      const parsed = parseScheduleLineWithCtx(
+        `개발: ${statusRaw}`,
+        undefined,
+        fallbackYear,
+        ticketKey,
+      );
+      if (parsed) expanded.push(finalizeExpandedItem(parsed, line, ticketKey, team));
+    }
+  }
+  return expanded.length > 1 ? expanded : [];
+}
+
+/** "8/19 개발완료, QA"를 개발 완료와 QA 시작 후보로 각각 보존한다. */
+function parseSameDatePhaseTransition(
+  line: string,
+  fallbackYear?: number,
+  ticketKey?: string,
+): ParsedScheduleItem[] {
+  const transition = line.match(
+    /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*개발\s*완료\s*[,;/·]\s*QA\b/i,
+  );
+  if (!transition) return [];
+  const dateRaw = transition[1];
+  const development = parseScheduleLineWithCtx(
+    `개발: ${dateRaw} 완료`,
+    undefined,
+    fallbackYear,
+    ticketKey,
+  );
+  const qa = parseScheduleLineWithCtx(
+    `QA: ${dateRaw} 예정`,
+    undefined,
+    fallbackYear,
+    ticketKey,
+  );
+  return [development, qa]
+    .filter((item): item is ParsedScheduleItem => item !== null)
+    .map(item => finalizeExpandedItem(item, line, ticketKey));
+}
+
+/**
+ * 한 라인에 명시적 기간이 여러 개 있으면 기간별 ParsedScheduleItem으로 확장한다.
+ * 역할(prefix)은 공유하되 taskLabel과 stableTaskId를 분리해 Gantt에서 독립 행으로 유지한다.
+ */
+export function parseScheduleLinesWithCtx(
+  line: string,
+  ctx: { parentPhase?: SchedulePhase; parentText?: string } | undefined,
+  fallbackYear?: number,
+  ticketKey?: string,
+): ParsedScheduleItem[] {
+  const teamItems = parseMultiTeamDevelopmentLine(line, fallbackYear, ticketKey);
+  if (teamItems.length > 0) return teamItems;
+
+  const transitionItems = parseSameDatePhaseTransition(line, fallbackYear, ticketKey);
+  if (transitionItems.length > 0) return transitionItems;
+
+  const matches = Array.from(line.matchAll(DATE_TOKEN_GLOBAL_RE));
+  if (matches.length < 2) {
+    const item = parseScheduleLineWithCtx(line, ctx, fallbackYear, ticketKey);
+    return item ? [item] : [];
+  }
+
+  const colon = line.indexOf(":");
+  const colonPrefix = colon > 0 ? line.slice(0, colon).trim() : "";
+  const hasRolePrefix = colon > 0
+    && colon < 40
+    && !extractDateRange(colonPrefix, fallbackYear);
+  const rolePrefix = hasRolePrefix ? `${colonPrefix}: ` : "";
+  const contentStart = rolePrefix ? colon + 1 : 0;
+  const content = line.slice(contentStart).trim();
+  const dateBearingClauses = content
+    .split(/\s*[,;]\s*/)
+    .filter(clause => {
+      DATE_TOKEN_GLOBAL_RE.lastIndex = 0;
+      return DATE_TOKEN_GLOBAL_RE.test(clause);
+    });
+  DATE_TOKEN_GLOBAL_RE.lastIndex = 0;
+
+  return matches.flatMap((match, index) => {
+    const matchStart = match.index ?? 0;
+    const nextStart = matches[index + 1]?.index ?? line.length;
+    const segmentStart = index === 0 ? contentStart : matchStart;
+    const fallbackSegment = line.slice(segmentStart, nextStart);
+    const rawSegment = (dateBearingClauses.length === matches.length
+      ? dateBearingClauses[index]
+      : fallbackSegment)
+      .replace(/^[,;/·\s]+|[,;/·\s]+$/g, "")
+      .trim();
+    const segment = `${rolePrefix}${rawSegment}`.trim();
+    const item = parseScheduleLineWithCtx(segment, ctx, fallbackYear, ticketKey);
+    if (!item || !item.phase || item.phase === "기타") return [];
+
+    const labelSource = rawSegment.replace(match[0], " ");
+    const taskLabel = normalizeTaskLabel(labelSource, item.phase);
+    item.taskLabel = taskLabel;
+    item.rawText = line;
+    if (ticketKey) {
+      item.stableTaskId = buildStableTaskId(
+        ticketKey,
+        item.phase,
+        item.resourceTeam ?? null,
+        MILESTONE_PHASES.has(item.phase) ? item.startDate : null,
+        taskLabel,
+      );
+    }
+    return [item];
+  });
+}
+
 // ─── 섹션 분리 ─────────────────────────────────────────────────
 // 표준: [...], 꺽쇠: <...>, plain: 줄 단독으로 alias.
 // 뒤 따라오는 anchor: 다음 [, <, 또는 다음 plain alias, EOF
 
 const SECTION_ALIASES: Record<string, string[]> = {
-  progress:   ["진행상황", "진행 중", "진행중", "진행 현황", "Progress", "주요 진행", "현황"],
+  progress:   ["진행상황", "진행 중", "진행중", "진행 현황", "Progress", "Progress Detail", "주요 진행", "현황"],
   // 운영 패턴 보강 (Parser Coverage v1.1 — 2026-06-17):
   //   "주요 일정 : ...", "이번주 일정", "금주 일정" 인식.
   //   lib/weekly-ast.ts:SECTION_MARKER_ALIASES 와 1:1 동기 — 정책 변경 시 양쪽 갱신.
-  schedule:   ["일정", "Schedule", "스케줄", "타임라인", "주요 일정", "이번주 일정", "금주 일정"],
+  schedule:   ["일정", "Schedule", "스케줄", "타임라인", "주요 일정", "이번주 일정", "금주 일정", "Milestone"],
   risk:       ["이슈/리스크", "이슈·리스크", "이슈/콜아웃", "이슈", "리스크", "Risk", "Issue", "콜아웃"],
-  nextAction: ["다음 액션", "다음액션", "Next Action", "Action Item", "ActionItem", "액션 아이템", "다음 단계"],
+  nextAction: ["다음 액션", "다음액션", "Next Action", "Next Step", "Action Item", "ActionItem", "액션 아이템", "다음 단계"],
 };
 
 function escapeRe(s: string): string {
@@ -421,7 +623,7 @@ const STATUS_KEYWORDS = [
   // 완료 (longest first)
   "완료됨", "완료",
   // 진행 (작업 중 / 진행 중 변형 + 잔여)
-  "진행 중", "진행중", "작업 중", "작업중", "잔여 작업", "잔여",
+  "진행 중", "진행중", "작업 중", "작업중", "작성 중", "작성중", "잔여 작업", "잔여",
   // Parser Coverage v1.1 (2026-06-17) — phase+ing 결합 키워드 추가.
   // "6/8 개발중" 등 운영 자연어 패턴이 normalize 시 "예정" 기본값 대신 정확한
   // status 로 분류되도록. 각 키워드의 normalizeStatus 매핑은 동일 파일에서 갱신.
@@ -450,6 +652,20 @@ function findStatusKeyword(text: string): { kw: string; index: number } | null {
     if (i >= 0) return { kw, index: i };
   }
   return null;
+}
+
+function isCoordinationOnlyLine(text: string): boolean {
+  return /(논의|회의|미팅|sync|리뷰)/i.test(text) && !findStatusKeyword(text);
+}
+
+/**
+ * 실제 작업 기간이 아니라 "언제 일정을 정할지"만 적은 문장.
+ * 다음 Weekly에서 구체적인 착수일/기간이 들어오면 그때 일정으로 생성한다.
+ */
+function isScheduleDecisionOnlyLine(text: string): boolean {
+  return /\bTBD\b/i.test(text)
+    || /(?:일정|마일스톤)\s*(?:확정|산정|확인)\s*(?:예정|필요|후)/i.test(text)
+    || /(?:요구사항|기획|디자인)\s*리뷰\s*후[^.\n]*(?:일정|마일스톤)?\s*(?:확정|산정)/i.test(text);
 }
 
 /**
@@ -497,7 +713,7 @@ export function classifyLineWithCtx(
     return { type: "note", confidence: "low", content, rawText: line };
   }
 
-  const nonSchedule = matchesAny(content, NON_SCHEDULE_INDICATORS);
+  const nonSchedule = matchesAny(content, NON_SCHEDULE_INDICATORS) || isCoordinationOnlyLine(content);
   const lowConf = matchesAny(content, LOW_CONFIDENCE_KEYWORDS);
   const isRisk = matchesAny(content, RISK_INDICATORS);
 
@@ -591,7 +807,12 @@ export function resolvePhaseWithContext(
         return { phase: r.phase, resourceTeam: r.resourceTeam, phaseSource: "roleRaw", inheritedFromParentText: null };
       }
       if (parentPhase) {
-        return { phase: parentPhase, resourceTeam: null, phaseSource: "parentInheritance", inheritedFromParentText: null };
+        return {
+          phase: parentPhase,
+          resourceTeam: explicitResourceForParentContext(roleRaw, r),
+          phaseSource: "parentInheritance",
+          inheritedFromParentText: null,
+        };
       }
       return { phase: r.phase, resourceTeam: r.resourceTeam, phaseSource: "roleRaw", inheritedFromParentText: null };
     }
@@ -603,7 +824,12 @@ export function resolvePhaseWithContext(
       return { phase: b.phase, resourceTeam: b.resourceTeam, phaseSource: "lineBody", inheritedFromParentText: null };
     }
     if (parentPhase) {
-      return { phase: parentPhase, resourceTeam: null, phaseSource: "parentInheritance", inheritedFromParentText: null };
+      return {
+        phase: parentPhase,
+        resourceTeam: explicitResourceForParentContext(lineFull, b),
+        phaseSource: "parentInheritance",
+        inheritedFromParentText: null,
+      };
     }
     return { phase: b.phase, resourceTeam: b.resourceTeam, phaseSource: "lineBody", inheritedFromParentText: null };
   }
@@ -632,7 +858,11 @@ export function parseScheduleLineWithCtx(
   let roleRaw = "";
   let rest = line.trim();
   const colon = rest.indexOf(":");
-  if (colon > 0 && colon < 40) {
+  if (
+    colon > 0
+    && colon < 40
+    && !extractDateRange(rest.slice(0, colon), fallbackYear)
+  ) {
     roleRaw = rest.slice(0, colon).trim();
     rest = rest.slice(colon + 1).trim();
   }
@@ -646,7 +876,7 @@ export function parseScheduleLineWithCtx(
   if (SLASH_SEP.test(rest)) {
     const parts = rest.split(SLASH_SEP).map(p => p.trim());
     datePart = parts[0] ?? "";
-    isRangeDate = datePart.includes("~");
+    isRangeDate = !!extractDateRange(datePart, fallbackYear)?.isRange;
     statusRaw = parts[1] ?? "";
     assigneeRaw = parts[2] ?? "";
   }
@@ -656,7 +886,7 @@ export function parseScheduleLineWithCtx(
       datePart = dr.raw;
       isRangeDate = dr.isRange;
     }
-    const sk = findStatusKeyword(rest);
+    const sk = findStatusKeyword(rest) ?? findStatusKeyword(roleRaw);
     if (sk) statusRaw = sk.kw;
   }
   // 날짜가 있고 status keyword가 없을 때 → "예정" 기본값 적용
@@ -666,14 +896,9 @@ export function parseScheduleLineWithCtx(
   let startDate: string | null = null;
   let endDate: string | null = null;
   if (datePart) {
-    if (datePart.includes("~")) {
-      const [s, e] = datePart.split("~").map(p => p.trim());
-      startDate = parseDate(s, fallbackYear);
-      endDate = parseDate(e, fallbackYear);
-    } else {
-      startDate = parseDate(datePart, fallbackYear);
-      endDate = startDate;
-    }
+    const parsedRange = extractDateRange(datePart, fallbackYear);
+    startDate = parsedRange?.start ?? parseDate(datePart, fallbackYear);
+    endDate = parsedRange?.end ?? startDate;
   }
 
   if (!roleRaw && !startDate && !statusRaw) return null;
@@ -681,7 +906,15 @@ export function parseScheduleLineWithCtx(
   // datePart를 제거한 line으로 phase 추론 — 날짜 문자열이 resourceTeam에 섞이지 않도록 (Bug 1, 2)
   // "5/21~5/22 개발" → lineForPhase = "개발" → extractPhaseAndResource("개발") → { phase: "개발", resourceTeam: null }
   const lineForPhase = datePart ? line.replace(datePart, "").replace(/\s+/g, " ").trim() : line;
-  const resolved = resolvePhaseWithContext(roleRaw, lineForPhase, ctx?.parentPhase);
+  const resolvedBase = resolvePhaseWithContext(roleRaw, lineForPhase, ctx?.parentPhase);
+  const parentResource = resolvedBase.phaseSource === "parentInheritance"
+    && !resolvedBase.resourceTeam
+    && ctx?.parentText
+    ? extractPhaseAndResource(ctx.parentText).resourceTeam
+    : null;
+  const resolved = parentResource
+    ? { ...resolvedBase, resourceTeam: parentResource }
+    : resolvedBase;
   const inheritedFromParentText = resolved.phaseSource === "parentInheritance"
     ? (ctx?.parentText ?? null)
     : null;
@@ -821,17 +1054,28 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
 
   // ── 3. scheduleItems — schedule section traversal with context ──
   const scheduleItems: ParsedScheduleItem[] = [];
+  const canEmitSchedule = (item: ParsedScheduleItem): boolean =>
+    !!item.phase
+    && ALLOWED_PHASES.has(item.phase)
+    && (item.startDate !== null || item.status !== "확인필요")
+    && !matchesAny(item.rawText, NON_SCHEDULE_INDICATORS)
+    && !isScheduleDecisionOnlyLine(item.rawText)
+    && !/(?:\d{1,2}월\s*(?:내|말|마지막\s*주|첫\s*주))|(?:마지막\s*주\s*[~～-]\s*\d{1,2}월\s*첫\s*주)/i.test(item.rawText)
+    && !isCoordinationOnlyLine(item.rawText);
 
   function emitScheduleFromItem(node: AstNode, ctx: AstContext): SchedulePhase | undefined {
-    const item = parseScheduleLineWithCtx(
+    const items = parseScheduleLinesWithCtx(
       node.text,
       { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
       fallbackYear,
       ticketKey,
     );
-    if (item && item.phase && ALLOWED_PHASES.has(item.phase) && item.startDate) {
-      scheduleItems.push(item);
+    for (const item of items) {
+      if (canEmitSchedule(item)) {
+        scheduleItems.push(item);
+      }
     }
+    const item = items[0];
     if (item && item.phase && item.phase !== "기타") return item.phase;
     return undefined;
   }
@@ -843,14 +1087,18 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
     requireStartDate: boolean,
   ): void {
     if (root.kind === "para" && root.text) {
-      const item = parseScheduleLineWithCtx(
+      const items = parseScheduleLinesWithCtx(
         root.text,
         { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
         fallbackYear,
         ticketKey,
       );
-      if (item && item.phase && ALLOWED_PHASES.has(item.phase)) {
-        if (!requireStartDate || item.startDate) scheduleItems.push(item);
+      for (const item of items) {
+        if (canEmitSchedule(item)) {
+          if (!requireStartDate || item.startDate || item.status !== "확인필요") {
+            scheduleItems.push(item);
+          }
+        }
       }
       return;
     }
@@ -869,28 +1117,31 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
     if (scheduleItems.length === 0 && sections.progress.length > 0) {
       for (const root of sections.progress) {
         if (root.kind === "para" && root.text) {
-          const item = parseScheduleLineWithCtx(
+          const items = parseScheduleLinesWithCtx(
             root.text,
             { parentPhase: undefined, parentText: undefined },
             fallbackYear,
             ticketKey,
           );
-          if (item && (item.startDate || item.status !== "확인필요")
-              && item.phase && ALLOWED_PHASES.has(item.phase)) {
-            scheduleItems.push(item);
+          for (const item of items) {
+            if (canEmitSchedule(item)) {
+              scheduleItems.push(item);
+            }
           }
         } else {
           traverseAst(root, baseCtx, (n, ctx) => {
-            const item = parseScheduleLineWithCtx(
+            const items = parseScheduleLinesWithCtx(
               n.text,
               { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
               fallbackYear,
               ticketKey,
             );
-            if (item && (item.startDate || item.status !== "확인필요")
-                && item.phase && ALLOWED_PHASES.has(item.phase)) {
-              scheduleItems.push(item);
+            for (const item of items) {
+              if (canEmitSchedule(item)) {
+                scheduleItems.push(item);
+              }
             }
+            const item = items[0];
             return item && item.phase && item.phase !== "기타" ? { propagatePhase: item.phase } : undefined;
           });
         }
@@ -942,6 +1193,26 @@ export function parseWeekly(text: string, ticketKey: string): ParsedWeekly {
       text: string,
       ctx: AstContext,
     ): SchedulePhase | undefined => {
+      const expanded = parseScheduleLinesWithCtx(
+        text,
+        { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },
+        fallbackYear,
+        ticketKey,
+      );
+      if (expanded.length > 1) {
+        for (const schedule of expanded) {
+          if (!canEmitSchedule(schedule)) continue;
+          scheduleItems.push(schedule);
+          classifiedLines.push({
+            type: "schedule",
+            confidence: schedule.confidence ?? "high",
+            content: schedule.taskLabel ?? schedule.rawText,
+            rawText: schedule.rawText,
+            schedule,
+          });
+        }
+        return expanded[0]?.phase !== "기타" ? expanded[0]?.phase : undefined;
+      }
       const cls = classifyLineWithCtx(
         text,
         { parentPhase: ctx.parentPhase as SchedulePhase | undefined, parentText: ctx.parentText },

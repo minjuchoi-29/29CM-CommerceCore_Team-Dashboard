@@ -4,6 +4,7 @@ import { buildAstFromAdf, printAstTree } from "@/lib/weekly-ast";
 import type { WeeklyDetectedSource } from "@/lib/weekly-types";
 import {
   extractLatestWeeklySection,
+  buildWeeklyReplaySources,
   isWeeklyAutomationComment,
   selectLatestQualifyingComment,
   selectWeeklySource,
@@ -258,6 +259,7 @@ export async function GET(req: NextRequest) {
       const authorName = c.author?.displayName ?? "-";
       const qualifies = isWeeklyAutomationComment(authorName, t);
       markedCommentList.push({
+        id: c.id,
         text: t,
         updated: c.updated,
         created: c.created,
@@ -408,6 +410,25 @@ export async function GET(req: NextRequest) {
       });
     detectedSources.push(...commentSourcesSorted);
 
+    const replayCommentSources = qualifyingComments.map(c => ({
+      sourceId: `comment:${c.id ?? `${c.created}:${c.updated}`}`,
+      text: c.text,
+      source: "comment" as const,
+      sourceWeek: parseWeekNumber(c.text),
+      sourceUpdatedAt: c.updated,
+      created: c.created,
+    }));
+    const currentReplaySource = pick ? {
+      sourceId: pick.source === "comment"
+        ? `comment:${markedComment?.id ?? `${markedComment?.created}:${markedComment?.updated}`}`
+        : `${pick.source}:${pick.sourceUpdatedAt}`,
+      text: pick.text,
+      source: pick.source,
+      sourceWeek: parseWeekNumber(pick.text),
+      sourceUpdatedAt: pick.sourceUpdatedAt,
+    } : null;
+    const syncSources = buildWeeklyReplaySources(replayCommentSources, currentReplaySource);
+
     // ─── 파싱 결과 (선택) — text가 있으면 parseWeekly 실행 ───────
     const parsed = pick ? parseWeekly(pick.text, key) : null;
     const parseSummary = parsed ? {
@@ -435,6 +456,8 @@ export async function GET(req: NextRequest) {
       // detection 단계의 모든 source 후보 (current field + legacy description + archived comments).
       // 단일 pick 정책은 무변경 — 본 필드는 UI 의 "Detected Sources" 노출 전용.
       sources: detectedSources,
+      // schedule history 복원용: archived comments(oldest → newest), current live Weekly(last).
+      syncSources,
       debug: {
         // ─── customfield_10625 = "Weekly 공유사항" (현재 Weekly SoT) ───
         weeklyCustomFieldId: WEEKLY_CUSTOM_FIELD_ID,

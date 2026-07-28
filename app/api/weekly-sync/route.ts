@@ -28,20 +28,35 @@ export async function GET(req: NextRequest) {
   }
 }
 
-async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly) {
+async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly, sourceId?: string) {
   return withRedisLock(redis, WEEKLY_SYNC_LOCK_KEY, async () => {
     // Shared JSON keys must be read and written while holding the same lock.
-    const [rawSchedules, rawNotes, rawCandidates] = await Promise.all([
+    const [rawSchedules, rawNotes, rawCandidates, rawMeta] = await Promise.all([
       redis.get<Record<string, unknown[]>>("cc-schedules"),
       redis.get<Record<string, WeeklyNote[]>>("cc-weekly-notes"),
       redis.get<UpdateCandidate[]>("cc-update-candidates"),
+      redis.get<Record<string, WeeklySyncMeta>>("cc-weekly-sync-meta"),
     ]);
     const allSchedules = rawSchedules ?? {};
     const allNotes     = rawNotes     ?? {};
     const allCandidates = rawCandidates ?? [];
-
+    const allMeta = rawMeta ?? {};
+    const previousMeta = allMeta[ticketKey];
     const existingSchedules = ((allSchedules as Record<string, unknown>)[ticketKey] ?? []) as ExtendedSchedule[];
     const existingNotes = (allNotes as Record<string, WeeklyNote[]>)[ticketKey] ?? [];
+    if (sourceId && previousMeta?.appliedSourceIds?.includes(sourceId)) {
+      return {
+        ok: true,
+        sourceWeek: parsed.sourceWeek,
+        schedulesUpdated: existingSchedules.length,
+        notesTotal: existingNotes.length,
+        newNotesAdded: 0,
+        updateCandidates: 0,
+        staleCandidates: [],
+        isIdempotent: true,
+        sourceSkipped: true,
+      };
+    }
 
     // 3. Merge
     const result = mergeWeeklySync(ticketKey, parsed, existingSchedules, existingNotes);
@@ -61,8 +76,6 @@ async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly) {
     await redis.set("cc-update-candidates", mergedCandidates);
 
     // 7. cc-weekly-sync-meta 갱신 + PR #39: trace summary 저장 (UI visibility 용)
-    const allMeta = await redis.get<Record<string, WeeklySyncMeta>>("cc-weekly-sync-meta") ?? {};
-
     // PR #39: outcome 별 카운트 + 항목 메타 추출 (mergeTrace 가 있을 때만).
     const trace = result.mergeTrace ?? [];
     const lastTraceSummary = {
@@ -86,6 +99,9 @@ async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly) {
       lastSourceWeek: parsed.sourceWeek,
       lastTraceSummary,
       lastTraceItems,
+      appliedSourceIds: sourceId
+        ? [...(previousMeta?.appliedSourceIds ?? []), sourceId].slice(-100)
+        : previousMeta?.appliedSourceIds,
     };
     await redis.set("cc-weekly-sync-meta", allMeta);
 
@@ -110,14 +126,15 @@ export async function POST(request: Request) {
       ticketKey: string;
       weeklyText: string;
       force?: boolean;
+      sourceId?: string;
     };
-    const { ticketKey, weeklyText } = body;
+    const { ticketKey, weeklyText, sourceId } = body;
     if (!ticketKey || !weeklyText) {
       return NextResponse.json({ error: "ticketKey and weeklyText required" }, { status: 400 });
     }
 
     const parsed = parseWeekly(weeklyText, ticketKey);
-    const result = await persistWeeklySync(ticketKey, parsed);
+    const result = await persistWeeklySync(ticketKey, parsed, sourceId);
     return NextResponse.json(result);
   } catch (e) {
     console.error("[weekly-sync POST]", e);
