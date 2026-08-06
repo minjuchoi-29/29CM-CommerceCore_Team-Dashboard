@@ -47,4 +47,20 @@ describe("organizeLinkedDocs", () => {
     assert.equal(expanded[0].title, "2026-08-03 Weekly flash prep");
     assert.equal(result.omittedWeeklyCount, 2);
   });
+
+  it("TM-2215 형태의 22개 문서를 집중보기에서도 6개 + 펼침 10개로 정리", () => {
+    const docs = [
+      ...Array.from({ length: 15 }, (_, i) => doc(`일반 문서 ${i + 1}`, i)),
+      ...["06-22", "06-29", "07-06", "07-13", "07-20", "07-27", "08-03"]
+        .map((date, i) => doc(`2026-${date} Weekly flash prep`, 100 + i)),
+    ];
+    const result = organizeLinkedDocs(docs, 6);
+    const expanded = [...result.visible, ...result.hidden];
+
+    assert.equal(result.visible.length, 6);
+    assert.equal(result.hidden.length, 10);
+    assert.equal(result.omittedWeeklyCount, 6);
+    assert.equal(expanded.length, 16);
+    assert.equal(expanded.filter(item => /Weekly flash prep/.test(item.title)).length, 1);
+  });
 });

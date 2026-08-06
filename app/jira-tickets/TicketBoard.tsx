@@ -8761,11 +8761,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         source: { kind: "remotelink" } as const,
                       }));
                       const allDocsFm = dedupeDocsByUrl([...selfDocsFm, ...linkedDocsFm, ...remoteLinksFm]);
+                      const organizedDocsFm = organizeLinkedDocs(allDocsFm);
+                      const docsExpandedFm = !!linkedDocsExpanded[selected.key];
+                      const displayedDocsFm = docsExpandedFm
+                        ? [...organizedDocsFm.visible, ...organizedDocsFm.hidden]
+                        : organizedDocsFm.visible;
+                      const organizedDocsFmCount = organizedDocsFm.visible.length + organizedDocsFm.hidden.length;
                       return (
                         <div>
                           <div className="flex items-center justify-between mb-2 gap-2">
                             <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
-                              관련 문서 {allDocsFm.length > 0 && <span className="text-[10px] font-mono opacity-70">{allDocsFm.length}</span>}
+                              관련 문서 {organizedDocsFmCount > 0 && (
+                                <span
+                                  className="text-[10px] font-mono opacity-70"
+                                  title={organizedDocsFm.omittedWeeklyCount > 0 ? `반복 Weekly 과거본 ${organizedDocsFm.omittedWeeklyCount}건 정리됨` : undefined}
+                                >{organizedDocsFmCount}</span>
+                              )}
                             </p>
                             <button
                               onClick={() => { setWikiAddOpen(v => !v); setWikiError(null); setWikiInput(""); setWikiTitleInput(""); }}
@@ -8808,11 +8819,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               {wikiError && <p className="text-red-500 text-[11px]">{wikiError}</p>}
                             </div>
                           )}
-                          {allDocsFm.length === 0 ? (
+                          {organizedDocsFmCount === 0 ? (
                             <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>연결된 문서 없음</p>
                           ) : (
                             <div className="space-y-1">
-                              {allDocsFm.map(d => {
+                              {displayedDocsFm.map(d => {
                                 const meta = DOC_TYPE_META[d.type];
                                 // PR-C: source.kind 별 라벨. remotelink → 🔗 Jira Web chip.
                                 const isRemoteLink = d.source.kind === "remotelink";
@@ -8829,6 +8840,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   >
                                     <span className="shrink-0 text-[13px] leading-none" aria-hidden>{meta.icon}</span>
                                     <span className="flex-1 min-w-0 truncate">{d.title}</span>
+                                    {d.isLatestWeekly && (
+                                      <span
+                                        className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                                        style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
+                                      >최신 Weekly</span>
+                                    )}
                                     <span className="shrink-0 text-[10px]" style={{ color: meta.color }}>{meta.label}</span>
                                     {isRemoteLink ? (
                                       <span
@@ -8842,6 +8859,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   </a>
                                 );
                               })}
+                              {organizedDocsFm.hidden.length > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() => setLinkedDocsExpanded(prev => ({ ...prev, [selected.key]: !docsExpandedFm }))}
+                                  className="w-full rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors"
+                                  style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+                                >
+                                  {docsExpandedFm ? "문서 접기" : `추가 문서 ${organizedDocsFm.hidden.length}개 펼치기`}
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
