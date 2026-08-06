@@ -120,12 +120,19 @@ async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly, source
       staleCandidates: result.staleCandidates,
       isIdempotent: result.isIdempotent,
     };
+  }, {
+    // 배포 직후 replay처럼 쓰기가 몰릴 때도 lock holder가 끝날 시간을 충분히 준다.
+    ttlMs: 30_000,
+    waitTimeoutMs: 30_000,
+    retryMs: 100,
   });
 }
 
 // ─── POST: weekly sync ─────────────────────────────────────────
 // Body: { ticketKey: string, weeklyText: string, force?: boolean }
 export async function POST(request: Request) {
+  let ticketKey: string | undefined;
+  let sourceId: string | undefined;
   try {
     const body = await request.json() as {
       ticketKey: string;
@@ -133,7 +140,8 @@ export async function POST(request: Request) {
       force?: boolean;
       sourceId?: string;
     };
-    const { ticketKey, weeklyText, sourceId } = body;
+    ({ ticketKey, sourceId } = body);
+    const { weeklyText } = body;
     if (!ticketKey || !weeklyText) {
       return NextResponse.json({ error: "ticketKey and weeklyText required" }, { status: 400 });
     }
@@ -142,9 +150,20 @@ export async function POST(request: Request) {
     const result = await persistWeeklySync(ticketKey, parsed, sourceId);
     return NextResponse.json(result);
   } catch (e) {
-    console.error("[weekly-sync POST]", e);
-    const status = e instanceof RedisLockTimeoutError ? 503 : 500;
-    return NextResponse.json({ error: String(e) }, { status });
+    const lockTimeout = e instanceof RedisLockTimeoutError;
+    const status = lockTimeout ? 503 : 500;
+    const code = lockTimeout ? "redis_lock_timeout" : "weekly_sync_failed";
+    console.error(
+      `[weekly-sync POST] ticket=${ticketKey ?? "unknown"} source=${sourceId ?? "unknown"} code=${code}`,
+      e,
+    );
+    return NextResponse.json({
+      error: String(e),
+      code,
+      retryable: lockTimeout,
+      ticketKey,
+      sourceId,
+    }, { status });
   }
 }
 

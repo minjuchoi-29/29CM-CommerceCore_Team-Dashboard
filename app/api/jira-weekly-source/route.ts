@@ -10,6 +10,7 @@ import {
   selectLatestQualifyingComment,
   selectWeeklySource,
   weeklyAdfToText,
+  weeklyFieldToText,
   type WeeklyAdfNode,
   type WeeklyCommentCandidate,
 } from "@/lib/weekly-source";
@@ -216,8 +217,9 @@ export async function GET(req: NextRequest) {
 
     // ── 진짜 SoT: customfield_10625 = "Weekly 공유사항" ─────────
     // PM이 매주 직접 갱신하는 dedicated field. description/comment보다 우선.
-    const cfWeeklyAdf = (issueData.fields?.[WEEKLY_CUSTOM_FIELD_ID] ?? null) as WeeklyAdfNode | null;
-    const cfWeeklyText = cfWeeklyAdf ? weeklyAdfToText(cfWeeklyAdf).trim() : "";
+    const cfWeeklyRaw = issueData.fields?.[WEEKLY_CUSTOM_FIELD_ID] ?? null;
+    const cfWeeklyAdf = typeof cfWeeklyRaw === "object" ? cfWeeklyRaw as WeeklyAdfNode : null;
+    const cfWeeklyText = weeklyFieldToText(cfWeeklyRaw);
     const cfWeeklyMarkers = cfWeeklyText ? findMarkers(cfWeeklyText) : [];
 
     // 2) comments — 최신순 (Jira는 기본 created asc, 최근 N개만 보려면 orderBy=-created)

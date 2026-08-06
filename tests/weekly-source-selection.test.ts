@@ -4,6 +4,7 @@ import {
   buildWeeklyReplaySources,
   versionWeeklySourceId,
   selectWeeklySource,
+  weeklyFieldToText,
   type WeeklySourceCandidate,
 } from "../lib/weekly-source";
 import { parseWeekly } from "../lib/weekly-parser";
@@ -75,6 +76,27 @@ describe("selectWeeklySource — current Weekly policy", () => {
     assert.equal(qa?.startDate, "2026-07-27");
     assert.equal(qa?.endDate, "2026-07-29");
     assert.equal(launch?.startDate, "2026-08-06");
+  });
+});
+
+describe("weeklyFieldToText — Jira field response compatibility", () => {
+  it("TM-2215 rendered HTML list를 Weekly plain text로 보존", () => {
+    const text = weeklyFieldToText([
+      "<ul>",
+      "<li>7/22~ 개발중 (Pricing, Purchase, CMFE, CBP 정산)</li>",
+      "<li>8/19 개발완료, QA</li>",
+      "<li>론치리뷰 예정 (일정 PMO 확인중)</li>",
+      "<li>8/27 런칭 (대상 상품 점진 확대)</li>",
+      "</ul>",
+    ].join(""));
+
+    assert.match(text, /- 7\/22~ 개발중/);
+    assert.match(text, /- 8\/19 개발완료, QA/);
+    assert.match(text, /- 8\/27 런칭/);
+  });
+
+  it("ADF 값도 기존 indent-preserving 변환을 사용", () => {
+    assert.equal(weeklyFieldToText({ type: "paragraph", content: [{ type: "text", text: "8/27 런칭" }] }), "8/27 런칭");
   });
 });
 

@@ -30,6 +30,8 @@ import {
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
 import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/search-target";
 import { compactSchedulesForDisplay } from "@/lib/schedule-display";
+import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
+import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import {
   type TrackState,
   TRACK_STATES,
@@ -1854,6 +1856,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [wikiTitleInput, setWikiTitleInput] = useState("");
   const [wikiError, setWikiError] = useState<string | null>(null);
   const [wikiAddOpen, setWikiAddOpen] = useState(false);
+  const [linkedDocsExpanded, setLinkedDocsExpanded] = useState<Record<string, boolean>>({});
+  const [linkedWorkExpanded, setLinkedWorkExpanded] = useState<Record<string, boolean>>({});
   const [wikiEditUrl, setWikiEditUrl] = useState<string | null>(null); // 수정 중인 항목의 원래 URL
   const [wikiEditInput, setWikiEditInput] = useState("");
   const [wikiEditTitleInput, setWikiEditTitleInput] = useState("");
@@ -1873,6 +1877,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     skippedNoMarker: number;
     skippedSrcError: number;
     skippedSyncError: number;
+    failures: WeeklySyncFailure[];
   };
   const [weeklySyncRun, setWeeklySyncRun] = useState<WeeklySyncRun | null>(null);
   const [weeklySyncRunOpen, setWeeklySyncRunOpen] = useState(false);
@@ -2132,7 +2137,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       // ─── Weekly Sync orchestration (Phase 2) ──────────────────
       // fire-and-forget: Jira Sync UI는 즉시 끝나고, weekly 흐름은 background에서 진행.
-      // 활성 ticket만 (완료 제외) 대상. 5개씩 chunk로 병렬.
+      // 활성 ticket만 (완료 제외) 대상. Source 조회는 병렬, Redis shared JSON write는 직렬 처리.
       // 흐름: jira-weekly-source → weekly-sync POST → KV reload.
       void (async () => {
         const DONE_FOR_WEEKLY = new Set(["론치완료", "완료", "배포완료"]);
@@ -2164,6 +2169,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           skippedNoMarker: 0,
           skippedSrcError: 0,
           skippedSyncError: 0,
+          failures: [],
         });
         setWeeklySyncRunOpen(false);
 
@@ -2184,6 +2190,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         // Phase B: ticket별 Weekly 원문 수집 (KV cc-weekly-source-text에 누적 저장)
         const collectedSources: Record<string, WeeklySourceText> = {};
         const nowIso = new Date().toISOString();
+
+        let syncWriteTail: Promise<void> = Promise.resolve();
+        const enqueueSyncWrite = <T,>(operation: () => Promise<T>): Promise<T> => {
+          const current = syncWriteTail.then(operation, operation);
+          syncWriteTail = current.then(() => undefined, () => undefined);
+          return current;
+        };
 
         const chunkSize = 5;
         for (let i = 0; i < targets.length; i += chunkSize) {
@@ -2244,20 +2257,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               let result: Record<string, unknown> = {};
               let syncFailed = false;
               for (const replaySource of replaySources) {
-                const syncRes = await fetch("/api/weekly-sync", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({
-                    ticketKey: t.key,
-                    weeklyText: replaySource.text,
-                    sourceId: replaySource.sourceId,
-                  }),
-                });
-                if (!syncRes.ok) {
+                const syncResult = await enqueueSyncWrite(() => postWeeklySyncWithRetry(fetch, {
+                  ticketKey: t.key,
+                  weeklyText: replaySource.text,
+                  sourceId: replaySource.sourceId,
+                }));
+                if (!syncResult.ok) {
                   syncFailed = true;
+                  setWeeklySyncRun(prev => prev ? {
+                    ...prev,
+                    failures: [...prev.failures, syncResult.failure],
+                  } : prev);
+                  console.error("[WeeklySync] schedule sync failed", syncResult.failure);
                   break;
                 }
-                result = await syncRes.json() as Record<string, unknown>;
+                result = syncResult.data;
               }
               if (syncFailed) {
                 errorTotal++;
@@ -3223,6 +3237,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // direction 별 split — 같은 linkType raw 그대로 group
     const outLinks = linkRows.filter(r => r.direction === "out");
     const inLinks  = linkRows.filter(r => r.direction === "in");
+    const isExpanded = !!linkedWorkExpanded[ticketKey];
 
     // 클릭 핸들러 — PR #45 sessionStorage 패턴 재사용
     const onRowClick = (row: LinkedRow) => {
@@ -3298,14 +3313,26 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
     return (
       <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
-        <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+        <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: isExpanded ? "1px solid var(--border-2)" : undefined, background: "var(--bg-overlay)" }}>
           <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>Linked Work</span>
           <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>
             parent {parentRow ? 1 : 0} · children {childRows.length} · links {linkRows.length}
           </span>
+          {!isExpanded && parentRow && (
+            <span className="hidden sm:inline text-[10.5px] truncate" style={{ color: "var(--text-subtle)" }}>
+              · 상위 {parentRow.key}{parentRow.summary ? ` ${parentRow.summary}` : ""}
+            </span>
+          )}
+          <button
+            type="button"
+            onClick={() => setLinkedWorkExpanded(prev => ({ ...prev, [ticketKey]: !isExpanded }))}
+            className="ml-auto shrink-0 rounded px-2 py-0.5 text-[10.5px] font-medium transition-colors"
+            style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+            aria-expanded={isExpanded}
+          >{isExpanded ? "접기" : "상세 보기"}</button>
         </div>
 
-        <div className="px-3 py-2.5 space-y-3">
+        {isExpanded && <div className="px-3 py-2.5 space-y-3">
           {/* Hierarchy: Parent / Children (single hop) */}
           {(parentRow || childRows.length > 0) && (
             <div className="space-y-1.5">
@@ -3373,7 +3400,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               )}
             </div>
           )}
-        </div>
+        </div>}
       </div>
     );
   }
@@ -5911,6 +5938,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               <span>Schedule sync 실패 (sync_error)</span>
                               <span className="font-mono">{weeklySyncRun.skippedSyncError}</span>
                             </div>
+                            {weeklySyncRun.failures.length > 0 && (
+                              <div className="mt-2 pt-2 space-y-1" style={{ borderTop: "1px dashed var(--border-2)" }}>
+                                <div className="text-[10.5px] font-semibold" style={{ color: "#fbbf24" }}>실패 티켓</div>
+                                {weeklySyncRun.failures.map((failure, index) => (
+                                  <div key={`${failure.ticketKey}:${failure.sourceId}:${index}`} className="flex justify-between gap-3 text-[10.5px]">
+                                    <a
+                                      href={`${JIRA_BASE}${failure.ticketKey}`}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="font-mono hover:underline"
+                                      style={{ color: "#818cf8" }}
+                                    >
+                                      {failure.ticketKey}
+                                    </a>
+                                    <span className="text-right" style={{ color: "var(--text-muted)" }}>
+                                      {failure.code ?? `HTTP ${failure.status}`} · {failure.attempts}회 시도
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
                           </div>
                           <div className="px-3 py-2 text-[10.5px]"
                             style={{ borderTop: "1px dashed var(--border-2)", color: "var(--text-subtle)" }}>
@@ -9441,6 +9489,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 source: { kind: "remotelink" } as const,
               }));
               const allDocs = dedupeDocsByUrl([...selfDocs, ...linkedDocs, ...remoteLinksTm]);
+              const organizedDocs = organizeLinkedDocs(allDocs);
+              const docsExpanded = !!linkedDocsExpanded[selected.key];
+              const displayedDocs = docsExpanded
+                ? [...organizedDocs.visible, ...organizedDocs.hidden]
+                : organizedDocs.visible;
               return (
                 <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid rgba(168,85,247,0.20)" }}>
                   <div className="flex items-center justify-between mb-2 gap-2">
@@ -9500,7 +9553,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <p className="text-[11.5px]" style={{ color: "var(--text-subtle)" }}>연결된 문서 없음</p>
                   ) : (
                     <div className="space-y-1">
-                      {allDocs.map(d => {
+                      {displayedDocs.map(d => {
                         const meta = DOC_TYPE_META[d.type];
                         // PR-C: source.kind 별 라벨. remotelink → 🔗 Jira Web chip.
                         const isRemoteLink = d.source.kind === "remotelink";
@@ -9517,6 +9570,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           >
                             <span className="shrink-0 text-[13px] leading-none" aria-hidden>{meta.icon}</span>
                             <span className="flex-1 min-w-0 truncate" style={{ color: "var(--text-primary)" }}>{d.title}</span>
+                            {d.isLatestWeekly && (
+                              <span
+                                className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium"
+                                style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
+                              >최신 Weekly</span>
+                            )}
+                            {d.isPreviousWeekly && (
+                              <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>이전 Weekly</span>
+                            )}
                             <span className="shrink-0 text-[10px]" style={{ color: meta.color }}>{meta.label}</span>
                             {isRemoteLink ? (
                               <span
@@ -9530,6 +9592,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           </a>
                         );
                       })}
+                      {organizedDocs.hidden.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setLinkedDocsExpanded(prev => ({ ...prev, [selected.key]: !docsExpanded }))}
+                          className="w-full rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors"
+                          style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
+                        >
+                          {docsExpanded ? "문서 접기" : `이전·추가 문서 ${organizedDocs.hidden.length}개 펼치기`}
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>

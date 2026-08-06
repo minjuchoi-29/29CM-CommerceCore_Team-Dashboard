@@ -60,6 +60,35 @@ export function weeklyAdfToText(
   return inner;
 }
 
+/**
+ * Jira custom fields can be returned as ADF (REST v3) or rendered HTML/string,
+ * depending on the field renderer and Jira configuration. Normalize both forms
+ * so the dedicated Weekly field never disappears merely because its shape changed.
+ */
+export function weeklyFieldToText(value: unknown): string {
+  if (typeof value !== "string") {
+    return weeklyAdfToText((value ?? null) as WeeklyAdfNode | null).trim();
+  }
+
+  const decoded = value
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*\/\s*(?:p|div|li|h[1-6])\s*>/gi, "\n")
+    .replace(/<\s*li(?:\s[^>]*)?>/gi, "- ")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;|&apos;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number(code)))
+    .replace(/\r/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  return decoded;
+}
+
 export const WEEKLY_HEADER_RE =
   /(?:^|\n)\s*[*🧭#[]*\s*(?:\d+\s*주차|이번주|금주|this\s*week|current\s*week)?\s*Weekly\s*공유\s*사항\s*\]?\s*[:\n]?/i;
 
