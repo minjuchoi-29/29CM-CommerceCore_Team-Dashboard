@@ -31,10 +31,21 @@ export type ActionItem = {
   /** 낮을수록 우선순위 높음 (1=critical~7=info) */
   priority: number;
   level: "critical" | "warning" | "info";
+  /** 액션을 노출할 업무 화면. 서로 다른 성격의 신호를 한 건수로 합치지 않는다. */
+  scope: "weekly" | "planning" | "data";
   label: string;
   /** 클릭 시 이동할 탭 */
   targetTab?: "ops";
 };
+
+export type ActionScope = ActionItem["scope"];
+
+export function filterActionItemsByScope(
+  items: ActionItem[],
+  scope: ActionScope,
+): ActionItem[] {
+  return items.filter(item => item.scope === scope);
+}
 
 // ── Planning 상태 파싱 helper (TicketBoard.getPlanningVal과 동일 로직) ──────
 
@@ -96,6 +107,7 @@ export function getActionItems(
       id: "overdue",
       priority: 1,
       level: "critical",
+      scope: "weekly",
       label: `ETA 경과 (${ticket.eta})`,
       targetTab: "ops",
     });
@@ -107,6 +119,7 @@ export function getActionItems(
       id: "review-needed",
       priority: 2,
       level: "critical",
+      scope: "planning",
       label: "플래닝 검토 확인 필요",
       targetTab: "ops",
     });
@@ -120,6 +133,7 @@ export function getActionItems(
       id: "no-schedule",
       priority: 3,
       level: "warning",
+      scope: "weekly",
       label: "세부 작업 일정 미입력",
       targetTab: "ops",
     });
@@ -134,6 +148,7 @@ export function getActionItems(
       id: "no-launch",
       priority: 4,
       level: "warning",
+      scope: "weekly",
       label: "Launch 일정 미정",
       targetTab: "ops",
     });
@@ -150,6 +165,7 @@ export function getActionItems(
       id: "planning-reviewing",
       priority: 5,
       level: "warning",
+      scope: "planning",
       label: `플래닝 검토 중 — ${reviewingTeams.join(", ")}`,
       targetTab: "ops",
     });
@@ -166,6 +182,7 @@ export function getActionItems(
       id: "no-source",
       priority: 6,
       level: "info",
+      scope: "data",
       label: "요청사항 출처 미선택",
     });
   } else if (src === "ETR" && !etrEntry?.etrTickets?.length) {
@@ -173,6 +190,7 @@ export function getActionItems(
       id: "no-etr",
       priority: 6,
       level: "info",
+      scope: "data",
       label: "요청사항 출처(ETR) 미연결",
     });
   }
@@ -183,9 +201,23 @@ export function getActionItems(
       id: "no-docs",
       priority: 7,
       level: "info",
+      scope: "data",
       label: "관련 문서 미연결",
     });
   }
 
   return items.sort((a, b) => a.priority - b.priority);
+}
+
+export function getActionItemsForScope(
+  ticket: Ticket,
+  planningVal: unknown,
+  roles: RoleScheduleMin[],
+  etrEntry: EtrInfoMin | undefined,
+  scope: ActionScope,
+): ActionItem[] {
+  return filterActionItemsByScope(
+    getActionItems(ticket, planningVal, roles, etrEntry),
+    scope,
+  );
 }

@@ -4,7 +4,10 @@ import Link from "next/link";
 import TicketCopyButton from "@/app/components/TicketCopyButton";
 import { Tooltip } from "@/app/components/Tooltip";
 import { ActivityEntry } from "@/lib/activity";
-import { getActionItems } from "@/lib/action-items";
+import {
+  getActionItemsForScope,
+  type ActionScope,
+} from "@/lib/action-items";
 import {
   type TransitionKind,
   type TransitionResult,
@@ -32,6 +35,7 @@ import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/sear
 import { compactSchedulesForDisplay } from "@/lib/schedule-display";
 import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
+import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import {
   type TrackState,
   TRACK_STATES,
@@ -1759,6 +1763,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState, reviewNeeded?: boolean })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
   const [reviewFilter, setReviewFilter] = useState(false); // 검토필요 티켓만 필터
+  const [attentionFilter, setAttentionFilter] = useState(false); // Weekly 운영 주의 필요 티켓만 필터
   const [newFilter, setNewFilter]       = useState(false); // 최근 2주 신규 티켓만 필터
   // status 가 undefined 면 "팀 전체" — 카드 wrapper 클릭으로 진입.
   const [planningKpiFilter, setPlanningKpiFilter] = useState<{ team: string; status?: TrackState } | null>(null); // 상단 KPI 카드 클릭 필터
@@ -1821,7 +1826,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [updateCandidates, setUpdateCandidates] = useState<UpdateCandidate[]>([]);
   // ── Transition Visibility (이번 주 변화 모드) ──────────────────
   const [changesMode,           setChangesMode]           = useState(false);
-  const [changesExpanded,       setChangesExpanded]       = useState(false);  // 기본값: 접힘
+  // 상세 진단 패널은 일반 사용자 흐름에서는 열지 않고, 변경 필터만 사용한다.
+  const [changesExpanded,       setChangesExpanded]       = useState(false);
   const [transitionFilter,      setTransitionFilter]      = useState<TransitionKind | "all" | "newly_added">("all");
   const [compareSnapshot,       setCompareSnapshot]       = useState<SnapshotSet | null>(null);
   const [transitionMap,         setTransitionMap]         = useState<Map<string, TransitionKind[]>>(new Map());
@@ -2650,18 +2656,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       <div className="mb-4 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border-2)" }}>
         <div className="px-3 py-2 flex items-center gap-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
           <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>
-            자동 감지된 액션
+            다음 확인
           </span>
           <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "rgba(251,191,36,0.10)", color: "#fbbf24", border: "1px solid rgba(251,191,36,0.30)" }}>
             {totalShown}건
           </span>
           <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>
-            follow-up 필요 · Gantt 자동 반영 안 됨
+            Weekly에서 확인이 필요한 내용
           </span>
         </div>
         <div className="px-3 py-2.5 space-y-2.5">
           <Section label="리스크"    color="#ef4444" items={risks}   />
-          <Section label="액션 필요" color="#fbbf24" items={actions} />
+          <Section label="다음 액션" color="#fbbf24" items={actions} />
         </div>
       </div>
     );
@@ -4408,7 +4414,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [isDetailExpanded, selected]);
+  }, [isDetailExpanded, selected, planningTab]);
 
   // Ctrl/Cmd+F 는 Global Search Overlay (app/components/GlobalSearchOverlay.tsx) 가 전역 처리.
   // 화면 검색창은 직접 타이핑 시 기존 local filtering 그대로 유지.
@@ -4424,11 +4430,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Action Resolve 감지 — Focus Mode에서 selected ticket의 action 수 감소 시 toast
   useEffect(() => {
     if (!selected || !isDetailExpanded) return;
-    const actions = getActionItems(
+    const actionScope: ActionScope = ["etr", "source", "docs", "no-etr", "no-source", "no-docs"].includes(focusContext ?? "")
+      ? "data"
+      : planningTab === "플래닝 대기·검토"
+        ? "planning"
+        : "weekly";
+    const actions = getActionItemsForScope(
       selected,
       planning[selected.key],
       schedules[selected.key] ?? selected.roles ?? [],
-      etrMap[selected.key]
+      etrMap[selected.key],
+      actionScope,
     );
     const prev = prevActionCountRef.current[selected.key];
     const curr = actions.length;
@@ -4442,6 +4454,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [ // eslint-disable-line react-hooks/exhaustive-deps
     selected?.key,
     isDetailExpanded,
+    planningTab,
+    focusContext,
     schedules[selected?.key ?? ""],
     planning[selected?.key ?? ""],
     etrMap[selected?.key ?? ""],
@@ -5129,6 +5143,52 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   const isRecentTicket = (key: string) => (ticketAddedDates[key] ?? "") >= TWO_WEEKS_AGO;
 
+  type MeetingAttention = {
+    count: number;
+    label: string;
+    level: "critical" | "warning";
+  } | null;
+
+  const getTicketAttention = useCallback((ticket: Ticket, scope: ActionScope): MeetingAttention => {
+    const rows = schedules[ticket.key] ?? ticket.roles ?? [];
+    const scopedActions = getActionItemsForScope(
+      ticket,
+      planning[ticket.key],
+      rows,
+      etrMap[ticket.key],
+      scope,
+    );
+
+    if (scope === "weekly") {
+      const openNotes = (weeklyNotes[ticket.key] ?? []).filter(note => note.status === "open");
+      const riskCount = openNotes.filter(note => note.type === "risk").length;
+      const nextActionCount = openNotes.filter(note => note.type === "next_action").length;
+      const total = scopedActions.length + riskCount + nextActionCount;
+      if (total === 0) return null;
+
+      if (riskCount > 0) {
+        return { count: total, label: `리스크 ${riskCount}건`, level: "critical" };
+      }
+      const topAction = scopedActions[0];
+      if (topAction) {
+        return {
+          count: total,
+          label: topAction.label,
+          level: topAction.level === "critical" ? "critical" : "warning",
+        };
+      }
+      return { count: total, label: `다음 확인 ${nextActionCount}건`, level: "warning" };
+    }
+
+    const topAction = scopedActions[0];
+    if (!topAction) return null;
+    return {
+      count: scopedActions.length,
+      label: topAction.label,
+      level: topAction.level === "critical" ? "critical" : "warning",
+    };
+  }, [schedules, planning, etrMap, weeklyNotes]);
+
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
     let result = statusTab === "전체"   ? [...preFiltered]
@@ -5140,8 +5200,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       : statusTab === "개발"     ? preFiltered.filter((t) => ["개발중", "In Progress"].includes(t.status))
       : statusTab === "QA"       ? preFiltered.filter((t) => t.status === "QA중")
       :                            preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status));
-    // 검토필요 필터
-    if (reviewFilter) result = result.filter(t => getPlanningVal(planning[t.key]).reviewNeeded);
+    // 프리플래닝의 논의 대상과 Weekly 운영의 주의 신호는 서로 섞지 않는다.
+    if (reviewFilter && planningTab === "플래닝 대기·검토") {
+      result = result.filter(t => getTicketAttention(t, "planning") !== null);
+    }
+    if (attentionFilter && planningTab !== "플래닝 대기·검토") {
+      result = result.filter(t => getTicketAttention(t, "weekly") !== null);
+    }
     // 신규 필터
     if (newFilter) result = result.filter(t => isRecentTicket(t.key));
     const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
@@ -5195,7 +5260,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       result.sort((a: Ticket, b: Ticket) => ticketNum(a.key) - ticketNum(b.key));
     }
     return result;
-  }, [preFiltered, statusTab, sortBy, priorities, executionPriorities, reviewFilter, newFilter, planning, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [preFiltered, statusTab, sortBy, priorities, executionPriorities, reviewFilter, attentionFilter, newFilter, planningTab, getTicketAttention, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * Cross-tab hint dataset — search 만 적용. planningTab / quarters / levels 등
@@ -5276,51 +5341,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return hints.length > 0 ? { hints, isTicketKeyForm } : null;
   }, [search, planningTab, filtered.length, searchOnlyHits, planning]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Focus Mini Rail: owner_dashboard source 진입 시 Action 우선순위 기반 정렬
-  // focusForKey !== null = owner_dashboard source 진입 신호 (state이므로 reactive ✅)
-  // status → phase 매핑 (Focus Mode rail에서 현재 phase 표시용)
-  const statusToPhase = (status: string): NonNullable<RoleSchedule["phase"]> | null => {
-    if (/론치완료|배포완료/.test(status))            return "Launch";
-    if (/QA중|QA/.test(status))                       return "QA";
-    if (/개발완료/.test(status))                       return "Release";
-    if (/개발중|In Progress/.test(status))            return "개발";
-    if (/디자인중|디자인완료/.test(status))           return "디자인";
-    if (/기획중|기획완료/.test(status))                return "기획";
-    if (/준비중|Backlog|SUGGESTED/.test(status))      return "Kick-Off";
-    return null;
-  };
-
+  // 목록과 Focus rail은 업무 화면에 맞는 신호 한 개만 노출한다.
   const railItems = useMemo<{
     ticket: Ticket;
-    topAction: ReturnType<typeof getActionItems>[0] | null;
+    topAction: ReturnType<typeof getActionItemsForScope>[0] | null;
     indicators: {
-      phase: NonNullable<RoleSchedule["phase"]> | null;
-      actionCount: number;
-      riskCount: number;
+      attention: MeetingAttention;
     };
   }[]>(() => {
+    const meetingScope: ActionScope = planningTab === "플래닝 대기·검토" ? "planning" : "weekly";
     const base = filtered.map(t => {
-      // schedule rows에서 가장 활성 phase (없으면 status 기반 fallback)
       const rows = schedules[t.key] ?? [];
-      const activeSched = rows.find(r => r.status === "진행중") ?? rows.find(r => r.status === "예정");
-      const fromSched = activeSched?.phase ?? (activeSched ? inferPhase(activeSched.role) : null);
-      const fromStatus = statusToPhase(t.status);
-      // Kick-Off lingering 차단: schedule 상 "예정"인 Kick-Off milestone 이 남아도, Jira status
-      //   가 이미 후속 단계 (개발중 / QA중 / 완료 등) 면 status 기반 phase 우선.
-      //   기존 상태 chip 과 중복되지 않도록 — statusToPhase 가 Kick-Off 이상으로 진행된 phase 를
-      //   반환하는 경우에만 override.
-      const schedIsStaleKickoff =
-        fromSched === "Kick-Off" && !!fromStatus && fromStatus !== "Kick-Off";
-      const phase: NonNullable<RoleSchedule["phase"]> | null =
-        schedIsStaleKickoff ? fromStatus : (fromSched ?? fromStatus);
-      // 자동 일정 변경/정리는 배지로 노출하지 않고, 사람의 판단이 필요한 정보만 표시한다.
-      const notes = (weeklyNotes[t.key] ?? []).filter(n => n.status === "open");
-      const actionCount = notes.filter(n => n.type === "next_action").length;
-      const riskCount   = notes.filter(n => n.type === "risk").length;
+      const sourceContext = focusForKey === t.key && ["etr", "source", "docs", "no-etr", "no-source", "no-docs"].includes(focusContext ?? "");
+      const actionScope: ActionScope = sourceContext ? "data" : meetingScope;
       return {
         ticket: t,
-        topAction: getActionItems(t, planning[t.key], rows.length > 0 ? rows : (t.roles ?? []), etrMap[t.key])[0] ?? null,
-        indicators: { phase, actionCount, riskCount },
+        topAction: getActionItemsForScope(
+          t,
+          planning[t.key],
+          rows.length > 0 ? rows : (t.roles ?? []),
+          etrMap[t.key],
+          actionScope,
+        )[0] ?? null,
+        indicators: { attention: getTicketAttention(t, meetingScope) },
       };
     });
     if (!focusForKey) return base;
@@ -5332,7 +5375,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const pb = b.topAction?.priority ?? 999;
       return pa - pb;
     });
-  }, [filtered, focusForKey, selected?.key, planning, schedules, etrMap, weeklyNotes]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, focusForKey, focusContext, selected?.key, planningTab, planning, schedules, etrMap, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── changesMode: 스냅샷 로드 → Transition 계산 ────────────────
   useEffect(() => {
@@ -5380,18 +5423,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, [changesMode]);
 
-  // displayItems: changesMode 시 transition/신규 있는 티켓만 표시 (Focus Mode 제외)
+  // 이번 주 변경 필터: 별도 화면 모드가 아니라 변경된 티켓만 남기는 목록 필터.
   const displayItems = useMemo(() => {
     if (isDetailExpanded) return railItems; // Focus Mode: 전체 유지
-    if (!changesMode || (transitionMap.size === 0 && transitionNewlyAdded.size === 0)) return railItems;
-    return railItems.filter(({ ticket: t }) => {
-      if (transitionFilter === "newly_added") return transitionNewlyAdded.has(t.key);
-      const kinds = transitionMap.get(t.key);
-      const hasTransition = !!kinds && kinds.length > 0;
-      if (transitionFilter === "all") return hasTransition || transitionNewlyAdded.has(t.key);
-      return hasTransition && kinds!.includes(transitionFilter as TransitionKind);
-    });
-  }, [railItems, isDetailExpanded, changesMode, transitionMap, transitionNewlyAdded, transitionFilter]);
+    if (!changesMode) return railItems;
+    if (!snapshotsLoaded || !compareSnapshot) return [];
+    return railItems.filter(({ ticket: t }) =>
+      transitionMap.has(t.key) || transitionNewlyAdded.has(t.key)
+    );
+  }, [railItems, isDetailExpanded, changesMode, snapshotsLoaded, compareSnapshot, transitionMap, transitionNewlyAdded]);
 
   function nowDateStr(): string {
     const now = new Date();
@@ -5762,6 +5802,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     window.history.back();
   }
 
+  function returnToTicketList() {
+    const selectedKey = selected?.key;
+    const { prevPtab, prevScrollY } = workspaceNavRef.current;
+    const targetTab = prevPtab ?? planningTab;
+
+    setIsDetailExpanded(false);
+    setSelected(null);
+    setDetailTab("overview");
+    setFocusForKey(null);
+    setFocusContext(null);
+    setSectionHighlight(null);
+    if (targetTab !== planningTab) setPlanningTab(targetTab);
+
+    const listUrl = buildTicketListUrl(window.location.pathname, window.location.search);
+    window.history.replaceState(
+      { tab: targetTab, ticket: null, expanded: false },
+      "",
+      listUrl,
+    );
+
+    setTimeout(() => {
+      window.scrollTo({ top: prevScrollY, behavior: "instant" as ScrollBehavior });
+      if (selectedKey) {
+        document.querySelector<Element>(`[data-ticket-key="${selectedKey}"]`)
+          ?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 80);
+  }
+
   function handleSelect(t: Ticket) {
     const isSame = selected?.key === t.key;
 
@@ -5830,15 +5899,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}>{filtered.length}</span>
             </div>
             <button
-              onClick={() => {
-                setIsDetailExpanded(false);
-                window.history.replaceState({ ...(window.history.state ?? {}), expanded: false }, "");
-              }}
-              title="기본 보기로 (ESC)"
-              className="flex items-center justify-center w-5 h-5 rounded transition-colors hover:opacity-100 opacity-50"
+              onClick={returnToTicketList}
+              title="전체 목록으로 돌아가기"
+              className="flex items-center gap-1 px-1.5 h-6 rounded transition-colors hover:opacity-100 opacity-70 text-[10px] font-medium"
               style={{ color: "var(--text-muted)" }}
             >
               <svg width="9" height="9" viewBox="0 0 9 9" fill="none"><path d="M5.5 1.5L2 4.5l3.5 3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+              전체 목록
             </button>
           </div>
         )}
@@ -6000,23 +6067,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </svg>
               {fetching ? "Syncing…" : "Jira Sync"}
             </button>
-            {/* Weekly 일정은 자동 반영한다. 사람의 판단이 필요한 액션/리스크만 노출한다. */}
-            {Object.values(weeklyNotes).flat().filter(
-              note => note.status === "open" && (note.type === "next_action" || note.type === "risk")
-            ).length > 0 && (
-              <button
-                type="button"
-                onClick={() => setCandidatePanelOpen(true)}
-                className="flex items-center gap-1 px-2 py-1.5 rounded-lg text-xs font-medium cursor-pointer transition hover:brightness-110 active:scale-95"
-                style={{ background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.35)", color: "#fbbf24" }}
-                title="Weekly에서 발견한 액션과 리스크 확인"
-              >
-                확인할 액션·리스크 {Object.values(weeklyNotes).flat().filter(
-                  note => note.status === "open" && (note.type === "next_action" || note.type === "risk")
-                ).length}건
-              </button>
-            )}
-
             {/* ── Candidate Review 모달 (Phase C) ─────────────────── */}
             {candidatePanelOpen && (() => {
               const FIELD_LABEL: Record<string, string> = {
@@ -6725,23 +6775,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               );
             })()}
 
-            {/* 변화 보기 토글 */}
-            <button
-              onClick={() => setChangesMode(v => !v)}
-              title={changesMode ? "현재 상태로 돌아가기" : "이번 주 변화 보기 — Snapshot diff 기반"}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
-              style={{
-                background:   changesMode ? "rgba(129,140,248,0.15)" : "var(--bg-item)",
-                border:       `1px solid ${changesMode ? "#818cf8" : "var(--border-2)"}`,
-                color:        changesMode ? "#818cf8" : "var(--text-primary)",
-                boxShadow:    changesMode ? "0 0 0 1px rgba(129,140,248,0.3)" : "none",
-              }}
-            >
-              <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M13 7l5 5-5 5M6 7l5 5-5 5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              {changesMode ? "변화 보기 ON" : "변화 보기"}
-            </button>
           </div>
         </div>
         {fetchError && (
@@ -6844,36 +6877,52 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           })}
         </div>
 
-        {/* 빠른 필터 행: 검토필요 + 최근 2주 신규 */}
+        {/* 업무별 빠른 필터: Weekly 주의 / 플래닝 논의 / 신규 / 이번 주 변경 */}
         {(() => {
-          // 검토필요: 탭 무관하게 전체 ticket 기준 총합
-          const reviewCount = dedupedTickets.filter(t => getPlanningVal(planning[t.key]).reviewNeeded).length;
-          // 최근 2주 신규: 현재 탭 기준
-          const newCount    = preFiltered.filter(t => isRecentTicket(t.key)).length;
-          if (reviewCount === 0 && !reviewFilter && newCount === 0 && !newFilter) return null;
+          const isPlanningWorkspace = planningTab === "플래닝 대기·검토";
+          const reviewCount = isPlanningWorkspace
+            ? preFiltered.filter(t => getTicketAttention(t, "planning") !== null).length
+            : 0;
+          const attentionCount = !isPlanningWorkspace
+            ? preFiltered.filter(t => getTicketAttention(t, "weekly") !== null).length
+            : 0;
+          const newCount = preFiltered.filter(t => isRecentTicket(t.key)).length;
+          const changedCount = transitionMap.size + transitionNewlyAdded.size;
           return (
-            <div className={`flex items-center gap-2 mb-4 ${isDetailExpanded ? "hidden" : ""}`}>
-              {(reviewCount > 0 || reviewFilter) && (
+            <div className={`flex items-center gap-2 mb-4 flex-wrap ${isDetailExpanded ? "hidden" : ""}`}>
+              {isPlanningWorkspace && (reviewCount > 0 || reviewFilter) && (
                 <button
-                  onClick={() => {
-                    const next = !reviewFilter;
-                    setReviewFilter(next);
-                    // reviewNeeded는 cross-status attention filter —
-                    // ON 시 전체 탭으로 이동해 lifecycle 무관하게 전체 표시
-                    if (next) changeTab("전체");
-                  }}
+                  onClick={() => setReviewFilter(v => !v)}
                   className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
                   style={{
-                    background: reviewFilter ? "rgba(239,68,68,0.15)" : "var(--bg-overlay)",
-                    border: `1px solid ${reviewFilter ? "#f87171" : "var(--border-2)"}`,
-                    color: reviewFilter ? "#f87171" : "var(--text-muted)",
-                    boxShadow: reviewFilter ? "0 0 0 1px #f87171" : "none",
+                    background: reviewFilter ? "rgba(245,158,11,0.15)" : "var(--bg-overlay)",
+                    border: `1px solid ${reviewFilter ? "#fbbf24" : "var(--border-2)"}`,
+                    color: reviewFilter ? "#fbbf24" : "var(--text-muted)",
                   }}
+                  aria-pressed={reviewFilter}
                 >
-                  ⚡ 검토필요
+                  논의 대상
                   <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
-                    style={{ background: reviewFilter ? "rgba(239,68,68,0.25)" : "var(--border)", color: reviewFilter ? "#f87171" : "var(--text-subtle)" }}>
+                    style={{ background: reviewFilter ? "rgba(245,158,11,0.25)" : "var(--border)", color: reviewFilter ? "#fbbf24" : "var(--text-subtle)" }}>
                     {reviewCount}
+                  </span>
+                </button>
+              )}
+              {!isPlanningWorkspace && (attentionCount > 0 || attentionFilter) && (
+                <button
+                  onClick={() => setAttentionFilter(v => !v)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                  style={{
+                    background: attentionFilter ? "rgba(245,158,11,0.15)" : "var(--bg-overlay)",
+                    border: `1px solid ${attentionFilter ? "#fbbf24" : "var(--border-2)"}`,
+                    color: attentionFilter ? "#fbbf24" : "var(--text-muted)",
+                  }}
+                  aria-pressed={attentionFilter}
+                >
+                  주의 필요
+                  <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                    style={{ background: attentionFilter ? "rgba(245,158,11,0.25)" : "var(--border)", color: attentionFilter ? "#fbbf24" : "var(--text-subtle)" }}>
+                    {attentionCount}
                   </span>
                 </button>
               )}
@@ -6895,38 +6944,33 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </span>
                 </button>
               )}
-              {/* 활성 필터 chip — lifecycle 탭과 독립된 attention filter 임을 명시 */}
-              {reviewFilter && (
-                <span className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold"
-                  style={{ background: "rgba(239,68,68,0.10)", border: "1px solid rgba(248,113,113,0.45)", color: "#f87171" }}>
-                  ⚡ 검토필요 활성화
-                  <button
-                    title="검토필요 필터 해제"
-                    onClick={() => setReviewFilter(false)}
-                    className="ml-0.5 w-4 h-4 flex items-center justify-center rounded hover:bg-red-500/20 transition-colors text-[13px] leading-none"
-                    style={{ color: "#f87171" }}
-                  >×</button>
-                </span>
-              )}
-              {newFilter && (
-                <span className="flex items-center gap-1 px-2 py-1 rounded-lg text-xs font-semibold"
-                  style={{ background: "rgba(56,189,248,0.10)", border: "1px solid rgba(56,189,248,0.40)", color: "#38bdf8" }}>
-                  🆕 신규 활성화
-                  <button
-                    title="신규 티켓 필터 해제"
-                    onClick={() => setNewFilter(false)}
-                    className="ml-0.5 w-4 h-4 flex items-center justify-center rounded hover:bg-sky-500/20 transition-colors text-[13px] leading-none"
-                    style={{ color: "#38bdf8" }}
-                  >×</button>
-                </span>
-              )}
+              <button
+                onClick={() => setChangesMode(v => !v)}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                style={{
+                  background: changesMode ? "rgba(45,212,191,0.13)" : "var(--bg-overlay)",
+                  border: `1px solid ${changesMode ? "#2dd4bf" : "var(--border-2)"}`,
+                  color: changesMode ? "#2dd4bf" : "var(--text-muted)",
+                }}
+                aria-pressed={changesMode}
+                title="최근 7일 스냅샷과 비교해 상태·일정이 변경된 티켓만 표시"
+              >
+                이번 주 변경
+                {changesMode && snapshotsLoaded && (
+                  <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                    style={{ background: "rgba(45,212,191,0.20)", color: "#2dd4bf" }}>
+                    {changedCount}
+                  </span>
+                )}
+                {changesMode && !snapshotsLoaded && <span className="text-[10px] opacity-70">불러오는 중</span>}
+              </button>
             </div>
           );
         })()}
 
 
-        {/* ── Changes Mode 패널 ────────────────────────────────── */}
-        {changesMode && !isDetailExpanded && (() => {
+        {/* 변경 상세 진단은 관리용으로만 남기고 기본 회의 화면에서는 숨김. */}
+        {changesMode && changesExpanded && !isDetailExpanded && (() => {
           // 강한 신호 요약 (compact bar용)
           const summary = summarizeTransitions(transitionMap);
           const strongSummary = summary.filter(s => STRONG_SIGNAL_KINDS.has(s.kind));
@@ -7190,7 +7234,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {/* 기준점 저장 CTA */}
                   <div className="px-4 py-2.5 flex items-center justify-between gap-3">
                     <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
-                      현재 상태를 기준점으로 저장하면 다음 번 "변화 보기" 시 이 시점부터 비교합니다.
+                      현재 상태를 기준점으로 저장하면 다음 번 &quot;변화 보기&quot; 시 이 시점부터 비교합니다.
                     </span>
                     <button
                       disabled={baselineSaving}
@@ -7563,7 +7607,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
           </div>
 
-          {filtered.length === 0 ? (() => {
+          {displayItems.length === 0 ? (() => {
             // empty state 시각적 위계 (PR-fix 후속 polish):
             //   [1] "검색 결과가 없습니다"       — text-primary, 가장 강함
             //   [2] 현재 탭/검색어 안내           — text-secondary, 검색어 강조
@@ -7573,16 +7617,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             //         [3-3] CTA 버튼 (primary 스타일)
             const q = search.trim();
             const hasQuery = q.length > 0;
-            const hasCrossTab = !!crossTabHints && crossTabHints.hints.length > 0;
+            const hasCrossTab = !changesMode && !!crossTabHints && crossTabHints.hints.length > 0;
+            const changeFilterTitle = !snapshotsLoaded
+              ? "변경 내역을 불러오는 중입니다"
+              : !compareSnapshot
+                ? "변경 비교 기준이 없습니다"
+                : "이번 주 변경된 티켓이 없습니다";
             return (
               <div className="py-12 flex flex-col items-center px-4">
                 {/* [1] Empty state 헤더 — 가장 강한 hierarchy */}
                 <p className="text-lg font-bold mb-2.5" style={{ color: "var(--text-primary)" }}>
-                  검색 결과가 없습니다
+                  {changesMode ? changeFilterTitle : "검색 결과가 없습니다"}
                 </p>
 
                 {/* [2] 컨텍스트 안내 */}
-                {!hasQuery ? (
+                {changesMode ? (
+                  <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
+                    {!snapshotsLoaded
+                      ? "잠시만 기다려주세요."
+                      : !compareSnapshot
+                        ? "Jira Sync 후 다음 변경부터 확인할 수 있습니다."
+                        : "현재 필터 범위에는 상태·일정 변경이 없습니다."}
+                  </p>
+                ) : !hasQuery ? (
                   <p className="text-sm" style={{ color: "var(--text-secondary)" }}>
                     필터를 조정하거나 다른 키워드로 검색해주세요.
                   </p>
@@ -7767,12 +7824,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className={`flex items-start ${isDetailExpanded ? "px-3 py-2.5" : "px-4 py-3"}`}
                   >
                     {isDetailExpanded ? (
-                      /* Focus Mode 미니 레일: phase 배지 + ticket key + ETA + indicators + title */
+                      /* Focus Mode 미니 레일: ticket key + ETA + 주의 신호 1개 + title */
                       (() => {
-                        const phase = indicators?.phase ?? null;
-                        const actionCount    = indicators?.actionCount    ?? 0;
-                        const riskCount      = indicators?.riskCount      ?? 0;
-                        const phaseStyle = phase ? PHASE_QUEUE_STYLE[phase] : null;
+                        const attention = indicators?.attention ?? null;
+                        const displayAttention = focusForKey && railTopAction
+                          ? {
+                              label: railTopAction.label,
+                              level: railTopAction.level === "critical" ? "critical" as const : "warning" as const,
+                            }
+                          : attention;
                         // ETA 표시 (M/D)
                         const etaShort = t.eta && t.eta !== "-"
                           ? `${parseInt(t.eta.split("-")[1])}/${parseInt(t.eta.split("-")[2])}`
@@ -7780,20 +7840,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         const etaColor = etaWarnLevel === "overdue"  ? "#f87171"
                                        : etaWarnLevel === "imminent" ? "#fbbf24"
                                        : "var(--text-muted)";
-                        const hasIndicators = actionCount + riskCount > 0;
                         return (
                           <div className="flex flex-col gap-1 min-w-0 flex-1">
-                            {/* Row 1: phase 배지 + ticket key + JIRA link */}
+                            {/* Row 1: ticket key + JIRA link */}
                             <div className="flex items-center gap-1.5 min-w-0">
-                              {phaseStyle && (
-                                <span
-                                  className="shrink-0 px-1.5 py-0.5 rounded text-[9.5px] font-bold tracking-tight"
-                                  style={{ background: phaseStyle.bg, color: phaseStyle.color }}
-                                  title={`phase: ${phase}`}
-                                >
-                                  {phase}
-                                </span>
-                              )}
                               <span
                                 className="font-mono text-[10px] font-semibold shrink-0"
                                 style={{ color: isSelected ? "#818cf8" : "var(--text-subtle)" }}
@@ -7814,8 +7864,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 </svg>
                               </a>
                             </div>
-                            {/* Row 2: ETA + indicators */}
-                            {(etaShort || hasIndicators) && (
+                            {/* Row 2: ETA + 업무별 주의 신호 하나 */}
+                            {(etaShort || displayAttention) && (
                               <div className="flex items-center gap-2 flex-wrap text-[10px]">
                                 {etaShort && (
                                   <span style={{ color: etaColor, fontWeight: etaWarnLevel ? 700 : undefined }} title={`ETA ${t.eta}`}>
@@ -7824,33 +7874,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     {etaWarnLevel === "imminent" && <span className="ml-0.5">▲</span>}
                                   </span>
                                 )}
-                                {riskCount > 0 && (
-                                  <span title={`리스크 ${riskCount}건`} style={{ color: "#f87171" }}>
-                                    ⚠{riskCount}
-                                  </span>
-                                )}
-                                {actionCount > 0 && (
-                                  <span title={`액션 필요 ${actionCount}건`} style={{ color: "#fbbf24" }}>
-                                    ☐{actionCount}
+                                {displayAttention && (
+                                  <span
+                                    title={displayAttention.label}
+                                    style={{ color: displayAttention.level === "critical" ? "#f87171" : "#fbbf24" }}
+                                  >
+                                    {planningTab === "플래닝 대기·검토" ? "논의 대상" : "주의"}
                                   </span>
                                 )}
                               </div>
                             )}
-                            {/* Row 3: action label (owner_dashboard 진입 + 미선택 시) */}
-                            {focusForKey && railTopAction && !isSelected && (
-                              <span
-                                className="text-[10px] leading-tight truncate"
-                                style={{
-                                  color:
-                                    railTopAction.level === "critical" ? "#f87171" :
-                                    railTopAction.level === "warning"  ? "#fbbf24" :
-                                                                          "#94a3b8",
-                                }}
-                              >
-                                → {railTopAction.label}
-                              </span>
-                            )}
-                            {/* Row 4: title (2줄 clamp) */}
+                            {/* Row 3: title (2줄 clamp) */}
                             <span
                               className="text-[11px] leading-snug line-clamp-2"
                               style={{
@@ -7867,17 +7901,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     ) : (
                       /* Split View 카드 — Compact Operational Queue
                          Layout:
-                           Row 1: [phase] TM-XXXX ↗ P2 · 담당자 · 프로젝트 · [type]
-                           Row 2: ⚡N ⚠N ☐N 🧹N · transition badges (있을 때만)
+                           Row 1: TM-XXXX ↗ P2 · 담당자
+                           Row 2: 업무별 주의 신호 1개 (있을 때만)
                            Row 3: 제목 (2줄 clamp)
                          우측: [상태 배지] [ETA urgency] [×]
                       */
                       (() => {
-                        const phase          = indicators?.phase ?? null;
-                        const actionCount    = indicators?.actionCount    ?? 0;
-                        const riskCount      = indicators?.riskCount      ?? 0;
-                        const phaseStyle     = phase ? PHASE_QUEUE_STYLE[phase] : null;
-                        const hasIndicators  = actionCount + riskCount > 0;
+                        const attention = indicators?.attention ?? null;
                         const etaShort = t.eta && t.eta !== "-"
                           ? `${parseInt(t.eta.split("-")[1])}/${parseInt(t.eta.split("-")[2])}`
                           : null;
@@ -7895,17 +7925,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                             {/* 카드 본문 */}
                             <div className="flex-1 min-w-0 pr-3">
-                              {/* Row 1: phase + key + 부속 메타 */}
+                              {/* Row 1: key + 우선순위 + 담당자 */}
                               <div className="flex items-center gap-1.5 flex-wrap mb-1">
-                                {phaseStyle && (
-                                  <span
-                                    className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-bold tracking-tight"
-                                    style={{ background: phaseStyle.bg, color: phaseStyle.color }}
-                                    title={`phase: ${phase}`}
-                                  >
-                                    {phase}
-                                  </span>
-                                )}
                                 <a
                                   href={`${JIRA_BASE}${t.key}`}
                                   target="_blank"
@@ -7916,11 +7937,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 >
                                   {t.key}
                                 </a>
-                                {isNew && (
-                                  <span className="shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold bg-emerald-100 text-emerald-700 border border-emerald-300 animate-pulse">
-                                    추가됨
-                                  </span>
-                                )}
                                 {/* PR #33: planningTab 컨텍스트 기반 priority input.
                                     "진행 중" 탭 → execution / 그 외 → planning. */}
                                 {planningTab === "진행 중" ? (
@@ -7940,69 +7956,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     contextLabel="Plan"
                                   />
                                 )}
-                                <span className={`shrink-0 inline-block px-1.5 py-0.5 rounded text-[10px] font-medium whitespace-nowrap ${TYPE_COLOR[t.type] ?? "bg-gray-100 text-gray-500"}`}>
-                                  {t.type}
-                                </span>
                                 <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                                   {t.assignee}
                                 </span>
-                                <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
-                                  · {t.project}
-                                </span>
-                                {/* Source filter chip — 필터로 들어온 티켓에만 표시 */}
-                                {t.sourceFilters && t.sourceFilters.length > 0 && (
-                                  <span
-                                    className="shrink-0 px-1.5 py-0.5 rounded text-[9.5px] font-medium leading-none"
-                                    style={{
-                                      background: "rgba(99,102,241,0.10)",
-                                      color: "#818cf8",
-                                      border: "1px solid rgba(99,102,241,0.18)",
-                                    }}
-                                    title={`Jira Filter: ${t.sourceFilters.join(", ")}`}
-                                  >
-                                    {t.sourceFilters.length === 1
-                                      ? (t.sourceFilters[0].length > 16
-                                          ? t.sourceFilters[0].slice(0, 14) + "…"
-                                          : t.sourceFilters[0])
-                                      : `필터 ${t.sourceFilters.length}개`}
-                                  </span>
-                                )}
                               </div>
 
-                              {/* Row 2: indicators + transition badges (있을 때만) */}
-                              {(hasIndicators || (changesMode && (transitionNewlyAdded.has(t.key) || transitionMap.get(t.key)?.length))) && (
-                                <div className="flex items-center gap-2 flex-wrap mb-1 text-[11px]">
-                                  {riskCount > 0 && (
-                                    <span title={`리스크 ${riskCount}건`} style={{ color: "#f87171" }}>
-                                      ⚠{riskCount}
-                                    </span>
-                                  )}
-                                  {actionCount > 0 && (
-                                    <span title={`액션 필요 ${actionCount}건`} style={{ color: "#fbbf24" }}>
-                                      ☐{actionCount}
-                                    </span>
-                                  )}
-                                  {/* Transition badges (changesMode) */}
-                                  {changesMode && transitionNewlyAdded.has(t.key) && (
-                                    <span
-                                      className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-medium"
-                                      style={{ background: "rgba(100,116,139,0.10)", border: "1px solid rgba(100,116,139,0.25)", color: "#94a3b8" }}
-                                    >
-                                      + 신규
-                                    </span>
-                                  )}
-                                  {changesMode && !transitionNewlyAdded.has(t.key) && transitionMap.get(t.key)?.map(kind => {
-                                    const m = TRANSITION_META[kind];
-                                    return (
-                                      <span
-                                        key={kind}
-                                        className="shrink-0 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-semibold"
-                                        style={{ background: m.bgColor, border: `1px solid ${m.borderColor}`, color: m.color }}
-                                      >
-                                        {m.emoji} {m.label}
-                                      </span>
-                                    );
-                                  })}
+                              {/* Row 2: status와 중복되지 않는 주의 신호 하나 */}
+                              {attention && (
+                                <div className="mb-1 text-[11px]">
+                                  <span
+                                    title={attention.label}
+                                    style={{ color: attention.level === "critical" ? "#f87171" : "#fbbf24" }}
+                                  >
+                                    {planningTab === "플래닝 대기·검토" ? "논의 대상" : "주의"} · {attention.label}
+                                  </span>
                                 </div>
                               )}
 
@@ -8131,6 +8098,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                         {/* 팀 단위 플래닝 상태 compact badges */}
                         {(() => {
+                          if (planningTab !== "플래닝 대기·검토") return null;
                           const summary = getPlanningStateSummary(planning[t.key]);
                           if (summary === "플래닝 완료" && isTicketActive) return null;
                           return (
@@ -8248,27 +8216,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {/* 집중 보기 토글 — Primary CTA */}
                   <button
                     onClick={() => {
-                      const next = !isDetailExpanded;
-                      setIsDetailExpanded(next);
-                      window.history.replaceState({ ...(window.history.state ?? {}), expanded: next }, "");
-                      if (next) {
-                        // Focus 진입 시: 현재 scroll/ptab 저장
-                        workspaceNavRef.current.prevScrollY = window.scrollY;
-                        workspaceNavRef.current.prevPtab    = planningTab;
-                      } else {
-                        // Split View 복귀 시: prevPtab 복원 + scroll 복원
-                        const { prevPtab, prevScrollY } = workspaceNavRef.current;
-                        if (prevPtab && prevPtab !== planningTab) setPlanningTab(prevPtab);
-                        window.scrollTo({ top: prevScrollY, behavior: "instant" as ScrollBehavior });
-                        if (selected) {
-                          setTimeout(() => {
-                            document.querySelector<Element>(`[data-ticket-key="${selected.key}"]`)
-                              ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                          }, 80);
-                        }
+                      if (isDetailExpanded) {
+                        returnToTicketList();
+                        return;
                       }
+                      setIsDetailExpanded(true);
+                      window.history.replaceState({ ...(window.history.state ?? {}), expanded: true }, "");
+                      // Focus 진입 시: 현재 scroll/ptab 저장
+                      workspaceNavRef.current.prevScrollY = window.scrollY;
+                      workspaceNavRef.current.prevPtab    = planningTab;
                     }}
-                    title={isDetailExpanded ? "기본 보기로 (ESC)" : "집중 보기 — 목록을 최소화하고 이 티켓에 집중"}
+                    title={isDetailExpanded ? "전체 목록으로 돌아가기" : "집중 보기 — 목록을 최소화하고 이 티켓에 집중"}
                     className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-semibold transition-all"
                     style={{
                       background: isDetailExpanded
@@ -8295,7 +8253,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                           <path d="M6.5 2L3 5l3.5 3" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
                         </svg>
-                        목록으로
+                        전체 목록
                       </>
                     ) : (
                       <>
@@ -8421,11 +8379,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               2-column 운영 워크스페이스: 액션 스트립 + 좌(Context) + 우(Execution)
               ══════════════════════════════════════════════════════════════ */}
           {isDetailExpanded && (() => {
-            const fmActions = getActionItems(
+            const fmActionScope: ActionScope = ["etr", "source", "docs", "no-etr", "no-source", "no-docs"].includes(focusContext ?? "")
+              ? "data"
+              : planningTab === "플래닝 대기·검토"
+                ? "planning"
+                : "weekly";
+            const fmActions = getActionItemsForScope(
               selected,
               planning[selected.key],
               schedules[selected.key] ?? selected.roles ?? [],
-              etrMap[selected.key]
+              etrMap[selected.key],
+              fmActionScope,
             );
             const fmEtr   = etrMap[selected.key];
             const fmWikis = fmEtr?.wikiLinks ?? [];
@@ -8542,7 +8506,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-canvas)" }}
                   >
                     <span className="text-[11px] font-semibold uppercase tracking-wide shrink-0 mr-0.5" style={{ color: "var(--text-muted)" }}>
-                      현재 필요한 액션
+                      {fmActionScope === "planning" ? "논의 대상" : fmActionScope === "data" ? "데이터 정리" : "주의 필요"}
                     </span>
                     {fmActions.map(action => {
                       const s = LEVEL_STYLE[action.level];
@@ -9250,11 +9214,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
             {/* ── Action Guidance: 현재 필요한 액션 ── */}
             {(() => {
-              const actions = getActionItems(
+              const actionScope: ActionScope = planningTab === "플래닝 대기·검토" ? "planning" : "weekly";
+              const actions = getActionItemsForScope(
                 selected,
                 planning[selected.key],
                 schedules[selected.key] ?? selected.roles ?? [],
-                etrMap[selected.key]
+                etrMap[selected.key],
+                actionScope,
               );
               if (actions.length === 0) return null;
 
@@ -9273,7 +9239,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               return (
                 <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
                   <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
-                    현재 필요한 액션
+                    {actionScope === "planning" ? "논의 대상" : "주의 필요"}
                   </p>
                   <div className="space-y-1.5">
                     {visible.map(action => {
@@ -9494,14 +9460,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const displayedDocs = docsExpanded
                 ? [...organizedDocs.visible, ...organizedDocs.hidden]
                 : organizedDocs.visible;
+              const organizedDocsCount = organizedDocs.visible.length + organizedDocs.hidden.length;
               return (
                 <div className="rounded-lg px-3 py-2.5 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid rgba(168,85,247,0.20)" }}>
                   <div className="flex items-center justify-between mb-2 gap-2">
                     <div className="flex items-center gap-1.5">
                       <span style={{ color: "#a78bfa", fontSize: 12 }}>🗂</span>
                       <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "#a78bfa" }}>관련 문서</p>
-                      {allDocs.length > 0 && (
-                        <span className="text-[10px] font-mono opacity-70" style={{ color: "#a78bfa" }}>{allDocs.length}건</span>
+                      {organizedDocsCount > 0 && (
+                        <span
+                          className="text-[10px] font-mono opacity-70"
+                          style={{ color: "#a78bfa" }}
+                          title={organizedDocs.omittedWeeklyCount > 0 ? `반복 Weekly 과거본 ${organizedDocs.omittedWeeklyCount}건 정리됨` : undefined}
+                        >{organizedDocsCount}건</span>
                       )}
                     </div>
                     <button
@@ -9576,9 +9547,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 style={{ background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.3)", color: "#34d399" }}
                               >최신 Weekly</span>
                             )}
-                            {d.isPreviousWeekly && (
-                              <span className="shrink-0 text-[10px]" style={{ color: "var(--text-subtle)" }}>이전 Weekly</span>
-                            )}
                             <span className="shrink-0 text-[10px]" style={{ color: meta.color }}>{meta.label}</span>
                             {isRemoteLink ? (
                               <span
@@ -9599,7 +9567,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           className="w-full rounded-lg px-2.5 py-1.5 text-[11px] font-medium transition-colors"
                           style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-muted)" }}
                         >
-                          {docsExpanded ? "문서 접기" : `이전·추가 문서 ${organizedDocs.hidden.length}개 펼치기`}
+                          {docsExpanded ? "문서 접기" : `추가 문서 ${organizedDocs.hidden.length}개 펼치기`}
                         </button>
                       )}
                     </div>
@@ -11488,8 +11456,6 @@ function WeeklySyncSummary({ meta }: { meta?: WeeklySyncMeta }) {
 function PriorityInput({ value, onChange, active, dupCount = 0, contextLabel }: { value: string; onChange: (v: string) => void; active: boolean; dupCount?: number; contextLabel?: "Plan" | "Exec" }) {
   const [local, setLocal] = useState(value);
   const [editing, setEditing] = useState(false);
-  // 외부 value 변경 (KV reload 등) 시 동기화
-  useEffect(() => { if (!editing) setLocal(value); }, [value, editing]);
 
   function commit() {
     setEditing(false);
@@ -11546,6 +11512,7 @@ function PriorityInput({ value, onChange, active, dupCount = 0, contextLabel }: 
 }
 
 function ActivityRow({ entry }: { entry: ActivityEntry }) {
+  const [renderedAt] = useState(() => Date.now());
   const verbLabel: Record<string, string> = {
     eta_changed:        "ETA 변경",
     status_changed:     "상태 변경",
@@ -11559,7 +11526,7 @@ function ActivityRow({ entry }: { entry: ActivityEntry }) {
     note_added:         "노트 추가",
   };
   function relativeTime(iso: string): string {
-    const diff = Date.now() - new Date(iso).getTime();
+    const diff = renderedAt - new Date(iso).getTime();
     const min = Math.floor(diff / 60000);
     if (min < 1) return "방금 전";
     if (min < 60) return `${min}분 전`;

@@ -22,15 +22,29 @@ describe("organizeLinkedDocs", () => {
 
     assert.equal(result.visible[0].title, "[2026-06-29 Weekly flash prep]");
     assert.equal(result.visible[0].isLatestWeekly, true);
-    assert.deepEqual(result.hidden.map(item => item.title), [
-      "[2026-06-22 Weekly flash prep]",
-      "[2026-06-15 Weekly flash prep]",
-    ]);
+    assert.deepEqual(result.hidden, []);
+    assert.equal(result.omittedWeeklyCount, 2);
   });
 
   it("기본 6개를 넘는 문서는 펼침 목록으로 분리", () => {
     const result = organizeLinkedDocs(Array.from({ length: 9 }, (_, i) => doc(`문서 ${i + 1}`, i)), 6);
     assert.equal(result.visible.length, 6);
     assert.equal(result.hidden.length, 3);
+    assert.equal(result.omittedWeeklyCount, 0);
+  });
+
+  it("펼친 목록에도 반복 Weekly 과거본을 다시 포함하지 않음", () => {
+    const docs = [
+      ...Array.from({ length: 8 }, (_, i) => doc(`일반 문서 ${i + 1}`, i)),
+      doc("2026-07-20 Weekly flash prep", 20),
+      doc("2026-07-27 Weekly flash prep", 21),
+      doc("2026-08-03 Weekly flash prep", 22),
+    ];
+    const result = organizeLinkedDocs(docs, 6);
+    const expanded = [...result.visible, ...result.hidden];
+
+    assert.equal(expanded.filter(item => /Weekly flash prep/.test(item.title)).length, 1);
+    assert.equal(expanded[0].title, "2026-08-03 Weekly flash prep");
+    assert.equal(result.omittedWeeklyCount, 2);
   });
 });

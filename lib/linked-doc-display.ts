@@ -4,7 +4,6 @@ export const DEFAULT_LINKED_DOC_LIMIT = 6;
 
 export type DisplayLinkedDoc = LinkedDoc & {
   isLatestWeekly: boolean;
-  isPreviousWeekly: boolean;
 };
 
 type DatedWeekly = { doc: LinkedDoc; date: number; series: string };
@@ -29,7 +28,7 @@ function datedWeekly(doc: LinkedDoc): DatedWeekly | null {
 export function organizeLinkedDocs(
   docs: LinkedDoc[],
   limit = DEFAULT_LINKED_DOC_LIMIT,
-): { visible: DisplayLinkedDoc[]; hidden: DisplayLinkedDoc[] } {
+): { visible: DisplayLinkedDoc[]; hidden: DisplayLinkedDoc[]; omittedWeeklyCount: number } {
   const weekly = docs.map(datedWeekly).filter((item): item is DatedWeekly => item !== null);
   const newestBySeries = new Map<string, DatedWeekly>();
   for (const item of weekly) {
@@ -41,19 +40,17 @@ export function organizeLinkedDocs(
   const weeklyUrls = new Set(weekly.map(item => item.doc.url));
   const pinned = Array.from(newestBySeries.values())
     .sort((a, b) => b.date - a.date)
-    .map(({ doc }) => ({ ...doc, isLatestWeekly: true, isPreviousWeekly: false }));
+    .map(({ doc }) => ({ ...doc, isLatestWeekly: true }));
   const regular = docs
     .filter(doc => !weeklyUrls.has(doc.url))
-    .map(doc => ({ ...doc, isLatestWeekly: false, isPreviousWeekly: false }));
-  const previous = weekly
-    .filter(({ doc }) => !newestUrls.has(doc.url))
-    .sort((a, b) => b.date - a.date)
-    .map(({ doc }) => ({ ...doc, isLatestWeekly: false, isPreviousWeekly: true }));
+    .map(doc => ({ ...doc, isLatestWeekly: false }));
+  const omittedWeeklyCount = weekly.filter(({ doc }) => !newestUrls.has(doc.url)).length;
 
   const primary = [...pinned, ...regular];
   const safeLimit = Math.max(1, limit);
   return {
     visible: primary.slice(0, safeLimit),
-    hidden: [...primary.slice(safeLimit), ...previous],
+    hidden: primary.slice(safeLimit),
+    omittedWeeklyCount,
   };
 }
