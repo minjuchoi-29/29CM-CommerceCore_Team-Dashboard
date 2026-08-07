@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Ticket } from "../app/jira-tickets/TicketBoard";
-import { getActionItems, getActionItemsForScope } from "../lib/action-items";
+import {
+  getActionItems,
+  getActionItemsForScope,
+  getActionItemsForScopeWhenReady,
+} from "../lib/action-items";
 
 const ticket = {
   key: "TM-TEST",
@@ -22,5 +26,27 @@ describe("action item scope", () => {
 
     assert.deepEqual(all.filter(item => item.scope === "planning").map(item => item.id), ["review-needed"]);
     assert.deepEqual(all.filter(item => item.scope === "data").map(item => item.id), ["no-source", "no-docs"]);
+  });
+
+  it("KV hydrate 전에는 빈 일정을 근거로 거짓 주의 신호를 노출하지 않음", () => {
+    const beforeHydration = getActionItemsForScopeWhenReady(
+      false,
+      ticket,
+      undefined,
+      [],
+      undefined,
+      "weekly",
+    );
+    const afterHydration = getActionItemsForScopeWhenReady(
+      true,
+      ticket,
+      undefined,
+      [],
+      undefined,
+      "weekly",
+    );
+
+    assert.deepEqual(beforeHydration, []);
+    assert.deepEqual(afterHydration.map(item => item.id), ["no-schedule", "no-launch"]);
   });
 });

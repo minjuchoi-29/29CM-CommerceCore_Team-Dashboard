@@ -6,6 +6,7 @@ import { Tooltip } from "@/app/components/Tooltip";
 import { ActivityEntry } from "@/lib/activity";
 import {
   getActionItemsForScope,
+  getActionItemsForScopeWhenReady,
   type ActionScope,
 } from "@/lib/action-items";
 import {
@@ -4479,7 +4480,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       : planningTab === "플래닝 대기·검토"
         ? "planning"
         : "weekly";
-    const actions = getActionItemsForScope(
+    const actions = getActionItemsForScopeWhenReady(
+      kvLoaded,
       selected,
       planning[selected.key],
       schedules[selected.key] ?? selected.roles ?? [],
@@ -4498,6 +4500,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [ // eslint-disable-line react-hooks/exhaustive-deps
     selected?.key,
     isDetailExpanded,
+    kvLoaded,
     planningTab,
     focusContext,
     schedules[selected?.key ?? ""],
@@ -5215,7 +5218,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   const getTicketAttention = useCallback((ticket: Ticket, scope: ActionScope): MeetingAttention => {
     const rows = schedules[ticket.key] ?? ticket.roles ?? [];
-    const scopedActions = getActionItemsForScope(
+    const scopedActions = getActionItemsForScopeWhenReady(
+      kvLoaded,
       ticket,
       planning[ticket.key],
       rows,
@@ -5251,7 +5255,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       label: topAction.label,
       level: topAction.level === "critical" ? "critical" : "warning",
     };
-  }, [schedules, planning, etrMap, weeklyNotes]);
+  }, [kvLoaded, schedules, planning, etrMap, weeklyNotes]);
 
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
@@ -5420,7 +5424,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const actionScope: ActionScope = sourceContext ? "data" : meetingScope;
       return {
         ticket: t,
-        topAction: getActionItemsForScope(
+        topAction: getActionItemsForScopeWhenReady(
+          kvLoaded,
           t,
           planning[t.key],
           rows.length > 0 ? rows : (t.roles ?? []),
@@ -5439,7 +5444,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const pb = b.topAction?.priority ?? 999;
       return pa - pb;
     });
-  }, [filtered, focusForKey, focusContext, selected?.key, planningTab, planning, schedules, etrMap, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, focusForKey, focusContext, selected?.key, planningTab, planning, schedules, etrMap, kvLoaded, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── changesMode: 스냅샷 로드 → Transition 계산 ────────────────
   useEffect(() => {
@@ -8502,7 +8507,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               : planningTab === "플래닝 대기·검토"
                 ? "planning"
                 : "weekly";
-            const fmActions = getActionItemsForScope(
+            const fmActions = getActionItemsForScopeWhenReady(
+              kvLoaded,
               selected,
               planning[selected.key],
               schedules[selected.key] ?? selected.roles ?? [],
@@ -9360,7 +9366,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {/* ── Action Guidance: 현재 필요한 액션 ── */}
             {(() => {
               const actionScope: ActionScope = planningTab === "플래닝 대기·검토" ? "planning" : "weekly";
-              const actions = getActionItemsForScope(
+              const actions = getActionItemsForScopeWhenReady(
+                kvLoaded,
                 selected,
                 planning[selected.key],
                 schedules[selected.key] ?? selected.roles ?? [],
