@@ -221,3 +221,22 @@ export function getActionItemsForScope(
     scope,
   );
 }
+
+/**
+ * 원격 운영 데이터가 hydrate되기 전에는 action을 계산하지 않는다.
+ *
+ * 티켓은 localStorage cache에서 먼저 복원될 수 있지만 schedule/planning/ETR은
+ * KV 응답 후 도착한다. 이 사이 빈 데이터로 action을 계산하면
+ * "세부 작업 일정 미입력" 같은 거짓 경고가 잠깐 노출된다.
+ */
+export function getActionItemsForScopeWhenReady(
+  ready: boolean,
+  ticket: Ticket,
+  planningVal: unknown,
+  roles: RoleScheduleMin[],
+  etrEntry: EtrInfoMin | undefined,
+  scope: ActionScope,
+): ActionItem[] {
+  if (!ready) return [];
+  return getActionItemsForScope(ticket, planningVal, roles, etrEntry, scope);
+}

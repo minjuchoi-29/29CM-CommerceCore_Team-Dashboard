@@ -64,6 +64,17 @@ describe("getPlanningView — devTracks 우선 정책 (silent loss 방지)", () 
     const view = getPlanningView({ design: "완료", dev: "완료", reviewNeeded: true });
     assert.equal(view.reviewNeeded, true);
   });
+
+  it("P1 프리플래닝 필드를 기존 Design/Dev helper가 보존", () => {
+    const view = getPlanningView({
+      design: "완료",
+      dev: "검토중",
+      preplanningStatus: "다음 스프린트 재검토",
+      targetSprint: "2026-08 Sprint 2",
+    });
+    assert.equal(view.preplanningStatus, "다음 스프린트 재검토");
+    assert.equal(view.targetSprint, "2026-08 Sprint 2");
+  });
 });
 
 describe("getPlanningStateSummary — PlanningBadge 표시 상태", () => {

@@ -617,3 +617,38 @@ calcWorkingDays(start, end):
 | 시트 폴링 | 30초 인터벌 + visibilitychange |
 | race condition 방어 | dedupedTickets으로 키 기준 중복 제거 |
 | 패널 detail-panel 이벤트 | `selected` 변경 시 `CustomEvent("detail-panel")` dispatch |
+
+---
+
+## 19. P1 스프린트 프리플래닝 관리
+
+### 19-1. 과제 단위 프리플래닝 상태
+
+기존 Design/Dev 트랙 상태와 별도로 다음 6개 상태를 관리한다.
+
+`검토 대기 / 검토 중 / 진행 불가 / 다음 스프린트 재검토 / 진행 예정 / 플래닝 완료`
+
+- KV `cc-planning[ticketKey].preplanningStatus`에 저장한다.
+- 예정 스프린트는 `cc-planning[ticketKey].targetSprint`에 저장한다.
+- 신규 필드가 없는 기존 레코드는 Jira 상태와 기존 Design/Dev 상태로 화면에서 파생한다.
+- 기존 `design`, `dev`, `devTracks`, `reviewNeeded`, `cc-planning-notes`는 변경하거나 삭제하지 않는다.
+- Jira가 기획·디자인·개발·QA·완료 단계인 과제는 `플래닝 완료`로 간주한다.
+- 대기 과제는 프리플래닝 상태·예정 스프린트·논의 메모를 우선 노출한다.
+- 진행 중 과제는 최근 Weekly 요약·작업별 일정을 우선 노출한다.
+- 기존 Design/Dev 상세 상태는 보조 영역으로 접어서 보존한다.
+
+### 19-2. 저장 및 수동 데이터 보호
+
+- `cc-planning` 갱신은 티켓 `subKey` 단위로 수행한다.
+- 일정 편집 화면에서 사용자가 실제로 수정한 행은 `source="manual"`, `manualLocked=true`로 저장한다.
+- Weekly 병합은 manual/imported/confirmed 행을 자동으로 덮어쓰지 않는다.
+- 기존 메모 배열과 수동 일정은 신규 필드 도입 과정에서 일괄 마이그레이션하지 않는다.
+
+### 19-3. 최근 완료 과제 Weekly 추적
+
+- 모든 미완료 과제는 기존과 동일하게 Weekly Sync 대상이다.
+- Jira `resolutionDate` 기준 완료 후 14일 이내 과제도 Weekly Sync 대상에 포함한다.
+- 완료 상태인데 `resolutionDate`가 없으면 Jira `updated`를 보수적 추적 시작 시각으로 사용한다.
+- 최근 완료 과제는 마지막 Weekly 완료보고와 후속 조치를 반영할 수 있도록 유지한다.
+- 완료 후 14일이 지났거나 완료일을 확인할 수 없는 과제는 자동 동기화 대상에서 제외한다.
+- 숨김 처리된 과제는 완료 시점과 무관하게 제외한다.
