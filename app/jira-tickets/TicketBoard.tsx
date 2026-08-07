@@ -5075,7 +5075,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
         const isTicketHold = PLANNING_HOLD_STATUSES.has(t.status);
         if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone && !isTicketHold)) return false;
-        if (planningTab === "플래닝 대기·검토" && ((bothDone || isJiraActive) && !isTicketHold)) return false;
+        if (planningTab === "플래닝 대기·검토" && (isTicketDone || ((bothDone || isJiraActive) && !isTicketHold))) return false;
         if (planningTab === "완료" && !isTicketDone) return false;
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
@@ -5357,8 +5357,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
    * 모두 우회하여 search 만 적용한 결과.
    *
    * planningTab 분기 로직은 preFiltered (line ~4019-4027) 와 동일:
-   *   - 진행 중:           (bothDone || isJiraActive) && !isTicketDone
-   *   - 플래닝 대기·검토:   !(bothDone || isJiraActive)
+   *   - 진행 중:           (bothDone || isJiraActive) && !isTicketDone && !isTicketHold
+   *   - 플래닝 대기·검토:   !isTicketDone && (isTicketHold || !(bothDone || isJiraActive))
    *   - 완료:              isTicketDone
    *
    *  - 현재 planningTab 은 hint 에서 제외
@@ -5385,7 +5385,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const isTicketHold = PLANNING_HOLD_STATUSES.has(t.status);
       switch (tab) {
         case "진행 중":          return (bothDone || isJiraActive) && !isTicketDone && !isTicketHold;
-        case "플래닝 대기·검토":  return isTicketHold || !(bothDone || isJiraActive);
+        case "플래닝 대기·검토":  return !isTicketDone && (isTicketHold || !(bothDone || isJiraActive));
         case "완료":             return isTicketDone;
       }
     };
