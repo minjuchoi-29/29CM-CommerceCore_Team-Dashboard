@@ -37,6 +37,15 @@ import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sy
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import {
+  PREPLANNING_STATUSES,
+  getPreplanningView,
+  type PreplanningStatus,
+} from "@/lib/preplanning";
+import {
+  COMPLETED_WEEKLY_TRACKING_DAYS,
+  selectWeeklySyncTargets,
+} from "@/lib/weekly-targets";
+import {
   type TrackState,
   TRACK_STATES,
   type DevTrackKey,
@@ -259,6 +268,7 @@ export type Ticket = {
   assignee: string;
   startDate?: string;
   resolutionDate?: string; // β-1: Jira resolutiondate (ISO) — Done 시점 자동 입력
+  updatedAt?: string; // Jira updated (ISO) — resolutionDate가 없는 완료 상태의 추적 fallback
   eta: string;
   type: string;
   project: string;
@@ -1395,6 +1405,27 @@ const PLANNING_BADGE_TIPS: Record<PlanningSummaryState, string> = {
   "대상아님":   "플래닝 대상에서 제외된 과제입니다.",
 };
 
+const PREPLANNING_META: Record<PreplanningStatus, { color: string; background: string; border: string }> = {
+  "검토 대기": { color: "var(--text-muted)", background: "var(--bg-overlay)", border: "var(--border-2)" },
+  "검토 중": { color: "#818cf8", background: "rgba(99,102,241,0.12)", border: "rgba(129,140,248,0.45)" },
+  "진행 불가": { color: "#f87171", background: "rgba(239,68,68,0.10)", border: "rgba(248,113,113,0.45)" },
+  "다음 스프린트 재검토": { color: "#fbbf24", background: "rgba(245,158,11,0.10)", border: "rgba(251,191,36,0.45)" },
+  "진행 예정": { color: "#2dd4bf", background: "rgba(20,184,166,0.10)", border: "rgba(45,212,191,0.45)" },
+  "플래닝 완료": { color: "#34d399", background: "rgba(16,185,129,0.10)", border: "rgba(52,211,153,0.45)" },
+};
+
+function PreplanningBadge({ status }: { status: PreplanningStatus }) {
+  const meta = PREPLANNING_META[status];
+  return (
+    <span
+      className="inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-semibold whitespace-nowrap"
+      style={{ color: meta.color, background: meta.background, borderColor: meta.border }}
+    >
+      {status}
+    </span>
+  );
+}
+
 function PlanningBadge({ state, size = "xs" }: { state: PlanningSummaryState; size?: "xs" | "sm" }) {
   const textSize = size === "xs" ? "text-[11px]" : "text-xs";
   const tip = PLANNING_BADGE_TIPS[state];
@@ -1767,6 +1798,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [newFilter, setNewFilter]       = useState(false); // 최근 2주 신규 티켓만 필터
   // status 가 undefined 면 "팀 전체" — 카드 wrapper 클릭으로 진입.
   const [planningKpiFilter, setPlanningKpiFilter] = useState<{ team: string; status?: TrackState } | null>(null); // 상단 KPI 카드 클릭 필터
+  const [preplanningFilter, setPreplanningFilter] = useState<PreplanningStatus | null>(null);
   const [ticketAddedDates, setTicketAddedDates] = useState<Record<string, string>>({}); // key → "YYYY-MM-DD"
   // Phase 3: 마지막 탭 / 선택 티켓 localStorage 복원
   // 최초 진입 = 기본 "진행 중", 이후 마지막 상태 복원. invalid 값은 fallback.
@@ -1850,7 +1882,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 티켓 메모 (key → PlanningNote[])
   const [ticketNotes, setTicketNotes]     = useState<Record<string, PlanningNote[]>>({});
   const [ticketNoteInput, setTicketNoteInput] = useState("");
-  const [planningOpen, setPlanningOpen] = useState(true);
+  const [planningOpen, setPlanningOpen] = useState(false);
 
 
   // 요구사항 출처 (key → TicketRequestInfo)
@@ -2143,14 +2175,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       // ─── Weekly Sync orchestration (Phase 2) ──────────────────
       // fire-and-forget: Jira Sync UI는 즉시 끝나고, weekly 흐름은 background에서 진행.
-      // 활성 ticket만 (완료 제외) 대상. Source 조회는 병렬, Redis shared JSON write는 직렬 처리.
+      // 미완료 ticket + 완료 후 14일 이내 ticket 대상.
+      // 최근 완료 과제는 마지막 완료보고가 Weekly에 반영될 수 있도록 추적을 유지한다.
+      // Source 조회는 병렬, Redis shared JSON write는 직렬 처리.
       // 흐름: jira-weekly-source → weekly-sync POST → KV reload.
       void (async () => {
-        const DONE_FOR_WEEKLY = new Set(["론치완료", "완료", "배포완료"]);
         const hiddenForSync = hiddenSync;  // 위에서 forceRefresh가 잡아둔 hidden set
-        const activeAll = (data.tickets as Ticket[]).filter(t => !DONE_FOR_WEEKLY.has(t.status));
-        const targets = activeAll.filter(t => !hiddenForSync.has(t.key));
-        const skippedHidden = activeAll.length - targets.length;
+        const targetSelection = selectWeeklySyncTargets(
+          data.tickets as Ticket[],
+          hiddenForSync,
+          new Date(),
+        );
+        const { targets, skippedHidden, recentlyCompletedCount } = targetSelection;
         if (targets.length === 0) {
           if (skippedHidden > 0) {
             console.log(`[WeeklySync] all targets hidden, skipped=${skippedHidden}`);
@@ -2162,6 +2198,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setWeeklySyncMsg("Weekly Sync 중…");
         if (skippedHidden > 0) {
           console.log(`[WeeklySync] start — targets=${targets.length} (hidden ${skippedHidden} 제외)`);
+        }
+        if (recentlyCompletedCount > 0) {
+          console.log(
+            `[WeeklySync] 최근 완료 ${recentlyCompletedCount}건 포함 ` +
+            `(완료 후 ${COMPLETED_WEEKLY_TRACKING_DAYS}일 추적)`,
+          );
         }
 
         // PR-Sync-Visibility: run-level 진행 상태 초기화 (상단 배지 source)
@@ -3486,12 +3528,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
         // 완료 상태 티켓은 플래닝 자동 완료 처리
         if (["론치완료", "완료", "배포완료"].includes(newTicket.status)) {
-          const updatedPlanning = { ...planning, [trimmed]: { design: "완료" as TrackState, dev: "완료" as TrackState } };
-          setPlanning(updatedPlanning);
+          const nextEntry = { ...getPlanningVal(planning[trimmed]), design: "완료" as TrackState, dev: "완료" as TrackState };
+          setPlanning(prev => ({ ...prev, [trimmed]: nextEntry }));
           fetch("/api/kv", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: "cc-planning", value: updatedPlanning }),
+            body: JSON.stringify({ key: "cc-planning", subKey: trimmed, value: nextEntry }),
           }).catch(() => {});
         }
 
@@ -3633,16 +3675,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // 완료 상태 티켓은 플래닝 자동 완료 처리
       const doneTickets = fetched.filter(t => ["론치완료", "완료", "배포완료"].includes(t.status));
       if (doneTickets.length > 0) {
-        const updatedPlanning = { ...planning };
+        const entries: Record<string, unknown> = {};
         for (const t of doneTickets) {
-          updatedPlanning[t.key] = { design: "완료" as TrackState, dev: "완료" as TrackState };
+          entries[t.key] = { ...getPlanningVal(planning[t.key]), design: "완료" as TrackState, dev: "완료" as TrackState };
         }
-        setPlanning(updatedPlanning);
-        fetch("/api/kv", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ key: "cc-planning", value: updatedPlanning }),
-        }).catch(() => {});
+        setPlanning(prev => ({ ...prev, ...entries }));
+        for (const [key, value] of Object.entries(entries)) {
+          await fetch("/api/kv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: "cc-planning", subKey: key, value }),
+          }).catch(() => {});
+        }
       }
 
       // ─── GitHub에 tickets-data.ts 커밋 (영구 저장) — 각 키 순차 커밋 ────────
@@ -4484,13 +4528,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
     if (Object.keys(updates).length === 0) return;
 
-    const updatedPlanning = { ...planning, ...updates };
-    setPlanning(updatedPlanning);
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-planning", value: updatedPlanning }),
-    }).catch(() => {});
+    setPlanning(prev => ({ ...prev, ...updates }));
+    void (async () => {
+      for (const [key, value] of Object.entries(updates)) {
+        await fetch("/api/kv", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key: "cc-planning", subKey: key, value }),
+        }).catch(() => {});
+      }
+    })();
   }, [kvLoaded, fetching, tickets, planning]);
 
   useEffect(() => {
@@ -4742,7 +4789,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   function updateRow(i: number, field: keyof RoleSchedule, value: string) {
-    setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, [field]: value } : r));
+    setEditRows(prev => prev.map((r, idx) => idx === i
+      ? { ...r, [field]: value, source: "manual", manualLocked: true }
+      : r
+    ));
   }
 
   // 편집 모드 진입 + focusKey 있을 때 → 해당 행으로 스크롤
@@ -5046,8 +5096,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
    * preFiltered — 하단 ticket 목록용. planningTabBase 위에 KPI 카드 클릭 필터만 추가 적용.
    */
   const preFiltered = useMemo(() => {
-    if (!planningKpiFilter || planningTab !== "플래닝 대기·검토") return planningTabBase;
-    return planningTabBase.filter((t: Ticket) => {
+    let result = planningTabBase;
+    if (planningTab === "플래닝 대기·검토" && preplanningFilter) {
+      result = result.filter((t: Ticket) =>
+        getPreplanningView(t.status, planning[t.key]).status === preplanningFilter
+      );
+    }
+    if (!planningKpiFilter || planningTab !== "플래닝 대기·검토") return result;
+    return result.filter((t: Ticket) => {
       const kp = getPlanningVal(planning[t.key]);
       const wantedStatus = planningKpiFilter.status;
       if (planningKpiFilter.team === "디자인") {
@@ -5060,7 +5116,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const trackVal = kp.devTracks[planningKpiFilter.team as DevTrackKey];
       return wantedStatus ? trackVal === wantedStatus : !!trackVal;
     });
-  }, [planningTabBase, planningKpiFilter, planningTab, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [planningTabBase, planningKpiFilter, preplanningFilter, planningTab, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const preplanningCounts = useMemo(() => {
+    const counts = Object.fromEntries(PREPLANNING_STATUSES.map(status => [status, 0])) as Record<PreplanningStatus, number>;
+    for (const ticket of planningTabBase) {
+      counts[getPreplanningView(ticket.status, planning[ticket.key]).status]++;
+    }
+    return counts;
+  }, [planningTabBase, planning]);
 
   // 요약 카드 — 현재 planningTab 기준(preFiltered) 집계, statusTab 무관
   const totalAll        = preFiltered.length;
@@ -5488,12 +5552,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     saveMemoVersion(key, text, false);
   }
 
-  function savePlanningNotes(updated: Record<string, PlanningNote[]>) {
-    setPlanningNotes(updated);
+  function savePlanningNotes(ticketKey: string, notes: PlanningNote[]) {
+    setPlanningNotes(prev => ({ ...prev, [ticketKey]: notes }));
     fetch("/api/kv", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-planning-notes", value: updated }),
+      body: JSON.stringify({ key: "cc-planning-notes", subKey: ticketKey, value: notes }),
     }).catch(() => {});
   }
 
@@ -5503,12 +5567,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const date = `${now.toISOString().slice(0, 10)} ${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
     const note: PlanningNote = { text: text.trim(), author: userName, date };
     const prev = planningNotes[ticketKey] ?? [];
-    savePlanningNotes({ ...planningNotes, [ticketKey]: [...prev, note] });
+    savePlanningNotes(ticketKey, [...prev, note]);
   }
 
   function deletePlanningNote(ticketKey: string, index: number) {
     const prev = planningNotes[ticketKey] ?? [];
-    savePlanningNotes({ ...planningNotes, [ticketKey]: prev.filter((_, i) => i !== index) });
+    savePlanningNotes(ticketKey, prev.filter((_, i) => i !== index));
   }
 
   function saveTicketNotes(updated: Record<string, PlanningNote[]>) {
@@ -5536,6 +5600,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
 
 
+  function persistPlanningEntry(key: string, nextEntry: unknown) {
+    setPlanning(prev => ({ ...prev, [key]: nextEntry }));
+    fetch("/api/kv", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "cc-planning", subKey: key, value: nextEntry }),
+    }).catch(() => {});
+  }
+
+  function savePreplanningFields(
+    key: string,
+    fields: { preplanningStatus?: PreplanningStatus; targetSprint?: string },
+  ) {
+    const current = getPlanningVal(planning[key]);
+    persistPlanningEntry(key, { ...current, ...fields });
+  }
+
   function savePlanning(key: string, track: "design" | "dev", state: TrackState) {
     const current = getPlanningVal(planning[key]);
 
@@ -5557,13 +5638,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       nextEntry = { ...current, [track]: state };
     }
 
-    const updated = { ...planning, [key]: nextEntry };
-    setPlanning(updated);
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-planning", value: updated }),
-    }).catch(() => {});
+    persistPlanningEntry(key, nextEntry);
   }
 
   function toggleDevTrack(key: string, trackKey: DevTrackKey) {
@@ -5575,29 +5650,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       newDevTracks[trackKey] = "대기중";
     }
     const newDev = Object.keys(newDevTracks).length > 0 ? aggregateDevState(newDevTracks) : current.dev;
-    const updated = { ...planning, [key]: { ...current, devTracks: newDevTracks, dev: newDev } };
-    setPlanning(updated);
-    fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-planning", value: updated }) }).catch(() => {});
+    persistPlanningEntry(key, { ...current, devTracks: newDevTracks, dev: newDev });
   }
 
   function saveDevTrack(key: string, trackKey: DevTrackKey, state: TrackState) {
     const current = getPlanningVal(planning[key]);
     const newDevTracks = { ...current.devTracks, [trackKey]: state };
     const newDev = aggregateDevState(newDevTracks);
-    const updated = { ...planning, [key]: { ...current, devTracks: newDevTracks, dev: newDev } };
-    setPlanning(updated);
-    fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key: "cc-planning", value: updated }) }).catch(() => {});
+    persistPlanningEntry(key, { ...current, devTracks: newDevTracks, dev: newDev });
   }
 
   function toggleReviewNeeded(key: string) {
     const current = getPlanningVal(planning[key]);
-    const updated = { ...planning, [key]: { ...current, reviewNeeded: !current.reviewNeeded } };
-    setPlanning(updated);
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-planning", value: updated }),
-    }).catch(() => {});
+    persistPlanningEntry(key, { ...current, reviewNeeded: !current.reviewNeeded });
   }
 
 
@@ -5849,7 +5914,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
 
     setSelected(t);
-    setDetailTab("overview");
+    // 대기 과제는 프리플래닝 운영 화면부터, 진행 과제는 Weekly 중심 Overview부터 연다.
+    setDetailTab(planningTab === "플래닝 대기·검토" ? "ops" : "overview");
     setEditMode(false);
     setMemoEditMode(false);
     setMemoCollapsed(true);
@@ -5864,8 +5930,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setSectionHighlight(null);
     setEtrError(null);
     setMemoText(getCurrentMemo(t.key)?.text ?? "");
-    const p = getPlanningVal(planning[t.key]);
-    setPlanningOpen(!(p.design === "완료" && p.dev === "완료"));
+    // 기존 Design/Dev 상세는 보존하되 프리플래닝 핵심 정보보다 후순위로 접어 둔다.
+    setPlanningOpen(false);
   }
 
   if (fetching && tickets.length === 0) {
@@ -6877,6 +6943,46 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           })}
         </div>
 
+        {planningTab === "플래닝 대기·검토" && !isDetailExpanded && (
+          <div className="mb-4 rounded-xl px-3 py-3" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <div>
+                <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>프리플래닝 상태</p>
+                <p className="text-[10px] mt-0.5" style={{ color: "var(--text-subtle)" }}>상태를 선택해 스프린트 논의 큐를 좁혀보세요.</p>
+              </div>
+              {preplanningFilter && (
+                <button
+                  onClick={() => setPreplanningFilter(null)}
+                  className="text-[11px] px-2 py-1 rounded"
+                  style={{ color: "var(--text-muted)", border: "1px solid var(--border-2)" }}
+                >필터 해제</button>
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              {PREPLANNING_STATUSES.map(status => {
+                const active = preplanningFilter === status;
+                const meta = PREPLANNING_META[status];
+                return (
+                  <button
+                    key={status}
+                    onClick={() => setPreplanningFilter(active ? null : status)}
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] font-semibold transition-colors"
+                    style={{
+                      color: meta.color,
+                      background: active ? meta.background : "var(--bg-canvas)",
+                      border: `1px solid ${active ? meta.border : "var(--border-2)"}`,
+                      boxShadow: active ? `inset 0 0 0 1px ${meta.border}` : "none",
+                    }}
+                  >
+                    {status}
+                    <span className="font-mono opacity-70">{preplanningCounts[status]}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* 업무별 빠른 필터: Weekly 주의 / 플래닝 논의 / 신규 / 이번 주 변경 */}
         {(() => {
           const isPlanningWorkspace = planningTab === "플래닝 대기·검토";
@@ -7764,6 +7870,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const isNew = newlyAddedKeys.has(t.key);
               const isDuplicate = duplicateKeys.has(t.key);
               const tp = getPlanningVal(planning[t.key]);
+              const preplanningView = getPreplanningView(t.status, planning[t.key]);
               const planningComplete = tp.design === "완료" && tp.dev === "완료";
               const ticketDone = ["론치완료", "완료", "배포완료"].includes(t.status);
 
@@ -7959,6 +8066,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                                   {t.assignee}
                                 </span>
+                                {planningTab === "플래닝 대기·검토" && (
+                                  <>
+                                    <PreplanningBadge status={preplanningView.status} />
+                                    <span
+                                      className="text-[10px] px-1.5 py-0.5 rounded"
+                                      style={{ color: preplanningView.targetSprint ? "#c4b5fd" : "var(--text-subtle)", background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
+                                    >
+                                      {preplanningView.targetSprint || "예정 스프린트 미정"}
+                                    </span>
+                                  </>
+                                )}
                               </div>
 
                               {/* Row 2: status와 중복되지 않는 주의 신호 하나 */}
@@ -10592,6 +10710,128 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 Planning & Schedule 탭: 플래닝 상태
                 ══════════════════════════════════════════ */}
             {detailTab === "ops" && (<>
+              {(() => {
+                const view = getPreplanningView(selected.status, planning[selected.key]);
+                const meta = PREPLANNING_META[view.status];
+                const notes = planningNotes[selected.key] ?? [];
+
+                if (view.isDerivedComplete) {
+                  return (
+                    <div
+                      className="mb-4 rounded-xl px-3.5 py-3 flex items-center justify-between gap-3"
+                      style={{ background: meta.background, border: `1px solid ${meta.border}` }}
+                    >
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>프리플래닝</p>
+                          <PreplanningBadge status="플래닝 완료" />
+                        </div>
+                        <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>
+                          진행 중이거나 완료된 과제는 플래닝 완료로 간주합니다. Weekly 요약과 작업별 일정을 중심으로 관리하세요.
+                        </p>
+                      </div>
+                      <span className="text-[10px] shrink-0" style={{ color: "#34d399" }}>자동 파생</span>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div
+                    className="mb-4 rounded-xl p-4"
+                    style={{ background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
+                  >
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div>
+                        <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>프리플래닝</p>
+                        <p className="text-[11px] mt-0.5" style={{ color: "var(--text-subtle)" }}>논의 상태와 다음 예정 스프린트를 관리합니다.</p>
+                      </div>
+                      <PreplanningBadge status={view.status} />
+                    </div>
+
+                    <div className="mb-3">
+                      <p className="text-[11px] font-semibold mb-1.5" style={{ color: "var(--text-muted)" }}>프리플래닝 상태</p>
+                      <div className="flex flex-wrap gap-1.5">
+                        {PREPLANNING_STATUSES.map(status => {
+                          const active = view.status === status;
+                          const statusMeta = PREPLANNING_META[status];
+                          return (
+                            <button
+                              key={status}
+                              onClick={() => savePreplanningFields(selected.key, { preplanningStatus: status })}
+                              className="px-2 py-1.5 rounded-lg text-[11px] font-semibold transition-colors"
+                              style={{
+                                color: statusMeta.color,
+                                background: active ? statusMeta.background : "var(--bg-canvas)",
+                                border: `1px solid ${active ? statusMeta.border : "var(--border-2)"}`,
+                                boxShadow: active ? `inset 0 0 0 1px ${statusMeta.border}` : "none",
+                              }}
+                            >{status}</button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <label className="block mb-3">
+                      <span className="block text-[11px] font-semibold mb-1.5" style={{ color: "var(--text-muted)" }}>예정 스프린트</span>
+                      <input
+                        key={`${selected.key}-${view.targetSprint}`}
+                        defaultValue={view.targetSprint}
+                        onBlur={e => {
+                          const targetSprint = e.currentTarget.value.trim();
+                          if (targetSprint !== view.targetSprint) savePreplanningFields(selected.key, { targetSprint });
+                        }}
+                        onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                        placeholder="예: 2026-08 Sprint 2"
+                        className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                        style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                      />
+                    </label>
+
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <p className="text-[11px] font-semibold" style={{ color: "var(--text-muted)" }}>논의 메모</p>
+                        <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>{notes.length}건</span>
+                      </div>
+                      {notes.length > 0 && (
+                        <div className="space-y-1.5 mb-2">
+                          {notes.slice(-3).reverse().map((note, index) => (
+                            <div key={`${note.date}-${index}`} className="rounded-lg px-2.5 py-2" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)" }}>
+                              <div className="flex items-center justify-between gap-2 mb-1">
+                                <span className="text-[10px] font-medium" style={{ color: "var(--text-secondary)" }}>{note.author}</span>
+                                <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>{note.date}</span>
+                              </div>
+                              <p className="text-[12px] whitespace-pre-wrap" style={{ color: "var(--text-primary)" }}>{note.text}</p>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <div className="flex gap-2">
+                        <textarea
+                          value={noteInput}
+                          onChange={e => setNoteInput(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                              addPlanningNote(selected.key, noteInput);
+                              setNoteInput("");
+                            }
+                          }}
+                          placeholder="논의 내용을 입력하세요 (⌘+Enter로 등록)"
+                          rows={2}
+                          className="flex-1 rounded-lg px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                        />
+                        <button
+                          onClick={() => { addPlanningNote(selected.key, noteInput); setNoteInput(""); }}
+                          disabled={!noteInput.trim()}
+                          className="self-end px-3 py-2 rounded-lg text-[11px] font-semibold disabled:opacity-40"
+                          style={{ background: "#4f46e5", color: "white" }}
+                        >등록</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* ── Phase 4: ticket-specific Weekly 일정 변경 제안 ── */}
               {false && (() => {
                 const tCand = updateCandidates.filter(c => !c.resolved && c.ticketKey === selected!.key);
@@ -10706,7 +10946,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   className="flex items-center justify-between w-full mb-2 group"
                 >
                   <div className="flex items-center gap-2">
-                    <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>플래닝 상태</p>
+                    <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>Design · Dev 상세 상태 (기존 데이터)</p>
                     {(() => {
                       const p = getPlanningVal(planning[selected.key]);
                       const allDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");

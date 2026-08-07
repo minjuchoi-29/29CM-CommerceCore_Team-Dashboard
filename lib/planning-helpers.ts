@@ -31,6 +31,8 @@ export interface PlanningView {
   dev: TrackState;
   devTracks: Partial<Record<DevTrackKey, TrackState>>;
   reviewNeeded: boolean;
+  preplanningStatus?: import("./preplanning").PreplanningStatus;
+  targetSprint?: string;
 }
 
 export type PlanningSummaryState = "확인필요" | "검토중" | "플래닝 완료" | "대기중" | "대상아님";
@@ -88,6 +90,8 @@ export function getPlanningView(val: unknown): PlanningView {
     dev,
     devTracks,
     reviewNeeded: (v.reviewNeeded as boolean) ?? false,
+    preplanningStatus: v.preplanningStatus as import("./preplanning").PreplanningStatus | undefined,
+    targetSprint: typeof v.targetSprint === "string" ? v.targetSprint : undefined,
   };
 
   // dev 모드에서 mismatch trace — KV의 v.dev와 aggregate 결과가 다르면 경고.

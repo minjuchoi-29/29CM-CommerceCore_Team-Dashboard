@@ -40,6 +40,8 @@ export type PlanningEntry = {
   dev?: TrackState;
   devTracks?: Partial<Record<DevTrackKey, TrackState>>;
   reviewNeeded?: boolean;
+  preplanningStatus?: import("./preplanning").PreplanningStatus;
+  targetSprint?: string;
 };
 
 // ─── Schedule Types ───────────────────────────────────────────────────────────
