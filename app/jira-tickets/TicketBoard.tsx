@@ -35,6 +35,7 @@ import {
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
 import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/search-target";
 import { compactSchedulesForDisplay } from "@/lib/schedule-display";
+import { selectOpenWeeklyNotesForDisplay } from "@/lib/weekly-note-display";
 import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
@@ -2854,8 +2855,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
     // action/risk/note: WeeklyNote (status=open만)
     for (const [ticketKey, notes] of Object.entries(weeklyNotes)) {
-      for (const n of notes) {
-        if (n.status === "resolved") continue;
+      for (const n of selectOpenWeeklyNotesForDisplay(notes)) {
         const kind: CandKind =
           n.type === "next_action" ? "action" :
           n.type === "risk"        ? "risk"   :
@@ -2911,7 +2911,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   //   - progress(참고) 섹션 제거 — 단순 설명/상황 line은 표시 안 함
   //   - parser가 RISK_INDICATORS / LOW_CONFIDENCE_KEYWORDS 매칭된 line만 action/risk로 분류
   function renderActionRiskBox(ticketKey: string) {
-    const notes = (weeklyNotes[ticketKey] ?? []).filter(n => n.status === "open");
+    const notes = selectOpenWeeklyNotesForDisplay(weeklyNotes[ticketKey] ?? []);
     const risks   = notes.filter(n => n.type === "risk");
     const actions = notes.filter(n => n.type === "next_action");
     // progress 노트는 의도적으로 표시 안 함 (단순 설명 line 중복 방지)
@@ -5435,7 +5435,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     );
 
     if (scope === "weekly") {
-      const openNotes = (weeklyNotes[ticket.key] ?? []).filter(note => note.status === "open");
+      const openNotes = selectOpenWeeklyNotesForDisplay(weeklyNotes[ticket.key] ?? []);
       const riskCount = openNotes.filter(note => note.type === "risk").length;
       const nextActionCount = openNotes.filter(note => note.type === "next_action").length;
       const total = scopedActions.length + riskCount + nextActionCount;
