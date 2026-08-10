@@ -4696,6 +4696,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       schedules[selected.key] ?? selected.roles ?? [],
       etrMap[selected.key],
       actionScope,
+      weeklySourceTexts[selected.key]?.text,
     );
     const prev = prevActionCountRef.current[selected.key];
     const curr = actions.length;
@@ -4714,6 +4715,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     schedules[selected?.key ?? ""],
     planning[selected?.key ?? ""],
     etrMap[selected?.key ?? ""],
+    weeklySourceTexts[selected?.key ?? ""],
   ]);
 
   // TicketBoard 언마운트 시 SidebarNav 복원 (detail-panel open:false 발행)
@@ -5429,6 +5431,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       rows,
       etrMap[ticket.key],
       scope,
+      weeklySourceTexts[ticket.key]?.text,
     );
 
     if (scope === "weekly") {
@@ -5459,7 +5462,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       label: topAction.label,
       level: topAction.level === "critical" ? "critical" : "warning",
     };
-  }, [kvLoaded, schedules, planning, etrMap, weeklyNotes]);
+  }, [kvLoaded, schedules, planning, etrMap, weeklyNotes, weeklySourceTexts]);
 
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
@@ -5624,6 +5627,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           rows.length > 0 ? rows : (t.roles ?? []),
           etrMap[t.key],
           actionScope,
+          weeklySourceTexts[t.key]?.text,
         )[0] ?? null,
         indicators: { attention: getTicketAttention(t, meetingScope) },
       };
@@ -5637,7 +5641,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const pb = b.topAction?.priority ?? 999;
       return pa - pb;
     });
-  }, [filtered, focusForKey, focusContext, selected?.key, planning, schedules, etrMap, kvLoaded, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, focusForKey, focusContext, selected?.key, planning, schedules, etrMap, weeklySourceTexts, kvLoaded, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── changesMode: 스냅샷 로드 → Transition 계산 ────────────────
   useEffect(() => {
@@ -8742,6 +8746,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               schedules[selected.key] ?? selected.roles ?? [],
               etrMap[selected.key],
               fmActionScope,
+              weeklySourceTexts[selected.key]?.text,
             );
             const fmEtr   = etrMap[selected.key];
             const fmMemo  = getCurrentMemo(selected.key);
@@ -9611,6 +9616,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 schedules[selected.key] ?? selected.roles ?? [],
                 etrMap[selected.key],
                 actionScope,
+                weeklySourceTexts[selected.key]?.text,
               );
               if (actions.length === 0) return null;
 

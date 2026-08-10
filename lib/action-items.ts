@@ -17,6 +17,10 @@ export type DevTrackKey = "SP" | "PP" | "CFE" | "Mobile" | "DFE" | "QA" | "기�
 export type RoleScheduleMin = {
   role: string;
   start?: string;
+  end?: string;
+  status?: string;
+  phase?: string;
+  archivedAt?: string;
 };
 
 export type EtrInfoMin = {
@@ -39,6 +43,204 @@ export type ActionItem = {
 };
 
 export type ActionScope = ActionItem["scope"];
+
+export type LaunchTargetSource = "schedule" | "weekly" | "jira_due" | "none";
+
+export type LaunchReadiness = {
+  targetDate?: string;
+  source: LaunchTargetSource;
+  confidence: "confirmed" | "target" | "unknown";
+  attention: "none" | "warning" | "critical";
+  reason?: "overdue" | "schedule_conflict" | "change_needed" | "near_tbd" | "missing";
+  label?: string;
+};
+
+const LAUNCH_MARKER = /(?:launch|release|deploy|론치|런치|런칭|배포|릴리즈|릴리스|오픈)/i;
+const LAUNCH_DATE = /(?:20\d{2}[./-]\d{1,2}[./-]\d{1,2}|\d{1,2}[./-]\d{1,2}|\d{1,2}월\s*(?:\d{1,2}일|초|중순?|말|말일|내)|\d{1,2}\s*주차)/i;
+const STRONG_UNCERTAINTY = /(?:변경\s*(?:필요|예정)|재산정|지연|연기|확정\s*필요|조율\s*중|협의\s*중|산정\s*필요)/i;
+const WEAK_UNCERTAINTY = /(?:\bTBD\b|미정|확정\s*전)/i;
+
+function isIsoDate(value?: string): value is string {
+  return !!value && /^20\d{2}-\d{2}-\d{2}$/.test(value);
+}
+
+function displayDate(value: string): string {
+  const [, month, day] = value.split("-");
+  return `${Number(month)}/${Number(day)}`;
+}
+
+function daysUntil(date: string, today: string): number {
+  const toUtc = (value: string) => {
+    const [year, month, day] = value.split("-").map(Number);
+    return Date.UTC(year, month - 1, day);
+  };
+  return Math.floor((toUtc(date) - toUtc(today)) / 86_400_000);
+}
+
+function launchContexts(weeklyText?: string): string[] {
+  if (!weeklyText) return [];
+  const lines = weeklyText.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const contexts: string[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    if (!LAUNCH_MARKER.test(lines[index])) continue;
+    contexts.push(lines.slice(index, index + 3).join(" "));
+  }
+  return contexts;
+}
+
+function toIsoDate(year: number, month: number, day: number): string | undefined {
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (
+    date.getUTCFullYear() !== year
+    || date.getUTCMonth() !== month - 1
+    || date.getUTCDate() !== day
+  ) return undefined;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
+
+function parseWeeklyLaunchDate(
+  contexts: string[],
+  dueDate: string | undefined,
+  today: string,
+): string | undefined {
+  const text = contexts.join(" ");
+  const full = text.match(/\b(20\d{2})[./-](\d{1,2})[./-](\d{1,2})\b/);
+  if (full) return toIsoDate(Number(full[1]), Number(full[2]), Number(full[3]));
+
+  const baseYear = Number((dueDate ?? today).slice(0, 4));
+  const slash = text.match(/(?:^|\s)(\d{1,2})[./-](\d{1,2})(?=\s|$|[),])/);
+  if (slash) return toIsoDate(baseYear, Number(slash[1]), Number(slash[2]));
+
+  const koreanDay = text.match(/(\d{1,2})월\s*(\d{1,2})일/);
+  if (koreanDay) return toIsoDate(baseYear, Number(koreanDay[1]), Number(koreanDay[2]));
+
+  const monthEnd = text.match(/(\d{1,2})월\s*(?:말|말일)/);
+  if (monthEnd) {
+    const month = Number(monthEnd[1]);
+    const lastDay = new Date(Date.UTC(baseYear, month, 0)).getUTCDate();
+    return toIsoDate(baseYear, month, lastDay);
+  }
+
+  return undefined;
+}
+
+function isLaunchSchedule(row: RoleScheduleMin): boolean {
+  const phaseOrRole = `${row.phase ?? ""} ${row.role ?? ""}`;
+  return LAUNCH_MARKER.test(phaseOrRole);
+}
+
+/**
+ * Launch/배포 목표일의 출처와 실제 주의 필요 여부를 파생한다.
+ *
+ * 우선순위: 명시적 일정 row > 최신 Weekly의 명시 날짜 > Jira 기한(ETA).
+ * Jira 기한은 확정 Launch가 아니라 운영 목표일이지만, 별도 위험 신호가 없다면
+ * "Launch 일정 미정" 경고를 대신할 수 있다.
+ */
+export function getLaunchReadiness(
+  ticket: Pick<Ticket, "eta">,
+  roles: RoleScheduleMin[],
+  weeklyText?: string,
+  today = new Date().toISOString().split("T")[0],
+): LaunchReadiness {
+  const activeRows = roles.filter(row => !row.archivedAt);
+  const launchRow = activeRows.find(row => isLaunchSchedule(row) && isIsoDate(row.start));
+  const contexts = launchContexts(weeklyText);
+  const weeklyHasDate = contexts.some(context => LAUNCH_DATE.test(context));
+  const hasStrongUncertainty = contexts.some(context => STRONG_UNCERTAINTY.test(context));
+  const hasWeakUncertainty = contexts.some(context => WEAK_UNCERTAINTY.test(context));
+  const dueDate = isIsoDate(ticket.eta) ? ticket.eta : undefined;
+  const weeklyDate = parseWeeklyLaunchDate(contexts, dueDate, today);
+
+  const source: LaunchTargetSource = launchRow
+    ? "schedule"
+    : weeklyHasDate
+      ? "weekly"
+      : dueDate
+        ? "jira_due"
+        : "none";
+  const targetDate = launchRow?.start ?? weeklyDate ?? dueDate;
+
+  if (dueDate && targetDate && targetDate > dueDate) {
+    return {
+      targetDate,
+      source,
+      confidence: source === "jira_due" ? "target" : "confirmed",
+      attention: "critical",
+      reason: "schedule_conflict",
+      label: `기한 이후 일정 확인 · 기준 ${displayDate(dueDate)}`,
+    };
+  }
+
+  if (targetDate && targetDate < today) {
+    return {
+      targetDate,
+      source,
+      confidence: source === "jira_due" ? "target" : "confirmed",
+      attention: "critical",
+      reason: "overdue",
+      label: `ETA 경과 (${targetDate})`,
+    };
+  }
+
+  if (targetDate) {
+    const conflictingRow = activeRows.find(row => {
+      if (row === launchRow || !isIsoDate(row.end) || row.end <= targetDate || row.status === "완료") return false;
+      const phaseOrRole = `${row.phase ?? ""} ${row.role ?? ""}`;
+      return /(?:QA|QC|테스트|검수|검증|Release|Launch|배포|론치|런치)/i.test(phaseOrRole);
+    });
+    if (conflictingRow) {
+      return {
+        targetDate,
+        source,
+        confidence: source === "jira_due" ? "target" : "confirmed",
+        attention: "critical",
+        reason: "schedule_conflict",
+        label: `기한 이후 일정 확인 · 기준 ${displayDate(targetDate)}`,
+      };
+    }
+
+    if (hasStrongUncertainty) {
+      return {
+        targetDate,
+        source,
+        confidence: source === "jira_due" ? "target" : "confirmed",
+        attention: "warning",
+        reason: "change_needed",
+        label: `론치 일정 재확인 · 기준 ${displayDate(targetDate)}`,
+      };
+    }
+
+    if (hasWeakUncertainty && daysUntil(targetDate, today) <= 28) {
+      return {
+        targetDate,
+        source,
+        confidence: source === "jira_due" ? "target" : "confirmed",
+        attention: "warning",
+        reason: "near_tbd",
+        label: `론치 확정 필요 · 기준 ${displayDate(targetDate)}`,
+      };
+    }
+
+    return {
+      targetDate,
+      source,
+      confidence: source === "jira_due" ? "target" : "confirmed",
+      attention: "none",
+    };
+  }
+
+  if (weeklyHasDate) {
+    return { source: "weekly", confidence: "target", attention: "none" };
+  }
+
+  return {
+    source: "none",
+    confidence: "unknown",
+    attention: "warning",
+    reason: "missing",
+    label: "론치 목표일 확인 필요",
+  };
+}
 
 export function filterActionItemsByScope(
   items: ActionItem[],
@@ -92,7 +294,8 @@ export function getActionItems(
   ticket: Ticket,
   planningVal: unknown,
   roles: RoleScheduleMin[],
-  etrEntry: EtrInfoMin | undefined
+  etrEntry: EtrInfoMin | undefined,
+  weeklyText?: string,
 ): ActionItem[] {
   const items: ActionItem[] = [];
   const DONE = ["론치완료", "완료", "배포완료"];
@@ -139,17 +342,17 @@ export function getActionItems(
     });
   }
 
-  // 4. Launch 일정 미정 (warning)
-  const hasLaunch = roles.some(
-    r => ["Launch", "Release"].includes(r.role) && r.start && r.start !== "-"
-  );
-  if (!hasLaunch) {
+  // 4. Launch/배포 목표일 확인
+  // Jira 기한(ETA)이 있으면 별도 Launch row가 없어도 목표일로 사용한다.
+  // 단, 최신 Weekly가 변경/재산정 필요를 명시하거나 후속 일정과 충돌하면 주의로 남긴다.
+  const launch = getLaunchReadiness(ticket, roles, weeklyText, todayStr);
+  if (launch.attention !== "none" && launch.reason !== "overdue") {
     items.push({
-      id: "no-launch",
-      priority: 4,
-      level: "warning",
+      id: launch.reason === "missing" ? "no-launch" : "launch-attention",
+      priority: launch.attention === "critical" ? 1 : 4,
+      level: launch.attention,
       scope: "weekly",
-      label: "Launch 일정 미정",
+      label: launch.label ?? "론치 목표일 확인 필요",
       targetTab: "ops",
     });
   }
@@ -215,9 +418,10 @@ export function getActionItemsForScope(
   roles: RoleScheduleMin[],
   etrEntry: EtrInfoMin | undefined,
   scope: ActionScope,
+  weeklyText?: string,
 ): ActionItem[] {
   return filterActionItemsByScope(
-    getActionItems(ticket, planningVal, roles, etrEntry),
+    getActionItems(ticket, planningVal, roles, etrEntry, weeklyText),
     scope,
   );
 }
@@ -236,7 +440,8 @@ export function getActionItemsForScopeWhenReady(
   roles: RoleScheduleMin[],
   etrEntry: EtrInfoMin | undefined,
   scope: ActionScope,
+  weeklyText?: string,
 ): ActionItem[] {
   if (!ready) return [];
-  return getActionItemsForScope(ticket, planningVal, roles, etrEntry, scope);
+  return getActionItemsForScope(ticket, planningVal, roles, etrEntry, scope, weeklyText);
 }

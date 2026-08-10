@@ -10,6 +10,7 @@ import {
   type EtrInfoMin,
 } from "@/lib/action-items";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
+import type { WeeklySourceText } from "@/lib/weekly-types";
 
 type Props = {
   userEmail: string;
@@ -55,7 +56,7 @@ const TIER_META: Record<Tier, {
   warning: {
     label: "진행 중 관리", icon: "⚠", color: "#fbbf24",
     bg: "rgba(245,158,11,0.04)", border: "rgba(251,191,36,0.20)", leftBorder: "#f59e0b",
-    description: "Launch 미정 · 일정 미입력 · 플래닝 검토 중 과제",
+    description: "론치 재확인 · 일정 미입력 · 플래닝 검토 중 과제",
   },
   followup: {
     label: "보완 필요", icon: "📋", color: "#94a3b8",
@@ -71,6 +72,7 @@ const ACTION_TAB: Record<string, "ops" | "overview"> = {
   "review-needed":      "ops",
   "no-schedule":        "ops",
   "no-launch":          "ops",
+  "launch-attention":   "ops",
   "planning-reviewing": "ops",
   "no-etr":             "overview",
   "no-source":          "overview",
@@ -81,6 +83,7 @@ const ACTION_FOCUS: Record<string, string> = {
   "review-needed":      "planning",   // ops 탭 > 플래닝 상태 섹션
   "no-schedule":        "schedule",   // ops 탭 > Schedule 섹션
   "no-launch":          "schedule",   // ops 탭 > Schedule 섹션 (Launch row)
+  "launch-attention":   "schedule",   // ops 탭 > 일정 충돌/변경 신호
   "planning-reviewing": "planning",   // ops 탭 > 플래닝 상태 섹션
   "no-etr":             "etr",        // overview 탭 > 요청사항 출처 섹션
   "no-source":          "source",     // overview 탭 > 요청사항 출처 섹션 (source 미선택)
@@ -139,7 +142,8 @@ const ACTION_TEXT: Record<string, string> = {
   "overdue":            "ETA 경과 — 일정을 재조율하거나 상태를 업데이트해주세요",
   "review-needed":      "플래닝 검토 확인 — 담당 PM이 직접 확인·해제해야 합니다",
   "no-schedule":        "세부 작업 일정을 입력해주세요",
-  "no-launch":          "Launch / Release 일정을 지정해주세요",
+  "no-launch":          "Jira 기한 또는 Launch / Release 목표일을 확인해주세요",
+  "launch-attention":   "최신 Weekly와 Jira 기한을 대조해 론치 목표일을 재확인해주세요",
   "planning-reviewing": "팀 플래닝 검토 중 — 완료를 독려하거나 상태를 확인하세요",
   "no-etr":             "ETR 티켓을 연결해 요청사항 출처를 남겨주세요",
   "no-source":          "요청사항 출처를 선택해주세요 (자체발의 / ELT / ETR)",
@@ -166,6 +170,7 @@ function calcScore(ticket: Ticket, actions: ActionItem[]): number {
   if (ids.has("review-needed"))                        s += 50;
   if (INPROGRESS_STATUSES.includes(ticket.status))     s += 40;
   if (ids.has("no-launch"))                            s += 40;
+  if (ids.has("launch-attention"))                     s += 40;
   if (ids.has("no-schedule"))                          s += 30;
   if (ids.has("planning-reviewing"))                   s += 20;
   if (ids.has("no-etr"))                               s +=  8;
@@ -192,6 +197,8 @@ function getReasons(ticket: Ticket, actions: ActionItem[]): string[] {
   if (ids.has("review-needed"))                    r.push("검토 확인 필요");
   if (INPROGRESS_STATUSES.includes(ticket.status)) r.push("진행중");
   if (ids.has("no-launch"))                        r.push("Launch 미정");
+  const launchAttention = actions.find(action => action.id === "launch-attention");
+  if (launchAttention)                              r.push(launchAttention.label);
   if (ids.has("no-schedule"))                      r.push("일정 미입력");
   if (ids.has("planning-reviewing"))               r.push("검토 진행중");
   return r.slice(0, 3);
@@ -222,6 +229,7 @@ export default function OwnerDashboard({ userEmail, userName }: Props) {
   const [planning,   setPlanning]   = useState<Record<string, unknown>>({});
   const [schedules,  setSchedules]  = useState<Record<string, RoleScheduleMin[]>>({});
   const [etrMap,     setEtrMap]     = useState<Record<string, EtrInfoMin>>({});
+  const [weeklySourceTexts, setWeeklySourceTexts] = useState<Record<string, WeeklySourceText>>({});
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const [loading,    setLoading]    = useState(true);
   const [error,      setError]      = useState<string | null>(null);
@@ -244,7 +252,7 @@ export default function OwnerDashboard({ userEmail, userName }: Props) {
     try {
       const [tRes, kvRes] = await Promise.all([
         fetch("/api/jira-tickets"),
-        fetch("/api/kv?keys=cc-planning,cc-schedules,cc-etr,cc-hidden-keys"),
+        fetch("/api/kv?keys=cc-planning,cc-schedules,cc-etr,cc-hidden-keys,cc-weekly-source-text"),
       ]);
       if (!tRes.ok) throw new Error("티켓 데이터 로드 실패");
       const [tData, kvData] = await Promise.all([tRes.json(), kvRes.json()]);
@@ -252,6 +260,7 @@ export default function OwnerDashboard({ userEmail, userName }: Props) {
       if (kvData["cc-planning"])  setPlanning(kvData["cc-planning"]);
       if (kvData["cc-schedules"]) setSchedules(kvData["cc-schedules"]);
       if (kvData["cc-etr"])       setEtrMap(kvData["cc-etr"]);
+      if (kvData["cc-weekly-source-text"]) setWeeklySourceTexts(kvData["cc-weekly-source-text"]);
       const rawHidden: string[] = Array.isArray(kvData["cc-hidden-keys"]) ? kvData["cc-hidden-keys"] : [];
       setHiddenKeys(new Set(rawHidden));
     } catch (e) {
@@ -284,10 +293,16 @@ export default function OwnerDashboard({ userEmail, userName }: Props) {
     activeTickets
       .map(t => ({
         ticket:  t,
-        actions: getActionItems(t, planning[t.key], schedules[t.key] ?? [], etrMap[t.key]),
+        actions: getActionItems(
+          t,
+          planning[t.key],
+          schedules[t.key] ?? [],
+          etrMap[t.key],
+          weeklySourceTexts[t.key]?.text,
+        ),
       }))
       .filter(x => x.actions.length > 0),
-    [activeTickets, planning, schedules, etrMap]
+    [activeTickets, planning, schedules, etrMap, weeklySourceTexts]
   );
 
   // ── "내 액션" 매칭 ─────────────────────────────────────────────────────────
