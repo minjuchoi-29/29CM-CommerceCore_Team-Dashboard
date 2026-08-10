@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
+  buildPlanningRefreshKeys,
   buildTicketRefreshPlan,
   findMissingSharedTicketKeys,
   mergeRefreshedTickets,
@@ -24,8 +25,8 @@ describe("buildTicketRefreshPlan", () => {
       NOW,
     );
 
-    assert.deepEqual(result.keys, ["TM-ACTIVE", "TM-PLANNING", "TM-RECENT", "M29CMOD-7120"]);
-    assert.equal(result.activeOrRecentCount, 3);
+    assert.deepEqual(result.keys, ["TM-ACTIVE", "TM-RECENT", "M29CMOD-7120"]);
+    assert.equal(result.activeOrRecentCount, 2);
     assert.equal(result.missingCustomCount, 1);
   });
 
@@ -37,6 +38,25 @@ describe("buildTicketRefreshPlan", () => {
       NOW,
     );
     assert.deepEqual(result.keys, []);
+  });
+});
+
+describe("buildPlanningRefreshKeys", () => {
+  it("실행·완료·종료 상태를 제외하고 플래닝 상태만 선택", () => {
+    assert.deepEqual(
+      buildPlanningRefreshKeys(
+        [
+          { key: "TM-READY", status: "SUGGESTED" },
+          { key: "TM-HOLD", status: "HOLD" },
+          { key: "TM-ACTIVE", status: "개발중" },
+          { key: "TM-DONE", status: "완료" },
+          { key: "TM-DROPPED", status: "Dropped" },
+          { key: "TM-HIDDEN", status: "Backlog" },
+        ],
+        new Set(["TM-HIDDEN"]),
+      ),
+      ["TM-READY", "TM-HOLD"],
+    );
   });
 });
 

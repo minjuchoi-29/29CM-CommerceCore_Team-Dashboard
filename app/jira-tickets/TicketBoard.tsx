@@ -40,6 +40,7 @@ import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import { buildTeamWorkstreamView, resolveTeamIdentity } from "@/lib/team-workstreams";
 import {
+  buildPlanningRefreshKeys,
   buildTicketRefreshPlan,
   findMissingSharedTicketKeys,
   mergeRefreshedTickets,
@@ -280,7 +281,7 @@ export type Ticket = {
   assignee: string;
   startDate?: string;
   resolutionDate?: string; // β-1: Jira resolutiondate (ISO) — Done 시점 자동 입력
-  updatedAt?: string; // Jira updated (ISO) — resolutionDate가 없는 완료 상태의 추적 fallback
+  updatedAt?: string; // Jira updated (ISO) — 일반 메타데이터 최종 변경 시각
   eta: string;
   type: string;
   project: string;
@@ -1617,6 +1618,8 @@ function HealthBadge({ value }: { value: string }) {
 }
 
 const DONE_PRIORITY_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
+const PLANNING_SYNC_CACHE_KEY = "cc-planning-jira-synced-at";
+const PLANNING_SYNC_STALE_MS = 6 * 60 * 60 * 1000;
 
 /**
  * 완료/삭제된 티켓의 우선순위 공백을 메워 1부터 순차 재배열.
@@ -1741,6 +1744,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [syncedAt, setSyncedAt]     = useState<Date | null>(null);
   const [jiraSyncTargetCount, setJiraSyncTargetCount] = useState<number | null>(null);
+  const [planningSyncing, setPlanningSyncing] = useState(false);
+  const [planningSyncError, setPlanningSyncError] = useState<string | null>(null);
+  const [planningSyncedAt, setPlanningSyncedAt] = useState<Date | null>(() => {
+    if (typeof window === "undefined") return null;
+    const raw = localStorage.getItem(PLANNING_SYNC_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = new Date(raw);
+    return Number.isFinite(parsed.getTime()) ? parsed : null;
+  });
 
   const [selected, setSelected]     = useState<Ticket | null>(null);
   const [quarters, setQuarters]     = useState<Set<string>>(new Set());
@@ -1844,6 +1856,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const hiddenKeysRef = useRef<Set<string>>(new Set());
   const ticketsRef = useRef<Ticket[]>([]);
   const sharedCustomKeysRef = useRef<string[]>([]);
+  const planningRefreshInFlightRef = useRef(false);
   useEffect(() => { ticketsRef.current = tickets; }, [tickets]);
   // selected 이전값 추적 — URL sync 시 "초기 null→null"과 "명시적 deselect" 구분에 사용
   const prevSelectedRef = useRef<Ticket | null>(null);
@@ -2316,7 +2329,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       // ─── Weekly Sync orchestration (Phase 2) ──────────────────
       // fire-and-forget: Jira Sync UI는 즉시 끝나고, weekly 흐름은 background에서 진행.
-      // 미완료 ticket + 완료 후 14일 이내 ticket 대상.
+      // 실행 단계 ticket + 실제 완료 후 14일 이내 ticket 대상.
+      // 플래닝 대기·종료 상태는 별도 플래닝 메타 갱신으로 분리한다.
       // 최근 완료 과제는 마지막 완료보고가 Weekly에 반영될 수 있도록 추적을 유지한다.
       // Source 조회는 병렬, Redis shared JSON write는 직렬 처리.
       // 흐름: jira-weekly-source → weekly-sync POST → KV reload.
@@ -2599,6 +2613,71 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setJiraSyncTargetCount(null);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * 플래닝 화면 전용 Jira 메타 갱신.
+   * Weekly source/schedule sync는 실행하지 않고 플래닝 상태 티켓만 부분 조회한다.
+   */
+  async function refreshPlanningTickets() {
+    if (planningRefreshInFlightRef.current || fetching) return;
+    planningRefreshInFlightRef.current = true;
+    setPlanningSyncing(true);
+    setPlanningSyncError(null);
+
+    try {
+      const hidden = hiddenKeysRef.current;
+      let cachedTickets = ticketsRef.current;
+      let cacheFetchedAt = syncedAt ?? new Date();
+      let fullFetchedAt = cacheFetchedAt;
+      try {
+        const cached = JSON.parse(localStorage.getItem(TICKET_CACHE_KEY) ?? "null") as TicketCachePayload | null;
+        if (Array.isArray(cached?.tickets)) {
+          cachedTickets = mergeRefreshedTickets(cached.tickets, ticketsRef.current);
+          cacheFetchedAt = new Date(cached.fetchedAt);
+          fullFetchedAt = new Date(cached.fullFetchedAt ?? cached.fetchedAt);
+        }
+      } catch {}
+
+      const planningKeys = buildPlanningRefreshKeys(cachedTickets, hidden);
+      if (planningKeys.length > 0) {
+        const data = await fetchTicketSubset(planningKeys);
+        const merged = mergeRefreshedTickets(cachedTickets, data.tickets);
+        const visible = filterVisibleTickets(merged, hidden);
+        ticketsRef.current = visible;
+        setTickets(visible);
+        writeTicketCache(
+          merged,
+          cacheFetchedAt,
+          hidden,
+          sharedCustomKeysRef.current,
+          fullFetchedAt,
+        );
+      }
+
+      const completedAt = new Date();
+      setPlanningSyncedAt(completedAt);
+      try { localStorage.setItem(PLANNING_SYNC_CACHE_KEY, completedAt.toISOString()); } catch {}
+    } catch (error) {
+      setPlanningSyncError(error instanceof Error ? error.message : "플래닝 티켓 갱신에 실패했습니다.");
+    } finally {
+      planningRefreshInFlightRef.current = false;
+      setPlanningSyncing(false);
+    }
+  }
+
+  // 플래닝 화면 진입 시 마지막 갱신 후 6시간이 지났다면 자동으로 Jira 메타만 갱신한다.
+  useEffect(() => {
+    if (planningTab !== "플래닝 대기·검토" || !hiddenLoaded || fetching || tickets.length === 0) return;
+    const raw = localStorage.getItem(PLANNING_SYNC_CACHE_KEY);
+    const lastSyncedAt = raw ? new Date(raw) : null;
+    if (lastSyncedAt && Number.isFinite(lastSyncedAt.getTime())) {
+      setPlanningSyncedAt(lastSyncedAt);
+      if (Date.now() - lastSyncedAt.getTime() < PLANNING_SYNC_STALE_MS) return;
+    }
+    void refreshPlanningTickets();
+  // 상태·함수 전체를 dependency로 두면 부분 갱신 결과마다 재실행되므로 진입 조건만 추적한다.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [planningTab, hiddenLoaded, fetching, tickets.length]);
 
   // Legacy cleanup modal compatibility. 신규 UI에서는 진입점을 노출하지 않으며,
   // 자격 미달 자동 일정은 sync 단계에서 history로 이동한다.
@@ -6279,7 +6358,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           </div>
                           <div className="px-3 py-2 text-[10.5px]"
                             style={{ borderTop: "1px dashed var(--border-2)", color: "var(--text-subtle)" }}>
-                            완료 상태 / 숨김 ticket 은 대상에서 제외됐고, 본 카운트에 포함되지 않습니다.
+                            플래닝 대기·종료 상태·숨김 ticket 은 대상에서 제외됩니다.
                           </div>
                         </div>
                       )}
@@ -6307,8 +6386,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             )}
             <button
               onClick={forceRefresh}
-              disabled={fetching}
-              title="미완료·최근 완료·새 공용 티켓만 Jira에서 빠르게 재동기화"
+              disabled={fetching || planningSyncing}
+              title="진행 중·최근 완료·새 공용 티켓만 Jira에서 빠르게 재동기화"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 transition-colors"
               style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
             >
@@ -7135,14 +7214,39 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <div>
                 <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>프리플래닝 상태</p>
                 <p className="text-[10px] mt-0.5" style={{ color: "var(--text-subtle)" }}>상태를 선택해 스프린트 논의 큐를 좁혀보세요.</p>
+                {planningSyncError && (
+                  <p className="text-[10px] mt-1" style={{ color: "#f87171" }}>{planningSyncError}</p>
+                )}
               </div>
-              {preplanningFilter && (
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+                  {planningSyncing
+                    ? "Jira 정보 갱신 중"
+                    : planningSyncedAt
+                      ? `마지막 갱신 ${planningSyncedAt.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" })}`
+                      : "Jira 정보 미갱신"}
+                </span>
                 <button
-                  onClick={() => setPreplanningFilter(null)}
-                  className="text-[11px] px-2 py-1 rounded"
-                  style={{ color: "var(--text-muted)", border: "1px solid var(--border-2)" }}
-                >필터 해제</button>
-              )}
+                  type="button"
+                  onClick={() => void refreshPlanningTickets()}
+                  disabled={planningSyncing || fetching}
+                  aria-label="플래닝 티켓 Jira 정보 갱신"
+                  title="플래닝 티켓의 Jira 정보만 갱신합니다. Weekly Sync는 실행하지 않습니다."
+                  className="w-7 h-7 inline-flex items-center justify-center rounded-lg transition-colors disabled:opacity-50"
+                  style={{ color: "var(--text-muted)", border: "1px solid var(--border-2)", background: "var(--bg-canvas)" }}
+                >
+                  <svg className={`w-3.5 h-3.5 ${planningSyncing ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25">
+                    <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+                {preplanningFilter && (
+                  <button
+                    onClick={() => setPreplanningFilter(null)}
+                    className="text-[11px] px-2 py-1 rounded"
+                    style={{ color: "var(--text-muted)", border: "1px solid var(--border-2)" }}
+                  >필터 해제</button>
+                )}
+              </div>
             </div>
             <div className="flex items-center gap-1.5 flex-wrap">
               {PREPLANNING_STATUSES.map(status => {

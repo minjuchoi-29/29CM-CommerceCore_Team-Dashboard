@@ -1,4 +1,5 @@
 import {
+  isPlanningRefreshStatus,
   selectWeeklySyncTargets,
   type WeeklyTargetTicket,
 } from "./weekly-targets";
@@ -11,7 +12,7 @@ export type TicketRefreshPlan = {
 
 /**
  * Jira Sync에서 오래된 완료 티켓 전체를 다시 읽지 않도록 조회 대상을 줄인다.
- * 미완료/최근 완료 티켓은 기존 Weekly 추적 정책과 동일하게 선택하고,
+ * 실행 단계/최근 완료 티켓은 기존 Weekly 추적 정책과 동일하게 선택하고,
  * 다른 브라우저에서 새로 등록된 공용 티켓은 현재 목록에 없어도 포함한다.
  */
 export function buildTicketRefreshPlan<T extends WeeklyTargetTicket>(
@@ -44,6 +45,16 @@ export function buildTicketRefreshPlan<T extends WeeklyTargetTicket>(
     activeOrRecentCount: activeOrRecent.length,
     missingCustomCount,
   };
+}
+
+/** 플래닝 화면에서만 별도로 갱신할 Jira 티켓을 선정한다. */
+export function buildPlanningRefreshKeys<T extends WeeklyTargetTicket>(
+  tickets: T[],
+  hiddenKeys: Set<string>,
+): string[] {
+  return tickets
+    .filter(ticket => !hiddenKeys.has(ticket.key) && isPlanningRefreshStatus(ticket.status))
+    .map(ticket => ticket.key);
 }
 
 /** 현재 목록 순서를 유지하면서 조회된 티켓만 교체하고 신규 티켓은 뒤에 붙인다. */
