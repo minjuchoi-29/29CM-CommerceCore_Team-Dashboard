@@ -33,9 +33,30 @@ export interface PlanningView {
   reviewNeeded: boolean;
   preplanningStatus?: import("./preplanning").PreplanningStatus;
   targetSprint?: string;
+  requiredTeams: string[];
+  teamPlanningStates: Record<string, TrackState>;
 }
 
 export type PlanningSummaryState = "확인필요" | "검토중" | "플래닝 완료" | "대기중" | "대상아님";
+
+/**
+ * 기존 KV object의 알 수 없는 필드를 보존하면서 지정 필드만 갱신한다.
+ * P1-1 이후 필드가 추가되어도 예전 UI의 저장 동작이 새 데이터를 지우지 않게 한다.
+ */
+export function patchPlanningEntry(
+  value: unknown,
+  patch: Record<string, unknown>,
+): Record<string, unknown> {
+  const current = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  return { ...current, ...patch };
+}
+
+/** devTracks가 있으면 Dev 상위 값은 파생값이며 직접 편집할 수 없다. */
+export function isDevAggregateReadOnly(value: unknown): boolean {
+  return Object.keys(getPlanningView(value).devTracks).length > 0;
+}
 
 // ─── Aggregation 정책 ─────────────────────────────────────────
 
@@ -76,7 +97,14 @@ export function aggregateDevState(devTracks: Partial<Record<DevTrackKey, TrackSt
  */
 export function getPlanningView(val: unknown): PlanningView {
   if (!val || typeof val === "string") {
-    return { design: "대기중", dev: "대기중", devTracks: {}, reviewNeeded: false };
+    return {
+      design: "대기중",
+      dev: "대기중",
+      devTracks: {},
+      reviewNeeded: false,
+      requiredTeams: [],
+      teamPlanningStates: {},
+    };
   }
   const v = val as Record<string, unknown>;
   const devTracks = (v.devTracks as Partial<Record<DevTrackKey, TrackState>>) ?? {};
@@ -84,6 +112,19 @@ export function getPlanningView(val: unknown): PlanningView {
   const dev = devTracksHasEntries
     ? aggregateDevState(devTracks)
     : ((v.dev as TrackState) ?? "대기중");
+  const requiredTeams = Array.isArray(v.requiredTeams)
+    ? [...new Set(v.requiredTeams
+      .filter((team): team is string => typeof team === "string")
+      .map(team => team.trim())
+      .filter(Boolean))]
+    : [];
+  const rawTeamPlanningStates = v.teamPlanningStates && typeof v.teamPlanningStates === "object" && !Array.isArray(v.teamPlanningStates)
+    ? v.teamPlanningStates as Record<string, unknown>
+    : {};
+  const teamPlanningStates = Object.fromEntries(
+    Object.entries(rawTeamPlanningStates)
+      .filter((entry): entry is [string, TrackState] => TRACK_STATES.includes(entry[1] as TrackState)),
+  );
 
   const view: PlanningView = {
     design: (v.design as TrackState) ?? "대기중",
@@ -92,6 +133,8 @@ export function getPlanningView(val: unknown): PlanningView {
     reviewNeeded: (v.reviewNeeded as boolean) ?? false,
     preplanningStatus: v.preplanningStatus as import("./preplanning").PreplanningStatus | undefined,
     targetSprint: typeof v.targetSprint === "string" ? v.targetSprint : undefined,
+    requiredTeams,
+    teamPlanningStates,
   };
 
   // dev 모드에서 mismatch trace — KV의 v.dev와 aggregate 결과가 다르면 경고.
@@ -148,6 +191,12 @@ export function planningViewsMatch(a: PlanningView, b: PlanningView): { match: b
     if (a.devTracks[k] !== b.devTracks[k]) {
       return { match: false, reason: `devTracks[${k}]: ${a.devTracks[k]} vs ${b.devTracks[k]}` };
     }
+  }
+  if ([...a.requiredTeams].sort().join(",") !== [...b.requiredTeams].sort().join(",")) {
+    return { match: false, reason: `requiredTeams: ${a.requiredTeams.join(",")} vs ${b.requiredTeams.join(",")}` };
+  }
+  if (JSON.stringify(a.teamPlanningStates) !== JSON.stringify(b.teamPlanningStates)) {
+    return { match: false, reason: "teamPlanningStates differ" };
   }
   return { match: true };
 }

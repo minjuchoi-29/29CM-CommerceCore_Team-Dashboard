@@ -2,6 +2,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "react";
 import Link from "next/link";
 import TicketCopyButton from "@/app/components/TicketCopyButton";
+import TeamWorkstreamSummary from "@/app/jira-tickets/TeamWorkstreamSummary";
 import { Tooltip } from "@/app/components/Tooltip";
 import { ActivityEntry } from "@/lib/activity";
 import {
@@ -37,6 +38,7 @@ import { compactSchedulesForDisplay } from "@/lib/schedule-display";
 import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
+import { buildTeamWorkstreamView, resolveTeamIdentity } from "@/lib/team-workstreams";
 import {
   PREPLANNING_STATUSES,
   getPreplanningView,
@@ -55,6 +57,8 @@ import {
   aggregateDevState,
   getPlanningView as getPlanningVal,
   getPlanningStateSummary,
+  isDevAggregateReadOnly,
+  patchPlanningEntry,
 } from "@/lib/planning-helpers";
 import {
   buildEtrReverseMap,
@@ -135,6 +139,8 @@ type RoleSchedule = {
   // 기존 row는 없을 수 있음 → infer via inferPhase(role) helper로 fallback.
   phase?: "Kick-Off" | "기획" | "디자인" | "개발" | "QA" | "Release" | "Launch" | "기타";
   resourceTeam?: string | null;
+  archivedAt?: string;
+  archiveReason?: string;
 };
 
 // 기존 row에 phase가 없을 때 role 문자열에서 phase를 추정.
@@ -4111,7 +4117,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         : "전체";
       const targetTab = VALID_PTABS.includes(computedTab) ? computedTab : "전체";
       setPlanningTab(targetTab);
-      setDetailTab("overview");
+      setDetailTab(getTeamWorkstream(match).lifecycle === "planning" ? "ops" : "overview");
       // selected commit → rAF 다음 frame → Focus Mode + history.state.expanded=true.
       setSelected(match);
       const applyFocusFromTarget = () => {
@@ -4176,7 +4182,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const match = tickets.find(t => t.key === restored);
         if (match) {
           setSelected(match);
-          setDetailTab("overview");
+          setDetailTab(getTeamWorkstream(match).lifecycle === "planning" ? "ops" : "overview");
           deepLinkProcessedRef.current = true;
         }
       }
@@ -4237,8 +4243,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // Focus Mode 의 기본 view 인 overview 로 강제.
     if (tabParam === "ops" || tabParam === "overview") {
       setDetailTab(tabParam);
-    } else if (focusParam === "1") {
-      setDetailTab("overview");
+    } else {
+      setDetailTab(getTeamWorkstream(match).lifecycle === "planning" ? "ops" : "overview");
     }
 
     // ── 3. owner_dashboard deep-link context 저장 ───────────────────────────
@@ -4671,6 +4677,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return schedules[t.key] ?? t.roles ?? [];
   }
 
+  function getTeamWorkstream(t: Ticket) {
+    const base = buildTeamWorkstreamView({
+      jiraStatus: t.status,
+      planning: planning[t.key],
+      schedules: [],
+      resolutionDate: t.resolutionDate,
+      updatedAt: t.updatedAt,
+    });
+    const rows = getRoles(t);
+    const displayRows = base.lifecycle === "planning"
+      ? []
+      : base.lifecycle === "active"
+        ? compactSchedulesForDisplay(rows).current
+        : rows;
+    return buildTeamWorkstreamView({
+      jiraStatus: t.status,
+      planning: planning[t.key],
+      schedules: displayRows,
+      resolutionDate: t.resolutionDate,
+      updatedAt: t.updatedAt,
+    });
+  }
+
   function saveSchedule(ticketKey: string, rows: RoleSchedule[]) {
     const updated = { ...schedules, [ticketKey]: rows };
     setSchedules(updated);
@@ -4913,7 +4942,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const t = dedupedTickets.find(t => t.key === s.ticket);
         if (t) {
           setSelected(t);
-          setDetailTab("overview");
+          setDetailTab(getTeamWorkstream(t).lifecycle === "planning" ? "ops" : "overview");
           setIsDetailExpanded(s.expanded ?? false);
           setEditMode(false);
           setMemoEditMode(false);
@@ -5618,32 +5647,51 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     key: string,
     fields: { preplanningStatus?: PreplanningStatus; targetSprint?: string },
   ) {
+    persistPlanningEntry(key, patchPlanningEntry(planning[key], fields));
+  }
+
+  function saveRequiredTeams(key: string, rawTeams: string[]) {
+    const requiredTeams = [...new Set(rawTeams.map(team => team.trim()).filter(Boolean))];
     const current = getPlanningVal(planning[key]);
-    persistPlanningEntry(key, { ...current, ...fields });
+    const devTracks = { ...current.devTracks };
+    const teamPlanningStates = { ...current.teamPlanningStates };
+
+    for (const rawTeam of requiredTeams) {
+      const identity = resolveTeamIdentity(rawTeam);
+      if (DEV_TRACK_KEYS.includes(identity.key as DevTrackKey)) {
+        const trackKey = identity.key as DevTrackKey;
+        if (!(trackKey in devTracks)) devTracks[trackKey] = "대기중";
+      } else if (!(rawTeam in teamPlanningStates)) {
+        teamPlanningStates[rawTeam] = "대기중";
+      }
+    }
+
+    const dev = Object.keys(devTracks).length > 0 ? aggregateDevState(devTracks) : current.dev;
+    persistPlanningEntry(key, patchPlanningEntry(planning[key], {
+      requiredTeams,
+      teamPlanningStates,
+      devTracks,
+      dev,
+    }));
+  }
+
+  function saveRequiredTeamState(key: string, rawTeam: string, state: TrackState) {
+    const identity = resolveTeamIdentity(rawTeam);
+    if (DEV_TRACK_KEYS.includes(identity.key as DevTrackKey)) {
+      saveDevTrack(key, identity.key as DevTrackKey, state);
+      return;
+    }
+    const current = getPlanningVal(planning[key]);
+    persistPlanningEntry(key, patchPlanningEntry(planning[key], {
+      teamPlanningStates: { ...current.teamPlanningStates, [rawTeam]: state },
+    }));
   }
 
   function savePlanning(key: string, track: "design" | "dev", state: TrackState) {
-    const current = getPlanningVal(planning[key]);
-
-    // Dev 상위 행 변경 정책 (B-1, 2026-05-29):
-    //   devTracks에 active sub-track이 있으면 그것들도 같은 state로 일괄 변경한다.
-    //   "대상아님" sub-track은 그대로 유지.
-    //   이렇게 해야 getPlanningVal()의 aggregateDevState(devTracks) 정책과 일치하여
-    //   사용자가 본 Dev 상태가 다음 render에서 원복되는 silent loss를 제거할 수 있다.
-    //   (Design은 단일 상태이므로 기존 동작 유지.
-    //    devTracks가 비어있는 ticket도 기존처럼 v.dev 단일 변경만.)
-    let nextEntry: typeof current;
-    if (track === "dev" && Object.keys(current.devTracks).length > 0) {
-      const newDevTracks: Partial<Record<DevTrackKey, TrackState>> = {};
-      for (const [k, v] of Object.entries(current.devTracks) as [DevTrackKey, TrackState][]) {
-        newDevTracks[k] = v === "대상아님" ? "대상아님" : state;
-      }
-      nextEntry = { ...current, devTracks: newDevTracks, dev: state };
-    } else {
-      nextEntry = { ...current, [track]: state };
-    }
-
-    persistPlanningEntry(key, nextEntry);
+    // devTracks가 존재하면 Dev는 팀별 값의 파생 aggregate다.
+    // 상위 버튼으로 여러 팀의 독립 상태를 일괄 덮어쓰지 않는다.
+    if (track === "dev" && isDevAggregateReadOnly(planning[key])) return;
+    persistPlanningEntry(key, patchPlanningEntry(planning[key], { [track]: state }));
   }
 
   function toggleDevTrack(key: string, trackKey: DevTrackKey) {
@@ -5655,19 +5703,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       newDevTracks[trackKey] = "대기중";
     }
     const newDev = Object.keys(newDevTracks).length > 0 ? aggregateDevState(newDevTracks) : current.dev;
-    persistPlanningEntry(key, { ...current, devTracks: newDevTracks, dev: newDev });
+    persistPlanningEntry(key, patchPlanningEntry(planning[key], { devTracks: newDevTracks, dev: newDev }));
   }
 
   function saveDevTrack(key: string, trackKey: DevTrackKey, state: TrackState) {
     const current = getPlanningVal(planning[key]);
     const newDevTracks = { ...current.devTracks, [trackKey]: state };
     const newDev = aggregateDevState(newDevTracks);
-    persistPlanningEntry(key, { ...current, devTracks: newDevTracks, dev: newDev });
+    persistPlanningEntry(key, patchPlanningEntry(planning[key], { devTracks: newDevTracks, dev: newDev }));
   }
 
   function toggleReviewNeeded(key: string) {
     const current = getPlanningVal(planning[key]);
-    persistPlanningEntry(key, { ...current, reviewNeeded: !current.reviewNeeded });
+    persistPlanningEntry(key, patchPlanningEntry(planning[key], { reviewNeeded: !current.reviewNeeded }));
   }
 
 
@@ -5919,8 +5967,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
 
     setSelected(t);
-    // 대기 과제는 프리플래닝 운영 화면부터, 진행 과제는 Weekly 중심 Overview부터 연다.
-    setDetailTab(planningTab === "플래닝 대기·검토" ? "ops" : "overview");
+    // 상단 목록 탭이 아니라 선택한 티켓의 실제 lifecycle로 기본보기 내용을 정한다.
+    const lifecycle = getTeamWorkstream(t).lifecycle;
+    setDetailTab(lifecycle === "planning" ? "ops" : "overview");
     setEditMode(false);
     setMemoEditMode(false);
     setMemoCollapsed(true);
@@ -8435,64 +8484,44 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
             );
           })()}
-          {/* ── 탭 네비게이션 (Focus Mode에서는 숨김) ── */}
+          {/* 상태 적응형 기본보기 — Overview/Planning 탭을 사용자에게 분리하지 않는다. */}
           {!isDetailExpanded && (() => {
-            // 탭 구조: Overview(컨텍스트) + Planning & Schedule(운영) — 흐름 기준 2탭
-            // TODO [ACTIVITY]: activity 고도화 완료 후 { id: "activity", label: "Activity", icon: <clockSvg> } 복원
-            const TABS: { id: "overview" | "ops"; label: string; icon: React.ReactNode }[] = [
-              {
-                id: "overview",
-                label: "Overview",
-                icon: (
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                    <circle cx="8" cy="8" r="6.5"/><path d="M8 5v3.5l2 1.5"/>
-                  </svg>
-                ),
-              },
-              {
-                id: "ops",
-                label: "Planning & Schedule",
-                icon: (
-                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                    <rect x="1.5" y="2.5" width="13" height="12" rx="1.5"/><path d="M5 1v3M11 1v3M1.5 6.5h13"/><path d="M5 10h2M5 12.5h4"/>
-                  </svg>
-                ),
-              },
-            ];
+            const lifecycle = getTeamWorkstream(selected).lifecycle;
+            const contextLabel = lifecycle === "planning"
+              ? "플래닝 중심"
+              : lifecycle === "active"
+                ? "Weekly · 실행 일정 중심"
+                : lifecycle === "recently_completed"
+                  ? "완료보고 · 후속조치 중심"
+                  : "완료 기록";
+            const defaultTab = lifecycle === "planning" ? "ops" : "overview";
+            const isDrilldown = detailTab !== defaultTab;
             return (
               <div
-                className="flex shrink-0 border-b"
+                className="flex shrink-0 items-center justify-between gap-2 border-b px-3.5 py-2.5"
                 style={{
                   borderColor: "var(--border)",
                   background: "var(--bg-canvas)",
-                  // 3차 PR: 탭 nav도 sticky로 — title header 아래에 붙어서 항상 노출.
-                  // top 값은 title height(약 80px)에 근접하지만 정확히 측정 불가 → 0 + 상위 sticky에 의존.
-                  // shrink-0 + 상위 panel sticky로 자연스럽게 적층되며, 이 sticky는 outer-page scroll 보강.
                   position: "sticky",
                   top: 0,
                   zIndex: 10,
                 }}
               >
-                {TABS.map(tab => {
-                  const active = detailTab === tab.id;
-                  return (
-                    <button
-                      key={tab.id}
-                      onClick={() => setDetailTab(tab.id)}
-                      className="flex items-center gap-1.5 px-3.5 py-2.5 text-[12px] transition-all relative"
-                      style={{
-                        color: active ? "#a5b4fc" : "var(--text-muted)",
-                        fontWeight: active ? 600 : 400,
-                        background: active ? "rgba(99,102,241,0.07)" : "transparent",
-                        borderBottom: active ? "2px solid #818cf8" : "2px solid transparent",
-                        opacity: active ? 1 : 0.65,
-                      }}
-                    >
-                      <span style={{ color: active ? "#818cf8" : "var(--text-subtle)" }}>{tab.icon}</span>
-                      {tab.label}
-                    </button>
-                  );
-                })}
+                <button
+                  type="button"
+                  onClick={() => setDetailTab(defaultTab)}
+                  disabled={!isDrilldown}
+                  className="text-[12px] font-semibold disabled:cursor-default"
+                  style={{ color: isDrilldown ? "#315b91" : "var(--text-secondary)" }}
+                >
+                  {isDrilldown ? "← 기본보기" : "기본보기"}
+                </button>
+                <span
+                  className="rounded-md border px-2 py-1 text-[10px] font-medium"
+                  style={{ color: "#315b91", borderColor: "#bdd0e8", background: "#eaf1fa" }}
+                >
+                  {isDrilldown ? "세부 관리" : contextLabel}
+                </span>
               </div>
             );
           })()}
@@ -8521,6 +8550,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             const fmPlan  = getPlanningVal(planning[selected.key]);
             const fmRoles = schedules[selected.key] ?? selected.roles ?? [];
             const fmNotes = planningNotes[selected.key] ?? [];
+            const fmWorkstreamView = getTeamWorkstream(selected);
             const fmTicketNotes = ticketNotes[selected.key];
 
             // 주요 메타 항목
@@ -9135,7 +9165,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="overflow-y-auto flex flex-col gap-4 p-4"
                     style={{ flex: 1, background: "var(--bg-overlay)" }}
                   >
+                    <div data-fm-section="workstreams">
+                      <TeamWorkstreamSummary
+                        view={fmWorkstreamView}
+                        planningNotes={fmNotes}
+                        compact
+                      />
+                    </div>
+
                     {/* 플래닝 상태 */}
+                    {!fmWorkstreamView.isPlanningDerivedComplete && (
                     <div
                       data-fm-section="planning"
                       className="rounded-lg transition-all"
@@ -9153,13 +9192,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           const current = track === "design" ? fmPlan.design : fmPlan.dev;
                           const label   = track === "design" ? "Design" : "Dev";
                           const color   = track === "design" ? "#a78bfa" : "#60a5fa";
+                          const readOnlyAggregate = track === "dev" && Object.keys(fmPlan.devTracks).length > 0;
                           return (
                             <div
                               key={track}
                               className="flex items-center gap-3 px-3 py-2.5"
                               style={{ borderTop: ti > 0 ? "1px solid var(--border)" : undefined }}
                             >
-                              <span className="text-xs font-semibold w-12 shrink-0" style={{ color }}>{label}</span>
+                              <span className="text-xs font-semibold w-12 shrink-0" style={{ color }}>
+                                {label}
+                                {readOnlyAggregate ? <span className="block text-[8px] font-normal" style={{ color: "var(--text-subtle)" }}>자동 집계</span> : null}
+                              </span>
                               <div className="flex gap-1 flex-1">
                                 {TRACK_STATES.map(s => {
                                   const active = current === s;
@@ -9172,9 +9215,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   return (
                                     <button
                                       key={s}
+                                      disabled={readOnlyAggregate}
                                       onClick={() => savePlanning(selected.key, track, s)}
-                                      className="flex-1 py-1 px-1.5 rounded text-[11px] font-medium border transition-all hover:opacity-90"
+                                      className="flex-1 py-1 px-1.5 rounded text-[11px] font-medium border transition-all hover:opacity-90 disabled:cursor-default disabled:opacity-55"
                                       style={active ? activeStyle : inactiveStyle}
+                                      title={readOnlyAggregate ? "Dev는 아래 팀별 상태를 자동 집계한 값입니다." : undefined}
                                     >{s}</button>
                                   );
                                 })}
@@ -9183,10 +9228,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           );
                         })}
 
-                        {/* Dev 세부 트랙 — sub-track 직접 편집 (집중보기 전용)
-                            정책: 개별 sub-track 변경은 saveDevTrack → aggregateDevState로 Dev aggregate 자동 갱신.
-                            Dev aggregate 행(위)을 변경하면 B-1 cascade로 active sub-track 전체 일괄 변경.
-                            "대상아님" sub-track은 cascade 시 그대로 유지. */}
+                        {/* Dev 세부 트랙 — 팀별 상태만 직접 편집한다.
+                            Dev 상위 값은 aggregateDevState로 계산되는 읽기 전용 값이다. */}
                         <div className="px-3 py-2.5" style={{ borderTop: "1px solid var(--border)", background: "var(--bg-overlay)" }}>
                           <div className="flex items-center justify-between mb-1.5">
                             <span className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-subtle)" }}>
@@ -9254,6 +9297,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         </div>
                       </div>
                     </div>
+                    )}
 
                     {/* 세부 일정 (Gantt) */}
                     <div
@@ -9861,6 +9905,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
               {renderWeeklySummary(selected.key)}
+              <div className="mb-4">
+                <TeamWorkstreamSummary
+                  view={getTeamWorkstream(selected)}
+                  planningNotes={planningNotes[selected.key] ?? []}
+                />
+              </div>
               {/* ── PR B3: 최근 Sync 결과 (Trace + Source Preview) ──── */}
               {renderWeeklySyncTrace(selected.key)}
               {/* ── PR B5.1: Linked Work (parent / children / jiraLinks) ── */}
@@ -10717,10 +10767,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 Planning & Schedule 탭: 플래닝 상태
                 ══════════════════════════════════════════ */}
             {detailTab === "ops" && (<>
+              <div className="mb-4">
+                <TeamWorkstreamSummary
+                  view={getTeamWorkstream(selected)}
+                  planningNotes={planningNotes[selected.key] ?? []}
+                />
+              </div>
               {(() => {
                 const view = getPreplanningView(selected.status, planning[selected.key]);
+                const planningView = getPlanningVal(planning[selected.key]);
                 const meta = PREPLANNING_META[view.status];
                 const notes = planningNotes[selected.key] ?? [];
+                const requiredTeamLabels = planningView.requiredTeams.length > 0
+                  ? planningView.requiredTeams
+                  : Object.keys(planningView.devTracks);
+                const freeformTeams = planningView.requiredTeams.filter(rawTeam => {
+                  const identity = resolveTeamIdentity(rawTeam);
+                  return !DEV_TRACK_KEYS.includes(identity.key as DevTrackKey);
+                });
 
                 if (view.isDerivedComplete) {
                   return (
@@ -10788,11 +10852,55 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           if (targetSprint !== view.targetSprint) savePreplanningFields(selected.key, { targetSprint });
                         }}
                         onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
-                        placeholder="예: 2026-08 Sprint 2"
+                        placeholder="예: 33~34주차"
                         className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500"
                         style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
                       />
                     </label>
+
+                    <div className="mb-3">
+                      <label className="block">
+                        <span className="block text-[11px] font-semibold mb-1.5" style={{ color: "var(--text-muted)" }}>필요한 팀</span>
+                        <input
+                          key={`${selected.key}-${requiredTeamLabels.join("|")}`}
+                          defaultValue={requiredTeamLabels.join(", ")}
+                          onBlur={e => {
+                            const nextTeams = e.currentTarget.value.split(/[,，\n]/).map(team => team.trim()).filter(Boolean);
+                            if (nextTeams.join("|") !== requiredTeamLabels.join("|")) saveRequiredTeams(selected.key, nextTeams);
+                          }}
+                          onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                          placeholder="예: SP, PP, CFE 또는 협업 팀명"
+                          className="w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                          style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
+                        />
+                      </label>
+                      <p className="mt-1 text-[10px] leading-relaxed" style={{ color: "var(--text-subtle)" }}>
+                        Pricing→SP · Purchase→PP · CMFE→CFE · APP→Mobile로 화면에서만 묶습니다. 원본 표기는 보존됩니다.
+                      </p>
+                      {freeformTeams.length > 0 && (
+                        <div className="mt-2 space-y-1.5">
+                          {freeformTeams.map(rawTeam => {
+                            const current = planningView.teamPlanningStates[rawTeam] ?? "대기중";
+                            return (
+                              <div key={rawTeam} className="flex items-center gap-1.5">
+                                <span className="w-20 shrink-0 truncate text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }} title={rawTeam}>{rawTeam}</span>
+                                {TRACK_STATES.map(state => (
+                                  <button
+                                    key={state}
+                                    type="button"
+                                    onClick={() => saveRequiredTeamState(selected.key, rawTeam, state)}
+                                    className="flex-1 rounded-md border px-1.5 py-1 text-[10px] font-medium transition-colors"
+                                    style={current === state
+                                      ? { color: "#315b91", borderColor: "#91a4c4", background: "#eaf1fa" }
+                                      : { color: "var(--text-muted)", borderColor: "var(--border-2)", background: "var(--bg-canvas)" }}
+                                  >{state}</button>
+                                ))}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
 
                     <div>
                       <div className="flex items-center justify-between mb-1.5">

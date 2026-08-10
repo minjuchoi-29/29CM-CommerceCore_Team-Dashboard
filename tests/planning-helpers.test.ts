@@ -11,6 +11,8 @@ import {
   aggregateDevState,
   getPlanningView,
   getPlanningStateSummary,
+  isDevAggregateReadOnly,
+  patchPlanningEntry,
   planningViewsMatch,
 } from "../lib/planning-helpers";
 
@@ -74,6 +76,38 @@ describe("getPlanningView — devTracks 우선 정책 (silent loss 방지)", () 
     });
     assert.equal(view.preplanningStatus, "다음 스프린트 재검토");
     assert.equal(view.targetSprint, "2026-08 Sprint 2");
+  });
+
+  it("필요한 팀과 자유형 팀별 플래닝 상태를 안전하게 정규화", () => {
+    const view = getPlanningView({
+      requiredTeams: ["SP", " FE ", "SP", null],
+      teamPlanningStates: { FE: "검토중", "CBP 정산": "대기중", invalid: "진행중" },
+    });
+    assert.deepEqual(view.requiredTeams, ["SP", "FE"]);
+    assert.deepEqual(view.teamPlanningStates, { FE: "검토중", "CBP 정산": "대기중" });
+  });
+});
+
+describe("P1-1 planning 저장 안전성", () => {
+  it("부분 저장 시 기존/미래 필드를 그대로 보존한다", () => {
+    const current = {
+      design: "완료",
+      dev: "검토중",
+      targetSprint: "33~34주차",
+      futureField: { owner: "Commerce" },
+    };
+    const next = patchPlanningEntry(current, { targetSprint: "35~36주차" });
+    assert.deepEqual(next, {
+      design: "완료",
+      dev: "검토중",
+      targetSprint: "35~36주차",
+      futureField: { owner: "Commerce" },
+    });
+  });
+
+  it("devTracks가 있으면 Dev 상위 상태는 읽기 전용이다", () => {
+    assert.equal(isDevAggregateReadOnly({ devTracks: { SP: "검토중" } }), true);
+    assert.equal(isDevAggregateReadOnly({ design: "완료", dev: "대기중" }), false);
   });
 });
 

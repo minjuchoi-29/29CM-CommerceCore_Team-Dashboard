@@ -1,0 +1,120 @@
+import { describe, it } from "node:test";
+import assert from "node:assert/strict";
+import { buildTeamWorkstreamView, resolveTeamIdentity } from "../lib/team-workstreams";
+
+describe("P1-1 팀 명칭 조회 매핑", () => {
+  it("합의된 별칭만 저장값 변경 없이 같은 팀으로 묶는다", () => {
+    assert.deepEqual(resolveTeamIdentity("Pricing"), {
+      key: "SP", label: "SP", rawLabel: "Pricing", mapped: true,
+    });
+    assert.deepEqual(resolveTeamIdentity("Purchase"), {
+      key: "PP", label: "PP", rawLabel: "Purchase", mapped: true,
+    });
+    assert.deepEqual(resolveTeamIdentity("CMFE"), {
+      key: "CFE", label: "CFE", parentTeam: "FE", rawLabel: "CMFE", mapped: true,
+    });
+    assert.equal(resolveTeamIdentity("APP").key, "Mobile");
+    assert.equal(resolveTeamIdentity("BE-SP").key, "SP");
+    assert.equal(resolveTeamIdentity("BE-PP").key, "PP");
+  });
+
+  it("합의되지 않은 QE/CBP 정산/MSS BE는 원문 그대로 둔다", () => {
+    for (const raw of ["QE", "CBP 정산", "MSS BE"]) {
+      const identity = resolveTeamIdentity(raw);
+      assert.equal(identity.label, raw);
+      assert.equal(identity.rawLabel, raw);
+      assert.equal(identity.mapped, false);
+    }
+  });
+});
+
+describe("P1-1 TeamWorkstreamView", () => {
+  it("플래닝 대기는 devTracks를 필요한 팀과 팀별 상태로 보여준다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "SUGGESTED",
+      planning: {
+        preplanningStatus: "검토 중",
+        targetSprint: "35~36주차",
+        devTracks: { SP: "검토중", PP: "대기중", CFE: "완료" },
+      },
+      schedules: [],
+    });
+
+    assert.equal(view.lifecycle, "planning");
+    assert.equal(view.preplanningStatus, "검토 중");
+    assert.equal(view.targetSprint, "35~36주차");
+    assert.deepEqual(view.teams.map(team => [team.key, team.planningState]), [
+      ["SP", "검토중"], ["PP", "대기중"], ["CFE", "완료"],
+    ]);
+  });
+
+  it("자유형 필요한 팀을 기존 devTracks와 충돌 없이 함께 보여준다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "Backlog",
+      planning: {
+        requiredTeams: ["Pricing", "FE", "CBP 정산"],
+        devTracks: { SP: "검토중" },
+        teamPlanningStates: { FE: "완료", "CBP 정산": "검토중" },
+      },
+      schedules: [],
+    });
+    assert.deepEqual(view.teams.map(team => [team.key, team.rawLabels, team.planningState]), [
+      ["SP", ["SP", "Pricing"], "검토중"],
+      ["FE", ["FE"], "완료"],
+      ["raw:cbp 정산", ["CBP 정산"], "검토중"],
+    ]);
+  });
+
+  it("진행 중은 schedule의 팀+phase+status를 묶되 raw label을 보존한다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "개발중",
+      planning: { design: "완료", dev: "완료" },
+      schedules: [
+        { role: "개발", resourceTeam: "Pricing", phase: "개발", status: "진행중", detail: "가격 API", start: "2026-07-22", end: "2026-08-19" },
+        { role: "개발", resourceTeam: "BE-SP", phase: "개발", status: "진행중", detail: "캐시 반영" },
+        { role: "개발", resourceTeam: "CMFE", phase: "개발", status: "진행중", detail: "가격 UI" },
+        { role: "개발", resourceTeam: "CBP 정산", phase: "개발", status: "진행중", detail: "정산 영향도" },
+      ],
+    });
+
+    assert.equal(view.lifecycle, "active");
+    const sp = view.teams.find(team => team.key === "SP");
+    assert.deepEqual(sp?.rawLabels, ["Pricing", "BE-SP"]);
+    assert.deepEqual(sp?.items.map(item => [item.phase, item.status]), [["개발", "진행중"], ["개발", "진행중"]]);
+    assert.equal(view.teams.find(team => team.key === "CFE")?.parentTeam, "FE");
+    assert.equal(view.teams.find(team => team.label === "CBP 정산")?.mapped, false);
+  });
+
+  it("완료 후 14일 동안 최근 완료로 추적하고 이후 일반 완료로 전환한다", () => {
+    const recent = buildTeamWorkstreamView({
+      jiraStatus: "론치완료",
+      planning: undefined,
+      schedules: [],
+      resolutionDate: "2026-08-05T00:00:00.000Z",
+      now: new Date("2026-08-10T00:00:00.000Z"),
+    });
+    assert.equal(recent.lifecycle, "recently_completed");
+    assert.equal(recent.completedDaysAgo, 5);
+    assert.equal(recent.trackingDaysRemaining, 9);
+
+    const old = buildTeamWorkstreamView({
+      jiraStatus: "론치완료",
+      planning: undefined,
+      schedules: [],
+      resolutionDate: "2026-07-20T00:00:00.000Z",
+      now: new Date("2026-08-10T00:00:00.000Z"),
+    });
+    assert.equal(old.lifecycle, "completed");
+    assert.equal(old.trackingDaysRemaining, 0);
+  });
+
+  it("resourceTeam 없는 임의 작업명은 팀으로 오인하지 않고 공통으로 묶는다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "개발중",
+      planning: undefined,
+      schedules: [{ role: "가이드 발행 예정", status: "예정", detail: "운영 가이드" }],
+    });
+    assert.equal(view.teams[0].label, "공통");
+    assert.equal(view.teams[0].items[0].detail, "운영 가이드");
+  });
+});
