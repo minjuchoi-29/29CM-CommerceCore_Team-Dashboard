@@ -147,6 +147,7 @@ export async function GET(request: Request) {
       key: issue.key,
       summary: f.summary,
       status: f.status.name,
+      statusCategory: f.status.statusCategory?.key,
       assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
       requestMeta: {
         reporter: (f.reporter?.displayName ?? "").split("/")[0].trim() || undefined,

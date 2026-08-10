@@ -1,6 +1,11 @@
 import { getPlanningView, type DevTrackKey, type TrackState } from "./planning-helpers";
 import { getPreplanningView, type PreplanningStatus } from "./preplanning";
-import { COMPLETED_WEEKLY_TRACKING_DAYS } from "./weekly-targets";
+import {
+  COMPLETED_WEEKLY_TRACKING_DAYS,
+  classifyTicketLifecycle,
+  getTicketViewLifecycle,
+  type JiraStatusCategory,
+} from "./weekly-targets";
 
 export type WorkstreamLifecycle = "planning" | "active" | "recently_completed" | "completed";
 
@@ -57,14 +62,13 @@ export type TeamWorkstreamView = {
 
 type BuildTeamWorkstreamInput = {
   jiraStatus: string;
+  jiraStatusCategory?: JiraStatusCategory;
   planning: unknown;
   schedules: WorkstreamSchedule[];
   resolutionDate?: string;
   updatedAt?: string;
   now?: Date;
 };
-
-const DONE_STATUSES = new Set(["론치완료", "완료", "배포완료", "개발완료"]);
 
 const TEAM_ALIASES: Record<string, Omit<TeamIdentity, "rawLabel">> = {
   SP: { key: "SP", label: "SP", mapped: true },
@@ -96,6 +100,8 @@ const TEAM_ORDER = new Map([
   ["QA", 6],
   ["기타", 98],
 ]);
+
+const MILESTONE_PHASES = new Set(["Kick-Off", "Release", "Launch"]);
 
 function normalizeTeamAlias(value: string): string {
   return value.trim().replace(/\s+/g, " ").toLocaleUpperCase("en-US");
@@ -140,8 +146,8 @@ function inferPhase(row: WorkstreamSchedule): string {
   return "기타";
 }
 
-function completedTracking(jiraStatus: string, completedAt: string | undefined, now: Date) {
-  if (!DONE_STATUSES.has(jiraStatus) || !completedAt) return undefined;
+function completedTracking(completedAt: string | undefined, now: Date) {
+  if (!completedAt) return undefined;
   const timestamp = new Date(completedAt).getTime();
   if (!Number.isFinite(timestamp)) return undefined;
   const elapsedMs = now.getTime() - timestamp;
@@ -150,17 +156,21 @@ function completedTracking(jiraStatus: string, completedAt: string | undefined, 
   return {
     completedDaysAgo,
     trackingDaysRemaining: Math.max(0, COMPLETED_WEEKLY_TRACKING_DAYS - completedDaysAgo),
+    isWithinTrackingWindow: elapsedMs <= COMPLETED_WEEKLY_TRACKING_DAYS * 24 * 60 * 60 * 1000,
   };
 }
 
-function getLifecycle(input: BuildTeamWorkstreamInput, isDerivedComplete: boolean): WorkstreamLifecycle {
-  if (!DONE_STATUSES.has(input.jiraStatus)) return isDerivedComplete ? "active" : "planning";
-  const tracking = completedTracking(
-    input.jiraStatus,
-    input.resolutionDate ?? input.updatedAt,
-    input.now ?? new Date(),
-  );
-  return tracking && tracking.trackingDaysRemaining > 0 ? "recently_completed" : "completed";
+function getLifecycle(input: BuildTeamWorkstreamInput): WorkstreamLifecycle {
+  const lifecycle = getTicketViewLifecycle({
+    key: "workstream-view",
+    status: input.jiraStatus,
+    statusCategory: input.jiraStatusCategory,
+    resolutionDate: input.resolutionDate,
+    updatedAt: input.updatedAt,
+  }, input.now ?? new Date());
+  if (lifecycle === "recently_completed") return "recently_completed";
+  if (lifecycle === "completed" || lifecycle === "terminal") return "completed";
+  return lifecycle;
 }
 
 function addPlanningTeam(
@@ -184,6 +194,9 @@ function addPlanningTeam(
 
 function addScheduleItem(teams: Map<string, TeamWorkstream>, row: WorkstreamSchedule) {
   if (row.archivedAt) return;
+  const phase = inferPhase(row);
+  // 마일스톤은 Gantt에서 확인하며, 실행 팀이 아니므로 팀별 현재 단계 집계에서는 제외한다.
+  if (MILESTONE_PHASES.has(phase)) return;
   const identity = identityFromSchedule(row);
   const existing = teams.get(identity.key) ?? {
     key: identity.key,
@@ -200,7 +213,7 @@ function addScheduleItem(teams: Map<string, TeamWorkstream>, row: WorkstreamSche
     person: row.person?.trim() || undefined,
     start: row.start || undefined,
     end: row.end || undefined,
-    phase: inferPhase(row),
+    phase,
     status: row.status?.trim() || "미정",
     rawTeam: identity.rawLabel,
   });
@@ -214,7 +227,7 @@ function addScheduleItem(teams: Map<string, TeamWorkstream>, row: WorkstreamSche
 export function buildTeamWorkstreamView(input: BuildTeamWorkstreamInput): TeamWorkstreamView {
   const planning = getPlanningView(input.planning);
   const preplanning = getPreplanningView(input.jiraStatus, input.planning);
-  const lifecycle = getLifecycle(input, preplanning.isDerivedComplete);
+  const lifecycle = getLifecycle(input);
   const teams = new Map<string, TeamWorkstream>();
 
   for (const [track, state] of Object.entries(planning.devTracks) as [DevTrackKey, TrackState][]) {
@@ -231,11 +244,13 @@ export function buildTeamWorkstreamView(input: BuildTeamWorkstreamInput): TeamWo
   }
   for (const schedule of input.schedules) addScheduleItem(teams, schedule);
 
-  const tracking = completedTracking(
-    input.jiraStatus,
-    input.resolutionDate ?? input.updatedAt,
-    input.now ?? new Date(),
-  );
+  const tracking = (lifecycle === "recently_completed" || lifecycle === "completed")
+    && classifyTicketLifecycle({
+      status: input.jiraStatus,
+      statusCategory: input.jiraStatusCategory,
+    }) === "done"
+    ? completedTracking(input.resolutionDate, input.now ?? new Date())
+    : undefined;
   const sortedTeams = [...teams.values()].sort((a, b) => {
     const aOrder = TEAM_ORDER.get(a.key) ?? 50;
     const bOrder = TEAM_ORDER.get(b.key) ?? 50;

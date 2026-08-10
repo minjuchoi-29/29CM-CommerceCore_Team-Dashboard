@@ -24,13 +24,13 @@ const LIFECYCLE_META = {
     accent: "#315b91",
   },
   active: {
-    title: "팀별 현재 작업",
+    title: "팀별 현재 단계",
     description: "Weekly에서 읽은 실제 일정의 팀·단계·상태를 함께 보여줍니다.",
     badge: "진행 중",
     accent: "#315b91",
   },
   recently_completed: {
-    title: "완료 팀과 후속조치",
+    title: "완료·후속 상태",
     description: "완료 후 14일 동안 마지막 Weekly와 남은 확인 일정을 추적합니다.",
     badge: "최근 완료",
     accent: "#24735d",
@@ -196,7 +196,11 @@ export default function TeamWorkstreamSummary({
       <div className="mt-3">
         <div className="flex items-center justify-between gap-2 pb-1.5">
           <p className="text-[10px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
-            {isPlanning ? "필요한 팀" : "작업별 일정"}
+            {isPlanning
+              ? "필요한 팀"
+              : view.lifecycle === "recently_completed"
+                ? "완료·후속 일정"
+                : "팀별 실행 상태"}
           </p>
           <span className="text-[9.5px]" style={{ color: "var(--text-muted)" }}>{view.teams.length}개 팀</span>
         </div>

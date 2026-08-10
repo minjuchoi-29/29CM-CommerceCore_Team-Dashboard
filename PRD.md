@@ -646,9 +646,11 @@ calcWorkingDays(start, end):
 
 ### 19-3. 최근 완료 과제 Weekly 추적
 
-- 모든 미완료 과제는 기존과 동일하게 Weekly Sync 대상이다.
+- Jira `statusCategory=indeterminate`인 실행 과제는 Weekly Sync 대상이다.
+- `배포완료`, `개발완료`는 실제 Jira에서 실행 중 카테고리이므로 완료 과제로 조기 제외하지 않는다.
+- 플래닝 대기(`SUGGESTED`, `Backlog`, `HOLD` 등)와 종료·취소 과제는 Weekly Sync 대상에서 제외한다.
 - Jira `resolutionDate` 기준 완료 후 14일 이내 과제도 Weekly Sync 대상에 포함한다.
-- 완료 상태인데 `resolutionDate`가 없으면 Jira `updated`를 보수적 추적 시작 시각으로 사용한다.
+- 완료 상태인데 `resolutionDate`가 없으면 일반 `updated`를 완료 시각으로 추정하지 않고 자동 추적에서 제외한다.
 - 최근 완료 과제는 마지막 Weekly 완료보고와 후속 조치를 반영할 수 있도록 유지한다.
 - 완료 후 14일이 지났거나 완료일을 확인할 수 없는 과제는 자동 동기화 대상에서 제외한다.
 - 숨김 처리된 과제는 완료 시점과 무관하게 제외한다.

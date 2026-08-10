@@ -52,6 +52,7 @@ import {
 } from "@/lib/preplanning";
 import {
   COMPLETED_WEEKLY_TRACKING_DAYS,
+  getTicketViewLifecycle,
   selectWeeklySyncTargets,
 } from "@/lib/weekly-targets";
 import {
@@ -81,11 +82,14 @@ import {
 } from "@/lib/etr-links";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
+// 목록은 티켓 식별·담당·상태·ETA에 집중하고, 마일스톤은 기본/집중보기에서 확인한다.
+const SHOW_LIST_MILESTONES = false;
 
 const STATUS_COLOR: Record<string, string> = {
   "론치완료": "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700/40",
   "완료":     "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700/40",
-  "배포완료": "bg-emerald-100 dark:bg-emerald-900/40 text-emerald-700 dark:text-emerald-400 border border-emerald-300 dark:border-emerald-700/40",
+  "배포완료": "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700/40",
+  "개발완료": "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700/40",
   "개발중":   "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700/40",
   "In Progress": "bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-400 border border-blue-300 dark:border-blue-700/40",
   "QA중":     "bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-400 border border-amber-300 dark:border-amber-700/40",
@@ -278,6 +282,8 @@ export type Ticket = {
   key: string;
   summary: string;
   status: string;
+  /** Jira의 안정적인 상태 분류 키: new | indeterminate | done */
+  statusCategory?: string;
   assignee: string;
   startDate?: string;
   resolutionDate?: string; // β-1: Jira resolutiondate (ISO) — Done 시점 자동 입력
@@ -326,6 +332,21 @@ export type Ticket = {
     type?: string;
   }>;
 };
+
+type PlanningTabId = "전체" | "진행 중" | "플래닝 대기·검토" | "완료";
+
+function getPlanningTabForTicket(ticket: Ticket): PlanningTabId {
+  const lifecycle = getTicketViewLifecycle(ticket);
+  if (lifecycle === "active") return "진행 중";
+  if (lifecycle === "planning") return "플래닝 대기·검토";
+  if (lifecycle === "recently_completed") return "완료";
+  return "전체";
+}
+
+function isClosedTicket(ticket: Ticket): boolean {
+  const lifecycle = getTicketViewLifecycle(ticket);
+  return lifecycle === "recently_completed" || lifecycle === "completed" || lifecycle === "terminal";
+}
 
 // 오늘 자정 기준 ms
 const TODAY_MS = (() => {
@@ -1617,7 +1638,6 @@ function HealthBadge({ value }: { value: string }) {
   );
 }
 
-const DONE_PRIORITY_STATUSES = new Set(["론치완료", "완료", "배포완료"]);
 const PLANNING_SYNC_CACHE_KEY = "cc-planning-jira-synced-at";
 const PLANNING_SYNC_STALE_MS = 6 * 60 * 60 * 1000;
 
@@ -1631,19 +1651,19 @@ function computeRebalance(
   rawPriorities: Record<string, string>,
   tickets: Ticket[]
 ): { newState: Record<string, string>; sheetUpdate: Record<string, string> } | null {
-  const ticketMap = new Map(tickets.map(t => [t.key, t.status]));
+  const ticketMap = new Map(tickets.map(t => [t.key, t]));
 
   const active = Object.entries(rawPriorities)
     .filter(([key]) => {
-      const s = ticketMap.get(key);
-      return s !== undefined && !DONE_PRIORITY_STATUSES.has(s);
+      const ticket = ticketMap.get(key);
+      return ticket !== undefined && !isClosedTicket(ticket);
     })
     .map(([key, p]) => ({ key, p: parseInt(p) || 999 }))
     .sort((a, b) => a.p - b.p);
 
   const toClean = Object.keys(rawPriorities).filter(key => {
-    const s = ticketMap.get(key);
-    return s !== undefined && DONE_PRIORITY_STATUSES.has(s);
+    const ticket = ticketMap.get(key);
+    return ticket !== undefined && isClosedTicket(ticket);
   });
 
   const activeChanged = active.some(({ key, p }, idx) =>
@@ -2297,13 +2317,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // forceRefresh 후 완료 전환 재정렬 + KV 저장.
       try {
         const rawPri = { ...priorities };
-        const ticketMap = new Map(allNewTickets.map(t => [t.key, t.status]));
+        const ticketMap = new Map(allNewTickets.map(t => [t.key, t]));
 
         // 1. 완료 상태 ticket 의 priority 를 "완료" 마커로 변경
         const withCompleted: Record<string, string> = { ...rawPri };
         for (const key of Object.keys(withCompleted)) {
-          const status = ticketMap.get(key);
-          if (status && DONE_PRIORITY_STATUSES.has(status) && withCompleted[key] !== "완료") {
+          const ticket = ticketMap.get(key);
+          if (ticket && isClosedTicket(ticket) && withCompleted[key] !== "완료") {
             withCompleted[key] = "완료";
           }
         }
@@ -3750,8 +3770,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           }).catch(() => {});
         }
 
-        // 완료 상태 티켓은 플래닝 자동 완료 처리
-        if (["론치완료", "완료", "배포완료"].includes(newTicket.status)) {
+        // Jira에서 실행/완료 단계로 확인된 티켓은 플래닝을 거친 것으로 간주한다.
+        // statusCategory를 우선하므로 "배포완료"처럼 이름만 완료인 실행 상태를 잘못 종료하지 않는다.
+        if (["active", "recently_completed", "completed"].includes(getTicketViewLifecycle(newTicket))) {
           const nextEntry = { ...getPlanningVal(planning[trimmed]), design: "완료" as TrackState, dev: "완료" as TrackState };
           setPlanning(prev => ({ ...prev, [trimmed]: nextEntry }));
           fetch("/api/kv", {
@@ -3764,11 +3785,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setAddKeyInput("");
         // Phase 3: 현재 탭 강제 이동 제거 — 사용자가 선택한 탭 유지.
         // 추가된 티켓이 보일 탭은 toast 의 [이동] 링크로 안내.
-        const suggestedTab = (() => {
-          if (["론치완료", "완료", "배포완료"].includes(newTicket.status)) return "완료";
-          if (["개발중", "In Progress", "QA중"].includes(newTicket.status)) return "진행 중";
-          return "플래닝 대기·검토";
-        })();
+        const suggestedTab = getPlanningTabForTicket(newTicket);
         setAddedTicketInfo({ key: trimmed, suggestedTab });
         setTimeout(() => setAddedTicketInfo(null), 8000);
         setNewlyAddedKeys(new Set([trimmed]));
@@ -3899,11 +3916,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }
       }
 
-      // 완료 상태 티켓은 플래닝 자동 완료 처리
-      const doneTickets = fetched.filter(t => ["론치완료", "완료", "배포완료"].includes(t.status));
-      if (doneTickets.length > 0) {
+      // Jira 실행/완료 단계 티켓은 플래닝을 거친 것으로 처리한다.
+      const executedTickets = fetched.filter(t =>
+        ["active", "recently_completed", "completed"].includes(getTicketViewLifecycle(t))
+      );
+      if (executedTickets.length > 0) {
         const entries: Record<string, unknown> = {};
-        for (const t of doneTickets) {
+        for (const t of executedTickets) {
           entries[t.key] = { ...getPlanningVal(planning[t.key]), design: "완료" as TrackState, dev: "완료" as TrackState };
         }
         setPlanning(prev => ({ ...prev, ...entries }));
@@ -4312,19 +4331,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setStatusTab("전체");
       setPlanningKpiFilter(null);
       // planningTab — status 기반 자동 계산 (target ticket 이 속하는 탭).
-      const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
-      const DONE_T     = ["론치완료", "완료", "배포완료", "개발완료"];
-      const ACTIVE_T   = [
-        "개발중", "QA", "QA중", "진행중", "In Progress", "In Review",
-        "디자인중", "개발 진행중", "검수중", "기획중", "기획완료", "디자인완료",
-      ];
-      const PLANNING_T = ["준비중", "대기중", "SUGGESTED", "Backlog", "플래닝 대기"];
-      const computedTab =
-        DONE_T.includes(match.status)     ? "완료"
-        : ACTIVE_T.includes(match.status) ? "진행 중"
-        : PLANNING_T.includes(match.status) ? "플래닝 대기·검토"
-        : "전체";
-      const targetTab = VALID_PTABS.includes(computedTab) ? computedTab : "전체";
+      const targetTab = getPlanningTabForTicket(match);
       setPlanningTab(targetTab);
       setDetailTab(getTeamWorkstream(match).lifecycle === "planning" ? "ops" : "overview");
       // selected commit → rAF 다음 frame → Focus Mode + history.state.expanded=true.
@@ -4426,23 +4433,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // priority: ?ptab= query > ticket.status 기반 자동 계산
     const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
 
-    function calcPlanningTab(status: string): string {
-      const DONE_T     = ["론치완료", "완료", "배포완료", "개발완료"];
-      const ACTIVE_T   = [
-        "개발중", "QA", "QA중", "진행중", "In Progress", "In Review",
-        "디자인중", "개발 진행중", "검수중", "기획중", "기획완료", "디자인완료",
-      ];
-      const PLANNING_T = ["준비중", "대기중", "SUGGESTED", "Backlog", "플래닝 대기"];
-      if (DONE_T.includes(status))     return "완료";
-      if (ACTIVE_T.includes(status))   return "진행 중";
-      if (PLANNING_T.includes(status)) return "플래닝 대기·검토";
-      return "전체";
-    }
-
     const targetTab =
       (ptabParam && VALID_PTABS.includes(ptabParam))
         ? ptabParam
-        : calcPlanningTab(match.status);
+        : getPlanningTabForTicket(match);
 
     // lifecycle 탭 먼저 적용 (preFiltered 재계산이 setSelected보다 앞서야 함)
     setPlanningTab(targetTab);
@@ -4692,7 +4686,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (!selected || !isDetailExpanded) return;
     const actionScope: ActionScope = ["etr", "source", "docs", "no-etr", "no-source", "no-docs"].includes(focusContext ?? "")
       ? "data"
-      : planningTab === "플래닝 대기·검토"
+      : getTicketViewLifecycle(selected) === "planning"
         ? "planning"
         : "weekly";
     const actions = getActionItemsForScopeWhenReady(
@@ -4716,7 +4710,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     selected?.key,
     isDetailExpanded,
     kvLoaded,
-    planningTab,
     focusContext,
     schedules[selected?.key ?? ""],
     planning[selected?.key ?? ""],
@@ -4732,15 +4725,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     };
   }, []);
 
-  // KV + 티켓 로드 완료 후 1회: 진행중/완료 티켓 중 플래닝 미설정 항목을 자동으로 완료 처리
+  // KV + 티켓 로드 완료 후 1회: Jira 실행/완료 티켓 중 플래닝 미설정 항목만 자동 완료 처리
   useEffect(() => {
     if (!kvLoaded || fetching || tickets.length === 0 || planningMigratedRef.current) return;
     planningMigratedRef.current = true;
 
-    const AUTO_DONE = new Set(["론치완료", "완료", "배포완료", "개발중", "In Progress", "QA중"]);
     const updates: Record<string, { design: TrackState; dev: TrackState }> = {};
     for (const t of tickets) {
-      if (AUTO_DONE.has(t.status) && !planning[t.key]) {
+      const lifecycle = getTicketViewLifecycle(t);
+      if (["active", "recently_completed", "completed"].includes(lifecycle) && !planning[t.key]) {
         updates[t.key] = { design: "완료", dev: "완료" };
       }
     }
@@ -4889,6 +4882,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   function getTeamWorkstream(t: Ticket) {
     const base = buildTeamWorkstreamView({
       jiraStatus: t.status,
+      jiraStatusCategory: t.statusCategory,
       planning: planning[t.key],
       schedules: [],
       resolutionDate: t.resolutionDate,
@@ -4899,9 +4893,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       ? []
       : base.lifecycle === "active"
         ? compactSchedulesForDisplay(rows).current
-        : rows;
+        // 최근 완료 화면도 Weekly에서 반복 수집된 동일 작업을 그대로 나열하지 않는다.
+        // 과거 완료행을 archive로 보내지 않도록 기준일만 비활성화하고 dedupe 규칙은 재사용한다.
+        : compactSchedulesForDisplay(rows, Number.NEGATIVE_INFINITY).current;
     return buildTeamWorkstreamView({
       jiraStatus: t.status,
+      jiraStatusCategory: t.statusCategory,
       planning: planning[t.key],
       schedules: displayRows,
       resolutionDate: t.resolutionDate,
@@ -4946,8 +4943,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const existingMap = Object.fromEntries(existing.map(r => [r.role, r]));
 
     // 마일스톤 3개는 항상 상단 고정 (기존 데이터 있으면 사용, 없으면 빈 기본값)
-    const isTicketActive = INPROGRESS_STATUSES.includes(selected.status) ||
-      ["론치완료", "완료", "배포완료"].includes(selected.status);
     const milestoneRows: RoleSchedule[] = MILESTONE_ROLES.map(role => {
       if (existingMap[role]) return existingMap[role];
       // Kick-Off: Jira Start Date로 pre-fill (날짜가 있을 때만)
@@ -5104,10 +5099,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => clearTimeout(t);
   }, [addKeyError]);
 
-  const PLANNING_DONE_STATUSES = new Set(["론치완료", "완료", "배포완료", "개발완료"]);
-  const PLANNING_ACTIVE_STATUSES = new Set(["개발중", "In Progress", "QA중", "디자인중", "기획중", "기획완료", "디자인완료"]);
-  const PLANNING_HOLD_STATUSES = new Set(["HOLD", "Postponed", "Blocked"]);
-
   // key 기준 중복 제거 (배치 + 커스텀 동시 로드 시 race condition 방어)
   const dedupedTickets = useMemo(() => {
     // hidden hydrate 전에는 derived state를 모두 빈 결과로 두어 flicker 방지.
@@ -5219,17 +5210,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const counts: Record<string, number> = { "전체": nonEtrCount, "진행 중": 0, "플래닝 대기·검토": 0, "완료": 0 };
     for (const t of dedupedTickets) {
       if (t.key.startsWith("ETR-")) continue;
-      const p = getPlanningVal(planning[t.key]);
-      const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
-      const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
-      const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
-      if (isTicketDone) { counts["완료"]++; continue; }
-      if (PLANNING_HOLD_STATUSES.has(t.status)) { counts["플래닝 대기·검토"]++; continue; }
-      if (bothDone || isJiraActive) counts["진행 중"]++;
-      else counts["플래닝 대기·검토"]++;
+      const tab = getPlanningTabForTicket(t);
+      if (tab !== "전체") counts[tab]++;
     }
     return counts;
-  }, [dedupedTickets, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dedupedTickets]);
 
   const allDomains = useMemo(() => {
     const set = new Set(tickets.map((t) => extractDomain(t.summary)));
@@ -5246,18 +5231,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return [...set].sort((a, b) => a.localeCompare(b, "ko"));
   }, [tickets]);
 
-  // 요약 카드·필터 기준 — 상단 탭 planningCounts와 동일하게 PLANNING_DONE_STATUSES 사용
-  const DONE_STATUSES      = [...PLANNING_DONE_STATUSES];
-  const INPROGRESS_STATUSES = ["개발중", "In Progress", "QA중"];
-  const PLANNED_STATUSES   = ["SUGGESTED", "Backlog", "HOLD", "Postponed", "Blocked", "기획중", "기획완료", "디자인완료", "준비중", "디자인중"];
-
   // 완료 티켓의 우선순위는 의미 없으므로 진행중·대기 티켓만 남김
   /** Planning priority — 활성 ticket 만 (완료 제외) */
   const activePriorities = useMemo(() => {
     return Object.fromEntries(
       Object.entries(priorities).filter(([key]) => {
         const t = tickets.find(t => t.key === key);
-        return !t || !DONE_PRIORITY_STATUSES.has(t.status);
+        return !t || !isClosedTicket(t);
       })
     );
   }, [priorities, tickets]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -5267,7 +5247,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return Object.fromEntries(
       Object.entries(executionPriorities).filter(([key]) => {
         const t = tickets.find(t => t.key === key);
-        return !t || !DONE_PRIORITY_STATUSES.has(t.status);
+        return !t || !isClosedTicket(t);
       })
     );
   }, [executionPriorities, tickets]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -5281,7 +5261,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Execution duplicate count — resolved 값 (planning fallback 포함) 기준
   const executionPriorityDuplicateCount = useMemo(() => {
     const activeKeys = tickets
-      .filter(t => !DONE_PRIORITY_STATUSES.has(t.status))
+      .filter(t => !isClosedTicket(t))
       .map(t => t.key);
     return countResolvedExecutionDuplicates(activeKeys, priorities, executionPriorities);
   }, [tickets, priorities, executionPriorities]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -5310,14 +5290,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       // Phase 2: ETR 은 /etr-review 페이지로 이관됨 — 전체 과제 현황 어떤 탭에도 미노출
       if (t.key.startsWith("ETR-")) return false;
       if (planningTab !== "전체") {
-        const p = getPlanningVal(planning[t.key]);
-        const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
-        const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
-        const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
-        const isTicketHold = PLANNING_HOLD_STATUSES.has(t.status);
-        if (planningTab === "진행 중" && !((bothDone || isJiraActive) && !isTicketDone && !isTicketHold)) return false;
-        if (planningTab === "플래닝 대기·검토" && (isTicketDone || ((bothDone || isJiraActive) && !isTicketHold))) return false;
-        if (planningTab === "완료" && !isTicketDone) return false;
+        if (getPlanningTabForTicket(t) !== planningTab) return false;
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
@@ -5331,7 +5304,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       return true;
     });
-  }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search]);
 
   /**
    * preFiltered — 하단 ticket 목록용. planningTabBase 위에 KPI 카드 클릭 필터만 추가 적용.
@@ -5369,21 +5342,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 요약 카드 — 현재 planningTab 기준(preFiltered) 집계, statusTab 무관
   const totalAll        = preFiltered.length;
-  const totalDone       = preFiltered.filter((t) => DONE_STATUSES.includes(t.status)).length;
-  const totalInProgress = preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status)).length;
-  // 기획·준비 = 개발중·QA중도 아니고 완료도 아닌 것 전부 (화이트리스트가 아닌 배제 방식 → 미분류 상태도 포함)
-  const totalPlanned    = preFiltered.filter((t) => !INPROGRESS_STATUSES.includes(t.status) && !DONE_STATUSES.includes(t.status)).length;
+  const totalDone       = preFiltered.filter(isClosedTicket).length;
 
   // 세분화 카운트
   const totalPlan    = preFiltered.filter((t) => ["기획중", "기획완료"].includes(t.status)).length;
   const totalDesign  = preFiltered.filter((t) => ["디자인중", "디자인완료"].includes(t.status)).length;
   const totalReady   = preFiltered.filter((t) => t.status === "준비중").length;
-  const totalDev     = preFiltered.filter((t) => ["개발중", "In Progress"].includes(t.status)).length;
+  const totalDev     = preFiltered.filter((t) => ["개발중", "개발완료", "배포완료", "In Progress"].includes(t.status)).length;
   const totalQA      = preFiltered.filter((t) => t.status === "QA중").length;
-
-  const done       = totalDone;
-  const inProgress = totalInProgress;
-  const planned    = totalPlanned;
 
   // 플래닝 대기·검토 탭 전용 — 팀별(Design / SP / PP / CFE / 기타) 상태 집계.
   //
@@ -5498,14 +5464,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
     let result = statusTab === "전체"   ? [...preFiltered]
-      : statusTab === "완료"     ? preFiltered.filter((t) => DONE_STATUSES.includes(t.status))
-      : statusTab === "진행중"   ? preFiltered.filter((t) => INPROGRESS_STATUSES.includes(t.status))
+      : statusTab === "완료"     ? preFiltered.filter(isClosedTicket)
+      : statusTab === "진행중"   ? preFiltered.filter((t) => getTicketViewLifecycle(t) === "active")
       : statusTab === "기획"     ? preFiltered.filter((t) => ["기획중", "기획완료"].includes(t.status))
       : statusTab === "디자인"   ? preFiltered.filter((t) => ["디자인중", "디자인완료"].includes(t.status))
       : statusTab === "준비중"   ? preFiltered.filter((t) => t.status === "준비중")
-      : statusTab === "개발"     ? preFiltered.filter((t) => ["개발중", "In Progress"].includes(t.status))
+      : statusTab === "개발"     ? preFiltered.filter((t) => ["개발중", "개발완료", "배포완료", "In Progress"].includes(t.status))
       : statusTab === "QA"       ? preFiltered.filter((t) => t.status === "QA중")
-      :                            preFiltered.filter((t) => PLANNED_STATUSES.includes(t.status));
+      :                            preFiltered.filter((t) => getTicketViewLifecycle(t) === "planning");
     // 프리플래닝의 논의 대상과 Weekly 운영의 주의 신호는 서로 섞지 않는다.
     if (reviewFilter && planningTab === "플래닝 대기·검토") {
       result = result.filter(t => getTicketAttention(t, "planning") !== null);
@@ -5618,22 +5584,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const isTicketKeyForm = /^[A-Z][A-Z0-9]+-\d+$/i.test(q);
     const exactKey = q.toUpperCase();
 
-    type PlanningTabId = "진행 중" | "플래닝 대기·검토" | "완료";
-    const matchesPlanning = (t: Ticket, tab: PlanningTabId): boolean => {
-      const p = getPlanningVal(planning[t.key]);
-      const bothDone = (p.design === "완료" || p.design === "대상아님") && (p.dev === "완료" || p.dev === "대상아님");
-      const isTicketDone = PLANNING_DONE_STATUSES.has(t.status);
-      const isJiraActive = PLANNING_ACTIVE_STATUSES.has(t.status);
-      const isTicketHold = PLANNING_HOLD_STATUSES.has(t.status);
-      switch (tab) {
-        case "진행 중":          return (bothDone || isJiraActive) && !isTicketDone && !isTicketHold;
-        case "플래닝 대기·검토":  return !isTicketDone && (isTicketHold || !(bothDone || isJiraActive));
-        case "완료":             return isTicketDone;
-      }
-    };
+    type HintPlanningTabId = Exclude<PlanningTabId, "전체">;
+    const matchesPlanning = (t: Ticket, tab: HintPlanningTabId): boolean => getPlanningTabForTicket(t) === tab;
 
-    const tabs: PlanningTabId[] = ["진행 중", "플래닝 대기·검토", "완료"];
-    const hints: { tab: PlanningTabId; count: number; exactCount: number }[] = [];
+    const tabs: HintPlanningTabId[] = ["진행 중", "플래닝 대기·검토", "완료"];
+    const hints: { tab: HintPlanningTabId; count: number; exactCount: number }[] = [];
     for (const tab of tabs) {
       if (tab === planningTab) continue;
       const inTab = searchOnlyHits.filter(t => matchesPlanning(t, tab));
@@ -5645,7 +5600,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       hints.push({ tab, count, exactCount });
     }
     return hints.length > 0 ? { hints, isTicketKeyForm } : null;
-  }, [search, planningTab, filtered.length, searchOnlyHits, planning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [search, planningTab, filtered.length, searchOnlyHits]);
 
   // 목록과 Focus rail은 업무 화면에 맞는 신호 한 개만 노출한다.
   const railItems = useMemo<{
@@ -5655,9 +5610,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       attention: MeetingAttention;
     };
   }[]>(() => {
-    const meetingScope: ActionScope = planningTab === "플래닝 대기·검토" ? "planning" : "weekly";
     const base = filtered.map(t => {
       const rows = schedules[t.key] ?? [];
+      const meetingScope: ActionScope = getTicketViewLifecycle(t) === "planning" ? "planning" : "weekly";
       const sourceContext = focusForKey === t.key && ["etr", "source", "docs", "no-etr", "no-source", "no-docs"].includes(focusContext ?? "");
       const actionScope: ActionScope = sourceContext ? "data" : meetingScope;
       return {
@@ -5682,7 +5637,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const pb = b.topAction?.priority ?? 999;
       return pa - pb;
     });
-  }, [filtered, focusForKey, focusContext, selected?.key, planningTab, planning, schedules, etrMap, kvLoaded, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filtered, focusForKey, focusContext, selected?.key, planning, schedules, etrMap, kvLoaded, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── changesMode: 스냅샷 로드 → Transition 계산 ────────────────
   useEffect(() => {
@@ -6219,13 +6174,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           <div className="flex items-center justify-between px-3 py-2.5 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="flex items-center gap-1.5">
               <svg width="11" height="11" viewBox="0 0 11 11" fill="none">
-                <rect x="0.5" y="1.5" width="3" height="8" rx="0.75" fill="#818cf8" opacity="0.5"/>
-                <rect x="5" y="1.5" width="5.5" height="8" rx="0.75" fill="#818cf8"/>
+                <rect x="0.5" y="1.5" width="3" height="8" rx="0.75" fill="#315b91" opacity="0.5"/>
+                <rect x="5" y="1.5" width="5.5" height="8" rx="0.75" fill="#315b91"/>
               </svg>
-              <span className="text-[11px] font-semibold" style={{ color: "#818cf8" }}>
+              <span className="text-[11px] font-semibold" style={{ color: "#315b91" }}>
                 {focusForKey ? "우선순위 큐" : "집중 보기"}
               </span>
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}>{filtered.length}</span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded-full font-medium" style={{ background: "#eaf1fa", color: "#315b91" }}>{filtered.length}</span>
             </div>
             <button
               onClick={returnToTicketList}
@@ -7167,9 +7122,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         <div className={`flex gap-1.5 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
           {([
             { key: "전체",           label: "전체",           desc: "모든 과제 (ETR 제외)" },
-            { key: "진행 중",        label: "진행 중",        desc: "플래닝 완료 · 진행 중" },
+            { key: "진행 중",        label: "진행 중",        desc: "Jira 실행 단계 과제" },
             { key: "플래닝 대기·검토", label: "플래닝 대기·검토", desc: "플래닝 대기 또는 검토 중" },
-            { key: "완료",           label: "완료",           desc: "론치·배포 완료" },
+            { key: "완료",           label: "최근 완료",      desc: `완료 후 ${COMPLETED_WEEKLY_TRACKING_DAYS}일 추적 중` },
           ] as const).map(({ key, label, desc }) => {
             const active = planningTab === key;
             return (
@@ -7181,18 +7136,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 style={{
                   background: active
                     ? key === "전체" ? "var(--border)"
-                    : key === "진행 중" ? "rgba(99,102,241,0.25)"
+                    : key === "진행 중" ? "#eaf1fa"
                     : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.2)"
                     : "rgba(16,185,129,0.2)" /* 완료 */
                     : "var(--bg-overlay)",
                   border: `1px solid ${active
                     ? key === "전체" ? "var(--border-2)"
-                    : key === "진행 중" ? "rgba(99,102,241,0.5)"
+                    : key === "진행 중" ? "#bdd0e8"
                     : key === "플래닝 대기·검토" ? "rgba(245,158,11,0.4)"
                     : "rgba(16,185,129,0.4)"
                     : "var(--border)"}`,
                   color: active
-                    ? key === "진행 중" ? "#818cf8"
+                    ? key === "진행 중" ? "#315b91"
                     : key === "플래닝 대기·검토" ? "#fbbf24"
                     : key === "완료" ? "#34d399"
                     : "var(--text-primary)"
@@ -7756,9 +7711,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               { label: "준비중", filterKey: "준비중", count: totalReady,      numColor: "#fbbf24", desc: "준비중",                          accentColor: "#fbbf24" },
               { label: "기획",   filterKey: "기획",   count: totalPlan,       numColor: "#f97316", desc: "기획중 · 기획완료",               accentColor: "#f97316" },
               { label: "디자인", filterKey: "디자인", count: totalDesign,     numColor: "#c084fc", desc: "디자인중 · 디자인완료",            accentColor: "#c084fc" },
-              { label: "개발",   filterKey: "개발",   count: totalDev,        numColor: "#60a5fa", desc: "개발중 · In Progress",            accentColor: "#60a5fa" },
+              { label: "개발",   filterKey: "개발",   count: totalDev,        numColor: "#315b91", desc: "개발·배포 실행 단계",              accentColor: "#315b91" },
               { label: "QA",     filterKey: "QA",     count: totalQA,         numColor: "#f59e0b", desc: "QA중",                           accentColor: "#f59e0b" },
-              { label: "완료",   filterKey: "완료",   count: totalDone,       numColor: "#34d399", desc: "론치·배포·완료 처리됨",           accentColor: "#34d399" },
+              { label: "완료",   filterKey: "완료",   count: totalDone,       numColor: "#34d399", desc: "Jira 완료·종료 상태",             accentColor: "#34d399" },
             ] as { label: string; filterKey: typeof statusTab; count: number; numColor: string; desc: string; accentColor: string | undefined }[]).map((s) => {
               const active = statusTab === s.filterKey;
               return (
@@ -8159,18 +8114,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const isSelected = selected?.key === t.key;
               const isNew = newlyAddedKeys.has(t.key);
               const isDuplicate = duplicateKeys.has(t.key);
-              const tp = getPlanningVal(planning[t.key]);
               const preplanningView = getPreplanningView(t.status, planning[t.key]);
-              const planningComplete = tp.design === "완료" && tp.dev === "완료";
-              const ticketDone = ["론치완료", "완료", "배포완료"].includes(t.status);
 
               // ETA 경고: 완료/진행중 상태가 아닌데 ETA가 경과·임박한 경우
               const todayStr = new Date().toISOString().split("T")[0];
               const in7Days  = new Date(Date.now() + 7 * 86400000).toISOString().split("T")[0];
               const hasEta   = t.eta && t.eta !== "-";
-              const isNotProgressOrDone = !INPROGRESS_STATUSES.includes(t.status) && !PLANNING_DONE_STATUSES.has(t.status);
-              const isEtaOverdue   = hasEta && t.eta! < todayStr && isNotProgressOrDone;
-              const isEtaImminent  = hasEta && t.eta! >= todayStr && t.eta! <= in7Days && isNotProgressOrDone;
+              const lifecycle = getTicketViewLifecycle(t);
+              const tracksEta = lifecycle === "planning" || lifecycle === "active";
+              const isEtaOverdue   = hasEta && t.eta! < todayStr && tracksEta;
+              const isEtaImminent  = hasEta && t.eta! >= todayStr && t.eta! <= in7Days && tracksEta;
               const etaWarnLevel   = isEtaOverdue ? "overdue" : isEtaImminent ? "imminent" : null;
 
               // Operational attention: HOLD/Blocked 상태 감지
@@ -8189,15 +8142,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const fmCardStyle: React.CSSProperties = {
                 borderBottom: "1px solid var(--border)",
                 borderLeft: isSelected
-                  ? "4px solid #6366f1"
+                  ? "4px solid #315b91"
                   : etaWarnLevel === "overdue"  ? "3px solid rgba(248,113,113,0.85)"
                   : etaWarnLevel === "imminent" ? "3px solid rgba(251,191,36,0.75)"
                   : isHold                      ? "3px solid rgba(245,158,11,0.65)"
                   : isReviewNeeded              ? "3px solid rgba(96,165,250,0.65)"
                   : "3px solid transparent",
-                background: isSelected ? "rgba(99,102,241,0.14)" : rowBg,
+                background: isSelected ? "#edf3fa" : rowBg,
                 boxShadow: isSelected
-                  ? "inset 0 0 0 1px rgba(129,140,248,0.4), 0 1px 0 rgba(99,102,241,0.15)"
+                  ? "inset 0 0 0 1px #c9d8ea, 0 1px 0 rgba(49,91,145,0.12)"
                   : undefined,
               };
 
@@ -8243,7 +8196,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             <div className="flex items-center gap-1.5 min-w-0">
                               <span
                                 className="font-mono text-[10px] font-semibold shrink-0"
-                                style={{ color: isSelected ? "#818cf8" : "var(--text-subtle)" }}
+                                style={{ color: isSelected ? "#315b91" : "var(--text-subtle)" }}
                               >
                                 {t.key}
                               </span>
@@ -8260,6 +8213,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
                                 </svg>
                               </a>
+                              <span onClick={(e) => e.stopPropagation()} title="티켓 링크 또는 제목 복사">
+                                <TicketCopyButton ticketKey={t.key} summary={t.summary} size="xs" />
+                              </span>
                             </div>
                             {/* Row 2: ETA + 업무별 주의 신호 하나 */}
                             {(etaShort || displayAttention) && (
@@ -8276,7 +8232,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     title={displayAttention.label}
                                     style={{ color: displayAttention.level === "critical" ? "#f87171" : "#fbbf24" }}
                                   >
-                                    {planningTab === "플래닝 대기·검토" ? "논의 대상" : "주의"}
+                                    {lifecycle === "planning" ? "논의 대상" : "주의"}
                                   </span>
                                 )}
                               </div>
@@ -8308,6 +8264,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         const etaShort = t.eta && t.eta !== "-"
                           ? `${parseInt(t.eta.split("-")[1])}/${parseInt(t.eta.split("-")[2])}`
                           : null;
+                        const startShort = t.startDate && t.startDate !== "-"
+                          ? `${parseInt(t.startDate.split("-")[1])}/${parseInt(t.startDate.split("-")[2])}`
+                          : null;
                         const etaColor = isEtaOverdue  ? ETA_URGENCY_COLOR.overdue
                                        : isEtaImminent ? ETA_URGENCY_COLOR.imminent
                                        : "var(--text-primary)";
@@ -8330,13 +8289,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                   rel="noopener noreferrer"
                                   onClick={(e) => e.stopPropagation()}
                                   className="shrink-0 font-mono text-sm font-semibold hover:underline"
-                                  style={{ color: isSelected ? "#a5b4fc" : "#60a5fa" }}
+                                  style={{ color: "#315b91" }}
                                 >
                                   {t.key}
                                 </a>
                                 {/* PR #33: planningTab 컨텍스트 기반 priority input.
                                     "진행 중" 탭 → execution / 그 외 → planning. */}
-                                {planningTab === "진행 중" ? (
+                                {lifecycle === "active" ? (
                                   <PriorityInput
                                     value={getExecPriority(priorities, executionPriorities, t.key) ?? ""}
                                     onChange={v => setExecutionPriority(t.key, v)}
@@ -8344,7 +8303,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     dupCount={executionPriorityDuplicateCount[getExecPriority(priorities, executionPriorities, t.key) ?? ""] ?? 0}
                                     contextLabel="Exec"
                                   />
-                                ) : (
+                                ) : lifecycle === "planning" ? (
                                   <PriorityInput
                                     value={priorities[t.key] ?? ""}
                                     onChange={v => setPlanningPriority(t.key, v)}
@@ -8352,16 +8311,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     dupCount={priorityDuplicateCount[priorities[t.key] ?? ""] ?? 0}
                                     contextLabel="Plan"
                                   />
-                                )}
+                                ) : null}
                                 <span className="text-[11px]" style={{ color: "var(--text-muted)" }}>
                                   {t.assignee}
                                 </span>
-                                {planningTab === "플래닝 대기·검토" && (
+                                {lifecycle === "planning" && (
                                   <>
                                     <PreplanningBadge status={preplanningView.status} />
                                     <span
                                       className="text-[10px] px-1.5 py-0.5 rounded"
-                                      style={{ color: preplanningView.targetSprint ? "#c4b5fd" : "var(--text-subtle)", background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
+                                      style={{ color: preplanningView.targetSprint ? "#315b91" : "var(--text-subtle)", background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
                                     >
                                       {preplanningView.targetSprint || "예정 스프린트 미정"}
                                     </span>
@@ -8376,7 +8335,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                     title={attention.label}
                                     style={{ color: attention.level === "critical" ? "#f87171" : "#fbbf24" }}
                                   >
-                                    {planningTab === "플래닝 대기·검토" ? "논의 대상" : "주의"} · {attention.label}
+                                    {lifecycle === "planning" ? "논의 대상" : "주의"} · {attention.label}
                                   </span>
                                 </div>
                               )}
@@ -8403,7 +8362,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                             {/* 우측: ETA with urgency */}
                             <span
-                              className="w-24 shrink-0 pt-0.5 text-[12px] font-medium text-center"
+                              className="w-28 shrink-0 pt-0.5 flex flex-col items-center text-[11px] font-medium text-center"
                               title={
                                 isEtaOverdue  ? "ETA 초과 — 일정 재조율 또는 상태 업데이트가 필요합니다" :
                                 isEtaImminent ? "ETA 7일 이내 — 개발·QA 진행 상황을 확인하세요" :
@@ -8415,9 +8374,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 fontWeight: etaWarnLevel ? 700 : undefined,
                               }}
                             >
-                              {!etaShort ? "미정" : `ETA ${etaShort}`}
-                              {isEtaOverdue  && <span className="ml-1 text-[10px]">!</span>}
-                              {isEtaImminent && <span className="ml-1 text-[10px]">▲</span>}
+                              {startShort && <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>시작 {startShort}</span>}
+                              <span>
+                                {!etaShort ? "ETA 미정" : `ETA ${etaShort}`}
+                                {isEtaOverdue  && <span className="ml-1 text-[10px]">!</span>}
+                                {isEtaImminent && <span className="ml-1 text-[10px]">▲</span>}
+                              </span>
                             </span>
 
                             {/* 우측: 삭제 */}
@@ -8434,8 +8396,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </div>
 
                   {/* 마일스톤 서브 행 */}
-                  {!isDetailExpanded && (() => {
-                    const isTicketActive = INPROGRESS_STATUSES.includes(t.status) || DONE_STATUSES.includes(t.status);
+                  {SHOW_LIST_MILESTONES && !isDetailExpanded && (() => {
+                    const lifecycle = getTicketViewLifecycle(t);
+                    const isTicketActive = lifecycle === "active" || lifecycle === "recently_completed";
                     const existingMap = Object.fromEntries(
                       (schedules[t.key] ?? [])
                         .filter(r => MILESTONE_ROLES.includes(r.role))
@@ -8445,7 +8408,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                     // 플래닝 상태 먼저 계산 (서브행 표시 조건에 사용)
                     const p = getPlanningVal(planning[t.key]);
-                    const planningBothDone = p.design === "완료" && p.dev === "완료";
                     // 플래닝이 완전히 종결(완료 or 대상아님)인 경우
                     const planningAllResolved =
                       (p.design === "완료" || p.design === "대상아님") &&
@@ -8545,9 +8507,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             const isHeaderEtaOverdue =
               !!selected.eta && selected.eta !== "-" &&
               selected.eta < todayStr &&
-              !["론치완료","완료","배포완료"].includes(selected.status);
+              ["planning", "active"].includes(getTicketViewLifecycle(selected));
             const headerPlanningSummary = getPlanningStateSummary(planning[selected.key]);
-            const showHeaderPlanningBadge = headerPlanningSummary !== "플래닝 완료" && headerPlanningSummary !== "대상아님";
+            const showHeaderPlanningBadge =
+              getTicketViewLifecycle(selected) === "planning" &&
+              headerPlanningSummary !== "플래닝 완료" &&
+              headerPlanningSummary !== "대상아님";
             return (
               <div
                 className="shrink-0 px-4 pt-3 pb-2.5 flex items-start gap-2"
@@ -8637,23 +8602,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     title={isDetailExpanded ? "전체 목록으로 돌아가기" : "집중 보기 — 목록을 최소화하고 이 티켓에 집중"}
                     className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-semibold transition-all"
                     style={{
-                      background: isDetailExpanded
-                        ? "rgba(99,102,241,0.22)"
-                        : "rgba(99,102,241,0.13)",
+                      background: isDetailExpanded ? "#dce8f5" : "#eaf1fa",
                       border: `1px solid ${isDetailExpanded
-                        ? "rgba(99,102,241,0.6)"
-                        : "rgba(99,102,241,0.38)"}`,
-                      color: isDetailExpanded ? "#818cf8" : "#a5b4fc",
+                        ? "#8cadd2"
+                        : "#bdd0e8"}`,
+                      color: "#315b91",
                     }}
                     onMouseEnter={e => {
                       (e.currentTarget as HTMLElement).style.background = isDetailExpanded
-                        ? "rgba(99,102,241,0.32)"
-                        : "rgba(99,102,241,0.22)";
+                        ? "#cfdfef"
+                        : "#dce8f5";
                     }}
                     onMouseLeave={e => {
                       (e.currentTarget as HTMLElement).style.background = isDetailExpanded
-                        ? "rgba(99,102,241,0.22)"
-                        : "rgba(99,102,241,0.13)";
+                        ? "#dce8f5"
+                        : "#eaf1fa";
                     }}
                   >
                     {isDetailExpanded ? (
@@ -8769,7 +8732,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           {isDetailExpanded && (() => {
             const fmActionScope: ActionScope = ["etr", "source", "docs", "no-etr", "no-source", "no-docs"].includes(focusContext ?? "")
               ? "data"
-              : planningTab === "플래닝 대기·검토"
+              : getTicketViewLifecycle(selected) === "planning"
                 ? "planning"
                 : "weekly";
             const fmActions = getActionItemsForScopeWhenReady(
@@ -8781,12 +8744,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               fmActionScope,
             );
             const fmEtr   = etrMap[selected.key];
-            const fmWikis = fmEtr?.wikiLinks ?? [];
             const fmMemo  = getCurrentMemo(selected.key);
             const fmPlan  = getPlanningVal(planning[selected.key]);
             const fmRoles = schedules[selected.key] ?? selected.roles ?? [];
             const fmNotes = planningNotes[selected.key] ?? [];
             const fmWorkstreamView = getTeamWorkstream(selected);
+            const fmWeeklyFirst = fmWorkstreamView.lifecycle !== "planning";
             const fmTicketNotes = ticketNotes[selected.key];
 
             // 주요 메타 항목
@@ -8803,13 +8766,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               warning:  { dot: "#f59e0b", color: "#fbbf24", bg: "rgba(245,158,11,0.08)",  border: "rgba(251,191,36,0.38)" },
               info:     { dot: "#64748b", color: "#94a3b8", bg: "rgba(100,116,139,0.04)", border: "rgba(100,116,139,0.18)" },
             } as const;
-
-            // 플래닝 상태 레이블 → 색상
-            const planningStateColor = (v: string) =>
-              v === "완료"     ? "#34d399" :
-              v === "검토중"   ? "#a78bfa" :
-              v === "대상아님" ? "var(--text-muted)" :
-                                 "var(--text-subtle)";
 
             // owner_dashboard 진입 context 텍스트 맵
             const FM_CONTEXT_TEXT: Record<string, { icon: string; text: string; color: string; bg: string; border: string }> = {
@@ -8931,7 +8887,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 {/* ── 미확정 일정 Summary strip (3차 PR, 2026-06-02) ──
                     Action Required 바로 아래로 승격해 PM이 "지금 확정할 일정"을
                     Gantt 스크롤 없이 즉시 인지. chip 클릭 → 해당 Gantt placeholder row 강조. */}
-                <PlaceholderSummary
+                {(fmWorkstreamView.lifecycle !== "planning" || fmRoles.some(role => !MILESTONE_ROLES.includes(role.role))) && <PlaceholderSummary
                   roles={fmRoles}
                   highlightRowKey={highlightedScheduleRow}
                   onJump={(rowKey) => {
@@ -8948,7 +8904,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     // auto-clear after 3.5s
                     setTimeout(() => setHighlightedScheduleRow(null), 3500);
                   }}
-                />
+                />}
 
                 {/* ── 2-column body ── */}
                 <div className="flex flex-1 min-h-0 overflow-hidden">
@@ -8960,7 +8916,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     style={{ width: "46%", borderRight: "1px solid var(--border-2)", background: "var(--bg-canvas)" }}
                   >
                     {/* 메타 */}
-                    <div>
+                    <div style={fmWeeklyFirst ? { order: 20 } : undefined}>
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
                         메타
                       </p>
@@ -8979,7 +8935,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </div>
 
                     {/* 요청사항 출처 (Source) — Focus Mode */}
-                    <div data-fm-section="etr">
+                    <div data-fm-section="etr" style={fmWeeklyFirst ? { order: 21 } : undefined}>
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
                         요청사항 출처
                       </p>
@@ -9158,7 +9114,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                         : organizedDocsFm.visible;
                       const organizedDocsFmCount = organizedDocsFm.visible.length + organizedDocsFm.hidden.length;
                       return (
-                        <div>
+                        <div style={fmWeeklyFirst ? { order: 22 } : undefined}>
                           <div className="flex items-center justify-between mb-2 gap-2">
                             <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
                               관련 문서 {organizedDocsFmCount > 0 && (
@@ -9269,28 +9225,28 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     {(() => {
                       const summary = renderWeeklySummary(selected.key);
                       return summary ? (
-                        <div data-fm-section="weekly-summary">{summary}</div>
+                        <div data-fm-section="weekly-summary" style={fmWeeklyFirst ? { order: 0 } : undefined}>{summary}</div>
                       ) : null;
                     })()}
                     {/* PR B3: 최근 Sync 결과 (Trace + Source Preview) */}
-                    <div data-fm-section="weekly-sync-trace">{renderWeeklySyncTrace(selected.key)}</div>
+                    <div data-fm-section="weekly-sync-trace" style={fmWeeklyFirst ? { order: 30 } : undefined}>{renderWeeklySyncTrace(selected.key)}</div>
                     {/* PR B5.1: Linked Work (parent / children / jiraLinks) */}
                     {(() => {
                       const lw = renderLinkedWork(selected.key);
                       return lw ? (
-                        <div data-fm-section="linked-work">{lw}</div>
+                        <div data-fm-section="linked-work" style={fmWeeklyFirst ? { order: 23 } : undefined}>{lw}</div>
                       ) : null;
                     })()}
                     {/* Weekly에서 분리된 노트 (리스크 / 액션 / 참고) */}
                     {(() => {
                       const box = renderActionRiskBox(selected.key);
                       return box ? (
-                        <div data-fm-section="weekly-notes">{box}</div>
+                        <div data-fm-section="weekly-notes" style={fmWeeklyFirst ? { order: 1 } : undefined}>{box}</div>
                       ) : null;
                     })()}
 
                     {/* 주요 내용 요약 (Memo) */}
-                    <div>
+                    <div style={fmWeeklyFirst ? { order: 2 } : undefined}>
                       <div className="flex items-center justify-between mb-2">
                         <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
                           주요 내용 요약
@@ -9339,7 +9295,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </div>
 
                     {/* 티켓 메모 */}
-                    <div>
+                    <div style={fmWeeklyFirst ? { order: 3 } : undefined}>
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
                         메모
                       </p>
@@ -9410,20 +9366,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </div>
 
                     {/* 플래닝 상태 */}
-                    {!fmWorkstreamView.isPlanningDerivedComplete && (
-                    <div
+                    {fmWorkstreamView.lifecycle === "planning" && !fmWorkstreamView.isPlanningDerivedComplete && (
+                    <details
                       data-fm-section="planning"
-                      className="rounded-lg transition-all"
+                      className="rounded-lg p-3 transition-all"
                       style={{
+                        background: "var(--bg-canvas)",
+                        border: "1px solid var(--border)",
                         boxShadow: (sectionHighlight === "planning" || sectionHighlight === "review-needed")
                           ? "0 0 0 2px rgba(248,113,113,0.5), 0 0 14px rgba(248,113,113,0.12)"
                           : undefined,
                       }}
                     >
-                      <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
-                        플래닝 상태
-                      </p>
-                      <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
+                      <summary className="cursor-pointer text-[11px] font-semibold" style={{ color: "#315b91" }}>
+                        Design·Dev 세부 상태 편집
+                      </summary>
+                      <div className="mt-3 rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
                         {(["design", "dev"] as const).map((track, ti) => {
                           const current = track === "design" ? fmPlan.design : fmPlan.dev;
                           const label   = track === "design" ? "Design" : "Dev";
@@ -9532,11 +9490,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           )}
                         </div>
                       </div>
-                    </div>
+                    </details>
                     )}
 
-                    {/* 세부 일정 (Gantt) */}
-                    <div
+                    {/* 플래닝 단계는 실제 작업 일정이 있을 때만 일정 영역을 노출한다. */}
+                    {(fmWorkstreamView.lifecycle !== "planning" || fmRoles.some(role => !MILESTONE_ROLES.includes(role.role))) && <div
                       data-fm-section="schedule"
                       className="rounded-lg transition-all"
                       style={{
@@ -9565,8 +9523,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             extendedView={false}
                             forceShowPastDone={false}
                             fitToContent={true}
-                            ticketDone={["론치완료","완료","배포완료"].includes(selected.status)}
-                            ticketActive={!["론치완료","완료","배포완료"].includes(selected.status)}
+                            ticketDone={fmWorkstreamView.lifecycle === "recently_completed" || fmWorkstreamView.lifecycle === "completed"}
+                            ticketActive={fmWorkstreamView.lifecycle === "active"}
                             ticketStatus={selected.status}
                             onEditRow={undefined}
                             highlightRowKey={highlightedScheduleRow}
@@ -9575,7 +9533,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       ) : (
                         <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>등록된 일정이 없습니다</p>
                       )}
-                    </div>
+                    </div>}
 
                     {/* 플래닝 노트 */}
                     {fmNotes.length > 0 && (
@@ -9606,7 +9564,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
           {/* ── 스크롤 콘텐츠 (Focus Mode에서는 숨김) ── */}
           {!isDetailExpanded && <div ref={splitScrollRef} className="flex-1 overflow-y-auto min-h-0">
-          <div className="p-5">
+          <div className="p-5 flex flex-col">
 
             {/* ── owner_dashboard deep-link Reminder Strip ──────────────────────────
                 source=owner_dashboard 진입 시 "왜 이동했는가"를 상단에 1줄로 표시.
@@ -9645,7 +9603,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
             {/* ── Action Guidance: 현재 필요한 액션 ── */}
             {(() => {
-              const actionScope: ActionScope = planningTab === "플래닝 대기·검토" ? "planning" : "weekly";
+              const actionScope: ActionScope = getTicketViewLifecycle(selected) === "planning" ? "planning" : "weekly";
               const actions = getActionItemsForScopeWhenReady(
                 kvLoaded,
                 selected,
@@ -10062,7 +10020,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {(() => {
                     const todayStr2 = new Date().toISOString().split("T")[0];
                     const hasEta = selected.eta && selected.eta !== "-";
-                    const overdue = hasEta && selected.eta! < todayStr2 && !["론치완료","완료","배포완료"].includes(selected.status);
+                    const overdue = hasEta && selected.eta! < todayStr2 && ["planning", "active"].includes(getTicketViewLifecycle(selected));
                     return (
                       <p className="text-sm font-semibold leading-snug" style={{ color: overdue ? "#f87171" : "var(--text-primary)" }}>
                         {hasEta ? formatDateWithDay(selected.eta!) : "미정"}
@@ -10137,25 +10095,25 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
             {/* ─── Tier 2-3: Weekly + 주요내용 + 메모 (Block D 이동) ─── */}
             {detailTab === "overview" && (<>
-            <div className="pt-4" style={{ borderTop: "1px solid var(--border)" }}>
+            <div className="flex flex-col" style={{ order: -10 }}>
 
               {/* ── 최근 Weekly 요약 (공통 helper 사용) ──────────────── */}
-              {renderWeeklySummary(selected.key)}
-              <div className="mb-4">
+              <div style={{ order: 0 }}>{renderWeeklySummary(selected.key)}</div>
+              <div className="mb-4" style={{ order: 1 }}>
                 <TeamWorkstreamSummary
                   view={getTeamWorkstream(selected)}
                   planningNotes={planningNotes[selected.key] ?? []}
                 />
               </div>
               {/* ── PR B3: 최근 Sync 결과 (Trace + Source Preview) ──── */}
-              {renderWeeklySyncTrace(selected.key)}
+              <div style={{ order: 30 }}>{renderWeeklySyncTrace(selected.key)}</div>
               {/* ── PR B5.1: Linked Work (parent / children / jiraLinks) ── */}
-              {renderLinkedWork(selected.key)}
+              <div style={{ order: 20 }}>{renderLinkedWork(selected.key)}</div>
               {/* ── Weekly에서 분리된 노트 (리스크 / 액션 / 참고) ────── */}
-              {renderActionRiskBox(selected.key)}
+              <div style={{ order: 2 }}>{renderActionRiskBox(selected.key)}</div>
 
               {/* 주요 내용 요약 */}
-              <div className="mb-4">
+              <div className="mb-4" style={{ order: 3 }}>
                 {/* 헤더 */}
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>주요 내용 요약</p>
@@ -10283,7 +10241,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               </div>
 
               {/* 메모 */}
-              <div className="mb-4 pt-4" style={{ borderTop: "1px solid var(--border)" }}>
+              <div className="mb-4 pt-4" style={{ borderTop: "1px solid var(--border)", order: 4 }}>
                 <p className="text-sm font-semibold mb-2" style={{ color: "var(--text-secondary)" }}>메모</p>
 
                 {(ticketNotes[selected.key] ?? []).length > 0 ? (() => {
@@ -10687,11 +10645,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <div className="space-y-1.5 mb-2">
                       {(etrMap[selected.key]?.etrTickets ?? []).map(t => {
                         const st = t.status ?? "";
+                        const linkedLifecycle = getTicketViewLifecycle({ key: t.key, status: st });
                         const stStyle =
-                          DONE_STATUSES.includes(st)       ? { bg: "rgba(16,185,129,0.15)", color: "#34d399", border: "rgba(16,185,129,0.35)" } :
-                          INPROGRESS_STATUSES.includes(st) ? { bg: "rgba(129,140,248,0.15)", color: "#818cf8", border: "rgba(129,140,248,0.35)" } :
-                          PLANNED_STATUSES.includes(st)    ? { bg: "rgba(251,191,36,0.15)", color: "#fbbf24", border: "rgba(251,191,36,0.35)" } :
-                                                             { bg: "rgba(75,85,99,0.2)",    color: "#9ca3af", border: "rgba(75,85,99,0.4)" };
+                          linkedLifecycle === "recently_completed" || linkedLifecycle === "completed"
+                            ? { bg: "rgba(16,185,129,0.15)", color: "#34d399", border: "rgba(16,185,129,0.35)" }
+                            : linkedLifecycle === "active"
+                              ? { bg: "rgba(49,91,145,0.14)", color: "#315b91", border: "rgba(49,91,145,0.3)" }
+                              : linkedLifecycle === "planning"
+                                ? { bg: "rgba(251,191,36,0.15)", color: "#936520", border: "rgba(251,191,36,0.35)" }
+                                : { bg: "rgba(75,85,99,0.12)", color: "#68748a", border: "rgba(75,85,99,0.25)" };
                         return (
                           <div key={t.key} className="rounded-lg px-3 py-2.5" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}>
                             {/* 요약 텍스트 — 가장 눈에 띄게 */}
@@ -11003,12 +10965,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 Planning & Schedule 탭: 플래닝 상태
                 ══════════════════════════════════════════ */}
             {detailTab === "ops" && (<>
-              <div className="mb-4">
+              {getTeamWorkstream(selected).lifecycle !== "planning" && <div className="mb-4">
                 <TeamWorkstreamSummary
                   view={getTeamWorkstream(selected)}
                   planningNotes={planningNotes[selected.key] ?? []}
                 />
-              </div>
+              </div>}
               {(() => {
                 const view = getPreplanningView(selected.status, planning[selected.key]);
                 const planningView = getPlanningVal(planning[selected.key]);
@@ -11531,7 +11493,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {/* ══════════════════════════════════════════
                 Planning & Schedule 탭 계속: 작업별 일정 (Schedule)
                 ══════════════════════════════════════════ */}
-            {detailTab === "ops" && (<>
+            {detailTab === "ops" && (getTeamWorkstream(selected).lifecycle !== "planning" || getRoles(selected).some(role => !MILESTONE_ROLES.includes(role.role))) && (<>
               {/* ── Schedule 섹션 — data-focus-section="schedule" ── */}
               <div
                 data-focus-section="schedule"
@@ -11860,7 +11822,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </p>
                   )}
                   {(() => {
-                    const isDone = ["론치완료", "완료", "배포완료"].includes(selected.status);
+                    const selectedLifecycle = getTicketViewLifecycle(selected);
+                    const isDone = selectedLifecycle === "recently_completed" || selectedLifecycle === "completed";
                     const allRoles = getRoles(selected);
                     const isSummary = isDone && !showFullDoneSchedule;
                     const displayRoles = isSummary
@@ -11890,7 +11853,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           extendedView={isDetailExpanded}
                           fitToContent={isDone && !isDetailExpanded}
                           ticketDone={isDone}
-                          ticketActive={INPROGRESS_STATUSES.includes(selected.status) || isDone}
+                          ticketActive={selectedLifecycle === "active" || isDone}
                           ticketStatus={selected.status}
                           onEditRow={r => startEdit(makeEditFocusKey(r))}
                         />

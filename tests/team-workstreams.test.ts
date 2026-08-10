@@ -85,9 +85,33 @@ describe("P1-1 TeamWorkstreamView", () => {
     assert.equal(view.teams.find(team => team.label === "CBP 정산")?.mapped, false);
   });
 
+  it("배포완료·개발완료가 Jira 진행 중 카테고리이면 active를 유지한다", () => {
+    for (const jiraStatus of ["배포완료", "개발완료"]) {
+      const view = buildTeamWorkstreamView({
+        jiraStatus,
+        jiraStatusCategory: "indeterminate",
+        planning: undefined,
+        schedules: [],
+      });
+      assert.equal(view.lifecycle, "active");
+    }
+  });
+
+  it("플래닝 완료 수동값이 있어도 Jira가 SUGGESTED이면 planning을 유지한다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "SUGGESTED",
+      jiraStatusCategory: "new",
+      planning: { design: "완료", dev: "완료" },
+      schedules: [],
+    });
+    assert.equal(view.lifecycle, "planning");
+    assert.equal(view.isPlanningDerivedComplete, false);
+  });
+
   it("완료 후 14일 동안 최근 완료로 추적하고 이후 일반 완료로 전환한다", () => {
     const recent = buildTeamWorkstreamView({
       jiraStatus: "론치완료",
+      jiraStatusCategory: "done",
       planning: undefined,
       schedules: [],
       resolutionDate: "2026-08-05T00:00:00.000Z",
@@ -99,6 +123,7 @@ describe("P1-1 TeamWorkstreamView", () => {
 
     const old = buildTeamWorkstreamView({
       jiraStatus: "론치완료",
+      jiraStatusCategory: "done",
       planning: undefined,
       schedules: [],
       resolutionDate: "2026-07-20T00:00:00.000Z",
@@ -106,6 +131,32 @@ describe("P1-1 TeamWorkstreamView", () => {
     });
     assert.equal(old.lifecycle, "completed");
     assert.equal(old.trackingDaysRemaining, 0);
+  });
+
+  it("완료 카테고리라도 resolutionDate가 없으면 최근 완료로 추정하지 않는다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "완료",
+      jiraStatusCategory: "done",
+      planning: undefined,
+      schedules: [],
+      updatedAt: "2026-08-09T00:00:00.000Z",
+      now: new Date("2026-08-10T00:00:00.000Z"),
+    });
+    assert.equal(view.lifecycle, "completed");
+    assert.equal(view.completedDaysAgo, undefined);
+  });
+
+  it("취소·반려 상태는 최근 완료 추적 없이 completed로 본다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "Dropped",
+      jiraStatusCategory: "done",
+      planning: undefined,
+      schedules: [],
+      resolutionDate: "2026-08-09T00:00:00.000Z",
+      now: new Date("2026-08-10T00:00:00.000Z"),
+    });
+    assert.equal(view.lifecycle, "completed");
+    assert.equal(view.completedDaysAgo, undefined);
   });
 
   it("resourceTeam 없는 임의 작업명은 팀으로 오인하지 않고 공통으로 묶는다", () => {
@@ -116,5 +167,19 @@ describe("P1-1 TeamWorkstreamView", () => {
     });
     assert.equal(view.teams[0].label, "공통");
     assert.equal(view.teams[0].items[0].detail, "운영 가이드");
+  });
+
+  it("Kick-Off·Release·Launch 마일스톤은 팀별 실행 상태에서 제외한다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "개발중",
+      jiraStatusCategory: "indeterminate",
+      planning: undefined,
+      schedules: [
+        { role: "Kick-Off", phase: "Kick-Off", status: "완료", start: "2026-07-01", end: "2026-07-01" },
+        { role: "Launch", phase: "Launch", status: "예정", start: "2026-08-20", end: "2026-08-20" },
+        { role: "API 개발", resourceTeam: "Pricing", phase: "개발", status: "진행중" },
+      ],
+    });
+    assert.deepEqual(view.teams.map(team => team.key), ["SP"]);
   });
 });

@@ -4,6 +4,7 @@ export type Ticket = {
   key: string;
   summary: string;
   status: string;
+  statusCategory?: string;
   assignee: string;
   eta?: string;
   startDate?: string;

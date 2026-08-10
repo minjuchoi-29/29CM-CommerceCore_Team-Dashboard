@@ -108,6 +108,7 @@ export async function GET(request: Request) {
               key:           issue.key as string,
               summary:       f.summary as string,
               status:        (f.status as Record<string, unknown>).name as string,
+              statusCategory: ((f.status as Record<string, unknown>).statusCategory as Record<string, unknown> | undefined)?.key as string | undefined,
               assignee:      (((f.assignee as Record<string, unknown> | null)?.displayName as string) ?? "-").split("/")[0].trim() || "-",
               eta:           (f.duedate as string | undefined) ?? "-",
               updatedAt:     (f.updated as string | undefined) ?? undefined,

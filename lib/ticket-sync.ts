@@ -1,5 +1,5 @@
 import {
-  isPlanningRefreshStatus,
+  isPlanningRefreshTicket,
   selectWeeklySyncTargets,
   type WeeklyTargetTicket,
 } from "./weekly-targets";
@@ -53,7 +53,7 @@ export function buildPlanningRefreshKeys<T extends WeeklyTargetTicket>(
   hiddenKeys: Set<string>,
 ): string[] {
   return tickets
-    .filter(ticket => !hiddenKeys.has(ticket.key) && isPlanningRefreshStatus(ticket.status))
+    .filter(ticket => !hiddenKeys.has(ticket.key) && isPlanningRefreshTicket(ticket))
     .map(ticket => ticket.key);
 }
 

@@ -39,7 +39,7 @@ type JiraSearchIssue = {
   key: string;
   fields: {
     summary: string;
-    status: { name: string };
+    status: { name: string; statusCategory?: { key?: string } };
     assignee?: { displayName?: string } | null;
     reporter?: { displayName?: string } | null;
     duedate?: string | null;
@@ -168,6 +168,7 @@ async function fetchChunk(
         key: issue.key,
         summary: f.summary,
         status: f.status.name,
+        statusCategory: f.status.statusCategory?.key,
         assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
         requestMeta: {
           reporter: (f.reporter?.displayName ?? "").split("/")[0].trim() || undefined,

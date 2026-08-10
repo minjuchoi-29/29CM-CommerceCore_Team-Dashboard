@@ -46,12 +46,13 @@ describe("buildPlanningRefreshKeys", () => {
     assert.deepEqual(
       buildPlanningRefreshKeys(
         [
-          { key: "TM-READY", status: "SUGGESTED" },
-          { key: "TM-HOLD", status: "HOLD" },
-          { key: "TM-ACTIVE", status: "개발중" },
-          { key: "TM-DONE", status: "완료" },
-          { key: "TM-DROPPED", status: "Dropped" },
-          { key: "TM-HIDDEN", status: "Backlog" },
+          { key: "TM-READY", status: "SUGGESTED", statusCategory: "new" },
+          { key: "TM-HOLD", status: "HOLD", statusCategory: "indeterminate" },
+          { key: "TM-ACTIVE", status: "개발중", statusCategory: "indeterminate" },
+          { key: "TM-DEPLOYING", status: "배포완료", statusCategory: "indeterminate" },
+          { key: "TM-DONE", status: "완료", statusCategory: "done" },
+          { key: "TM-DROPPED", status: "Dropped", statusCategory: "done" },
+          { key: "TM-HIDDEN", status: "Backlog", statusCategory: "new" },
         ],
         new Set(["TM-HIDDEN"]),
       ),
