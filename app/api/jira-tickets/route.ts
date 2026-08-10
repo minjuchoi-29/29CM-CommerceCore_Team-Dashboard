@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { TICKET_KEYS, TICKET_OVERRIDES } from "@/app/jira-tickets/tickets-data";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 import { redis } from "@/lib/redis";
@@ -19,10 +19,56 @@ type JiraLinkParsed = {
   status?: string;
   type?: string;
 };
+
+type JiraLinkedIssue = {
+  key: string;
+  fields?: {
+    summary?: string;
+    status?: { name?: string };
+    issuetype?: { name?: string };
+  };
+};
+
+type JiraIssueLink = {
+  type?: { name?: string };
+  outwardIssue?: JiraLinkedIssue;
+  inwardIssue?: JiraLinkedIssue;
+};
+
+type JiraSearchIssue = {
+  key: string;
+  fields: {
+    summary: string;
+    status: { name: string };
+    assignee?: { displayName?: string } | null;
+    reporter?: { displayName?: string } | null;
+    duedate?: string | null;
+    updated?: string;
+    resolutiondate?: string | null;
+    issuetype: { name: string };
+    project: { key: string };
+    customfield_10015?: string;
+    customfield_10036?: number;
+    customfield_10070?: unknown;
+    customfield_10071?: { value?: string };
+    customfield_14402?: { value?: string };
+    customfield_10067?: unknown;
+    priority?: { name?: string };
+    parent?: { key?: string };
+    issuelinks?: unknown;
+  };
+};
+
+type JiraSearchResponse = {
+  issues: JiraSearchIssue[];
+  isLast?: boolean;
+  total?: number;
+};
+
 function parseIssuelinks(raw: unknown): JiraLinkParsed[] {
   if (!Array.isArray(raw)) return [];
   const result: JiraLinkParsed[] = [];
-  for (const link of raw as Array<Record<string, any>>) {
+  for (const link of raw as JiraIssueLink[]) {
     const t = link?.type?.name ?? "Relates";
     if (link?.outwardIssue) {
       const i = link.outwardIssue;
@@ -113,9 +159,9 @@ async function fetchChunk(
       throw new Error(`Jira API ${res.status}: ${body.slice(0, 300)}`);
     }
 
-    const data = await res.json();
+    const data = await res.json() as JiraSearchResponse;
 
-    for (const issue of data.issues as Array<Record<string, any>>) {
+    for (const issue of data.issues) {
       const override = TICKET_OVERRIDES[issue.key] ?? {};
       const f = issue.fields;
       results.push({
@@ -144,7 +190,7 @@ async function fetchChunk(
       });
     }
 
-    const fetched = (data.issues as unknown[]).length;
+    const fetched = data.issues.length;
     if (data.isLast || fetched === 0 || startAt + fetched >= (data.total ?? 0)) break;
     startAt += fetched;
   }
@@ -152,7 +198,7 @@ async function fetchChunk(
   return results;
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
   if (!email || !token) {
@@ -196,13 +242,21 @@ export async function GET() {
   for (const k of additionalKeys) manualKeySet.add(k);
 
   // TICKET_KEYS + cc-custom-keys + 필터 전용 키 병합 (key 기준 dedupe)
-  const { allKeys, filterOnlyKeys } = mergeTicketKeyLists(manualKeys, filterTickets);
+  const { allKeys } = mergeTicketKeyLists(manualKeys, filterTickets);
   // 어떤 티켓이 어떤 필터에 속하는지 맵 빌드
   const sourceFiltersMap = buildSourceFiltersMap(filterTickets, filtersStore);
 
+  // keys 쿼리가 있으면 현재 회의 운영에 필요한 티켓만 부분 갱신한다.
+  // 허용 목록 밖의 키는 Jira 조회에 전달하지 않는다.
+  const requestedParam = request.nextUrl.searchParams.get("keys");
+  const allowedKeys = new Set(allKeys);
+  const requestedKeys = requestedParam === null
+    ? allKeys
+    : [...new Set(requestedParam.split(",").map(key => key.trim().toUpperCase()).filter(key => allowedKeys.has(key)))];
+
   // JIRA key in (...) 제한 회피를 위해 50개씩 청크로 나눠 병렬 조회
   const CHUNK_SIZE = 50;
-  const chunks = chunkArray(allKeys, CHUNK_SIZE);
+  const chunks = chunkArray(requestedKeys, CHUNK_SIZE);
 
   let tickets: Ticket[] = [];
   try {
@@ -222,15 +276,13 @@ export async function GET() {
     if (manualKeySet.has(t.key)) (t as Ticket).isManual = true;
   }
 
-  // ── 정렬: TICKET_KEYS 순서 우선 → 필터 전용 키 후미 ──
+  // ── 정렬: 전체/부분 조회 모두 요청된 관리 순서 유지 ──
   const byKey = Object.fromEntries(tickets.map((t) => [t.key, t]));
-
-  // 1) 수동 등록 티켓 (TICKET_KEYS 순서 → cc-custom-keys 추가분 순서 유지)
-  const manualSorted = manualKeys.map((k) => {
+  const sorted = requestedKeys.map((k) => {
     if (byKey[k]) return byKey[k];
     // JIRA에서 못 가져온 키: TICKET_OVERRIDES fallback
     const ov = TICKET_OVERRIDES[k];
-    if (ov && "summary" in ov && ov.summary) {
+    if (manualKeySet.has(k) && ov && "summary" in ov && ov.summary) {
       const fallback: Ticket = { key: k, assignee: "-", eta: "-", type: "-", project: k.split("-")[0], summary: "", status: "-", isManual: true, ...ov };
       const sf = sourceFiltersMap[k];
       if (sf && sf.length > 0) fallback.sourceFilters = sf;
@@ -238,13 +290,6 @@ export async function GET() {
     }
     return null;
   }).filter((t): t is Ticket => t != null);
-
-  // 2) 필터 전용 티켓 (TICKET_KEYS에 없는 것)
-  const filterOnlySorted = filterOnlyKeys
-    .map((k) => byKey[k])
-    .filter((t): t is Ticket => t != null);
-
-  const sorted = [...manualSorted, ...filterOnlySorted];
 
   // 중복 방어 (race condition 등)
   const seen = new Set<string>();
@@ -254,5 +299,12 @@ export async function GET() {
     return true;
   });
 
-  return NextResponse.json({ tickets: deduped, fetchedAt: new Date().toISOString() });
+  return NextResponse.json({
+    tickets: deduped,
+    fetchedAt: new Date().toISOString(),
+    customKeys: additionalKeys,
+    partial: requestedParam !== null,
+    managedCount: allKeys.length,
+    refreshedCount: deduped.length,
+  });
 }

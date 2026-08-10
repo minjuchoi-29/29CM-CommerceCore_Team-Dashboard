@@ -40,6 +40,11 @@ import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import { buildTeamWorkstreamView, resolveTeamIdentity } from "@/lib/team-workstreams";
 import {
+  buildTicketRefreshPlan,
+  findMissingSharedTicketKeys,
+  mergeRefreshedTickets,
+} from "@/lib/ticket-sync";
+import {
   PREPLANNING_STATUSES,
   getPreplanningView,
   type PreplanningStatus,
@@ -1735,6 +1740,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [fetching, setFetching]     = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [syncedAt, setSyncedAt]     = useState<Date | null>(null);
+  const [jiraSyncTargetCount, setJiraSyncTargetCount] = useState<number | null>(null);
 
   const [selected, setSelected]     = useState<Ticket | null>(null);
   const [quarters, setQuarters]     = useState<Set<string>>(new Set());
@@ -1836,6 +1842,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const planningMigratedRef         = useRef(false);
   // hiddenKeys의 최신값을 항상 참조할 수 있는 ref (stale closure 방지)
   const hiddenKeysRef = useRef<Set<string>>(new Set());
+  const ticketsRef = useRef<Ticket[]>([]);
+  const sharedCustomKeysRef = useRef<string[]>([]);
+  useEffect(() => { ticketsRef.current = tickets; }, [tickets]);
   // selected 이전값 추적 — URL sync 시 "초기 null→null"과 "명시적 deselect" 구분에 사용
   const prevSelectedRef = useRef<Ticket | null>(null);
   // deep-link 처리 완료 여부 — tickets가 바뀔 때마다 재실행되는 것을 방지
@@ -2020,8 +2029,130 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const TICKET_CACHE_KEY = "cc-tickets-v2";
   const CACHE_MAX_MS = 12 * 60 * 60 * 1000; // 12시간
 
+  type TicketListApiData = {
+    tickets: Ticket[];
+    fetchedAt?: string;
+    customKeys?: string[];
+    partial?: boolean;
+    managedCount?: number;
+    refreshedCount?: number;
+  };
+
+  type TicketCachePayload = {
+    tickets: Ticket[];
+    fetchedAt: string;
+    fullFetchedAt?: string;
+    hiddenKeys?: string[];
+    customKeys?: string[];
+  };
+
+  function writeTicketCache(
+    nextTickets: Ticket[],
+    fetchedAt: Date,
+    hidden: Set<string>,
+    customKeys = sharedCustomKeysRef.current,
+    fullFetchedAt = fetchedAt,
+  ) {
+    try {
+      localStorage.setItem(
+        TICKET_CACHE_KEY,
+        JSON.stringify({
+          tickets: nextTickets,
+          fetchedAt: fetchedAt.toISOString(),
+          fullFetchedAt: fullFetchedAt.toISOString(),
+          hiddenKeys: [...hidden],
+          customKeys,
+        }),
+      );
+    } catch {}
+  }
+
+  function mergeIntoTicketCache(refreshedTickets: Ticket[]) {
+    let baseTickets = ticketsRef.current;
+    let fullFetchedAt = syncedAt ?? new Date();
+    try {
+      const cached = JSON.parse(localStorage.getItem(TICKET_CACHE_KEY) ?? "null") as TicketCachePayload | null;
+      if (Array.isArray(cached?.tickets)) {
+        baseTickets = mergeRefreshedTickets(cached.tickets, ticketsRef.current);
+        fullFetchedAt = new Date(cached.fullFetchedAt ?? cached.fetchedAt);
+      }
+    } catch {}
+
+    const merged = mergeRefreshedTickets(baseTickets, refreshedTickets);
+    const hidden = hiddenKeysRef.current;
+    const visible = filterVisibleTickets(merged, hidden);
+    ticketsRef.current = visible;
+    setTickets(visible);
+    writeTicketCache(merged, syncedAt ?? new Date(), hidden, sharedCustomKeysRef.current, fullFetchedAt);
+  }
+
+  async function fetchSharedCustomKeys(): Promise<string[]> {
+    const response = await apiFetch("/api/tickets", { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !Array.isArray(data.keys)) {
+      throw new Error(data.error ?? "공용 추가 티켓 목록을 확인할 수 없습니다.");
+    }
+    return data.keys as string[];
+  }
+
+  async function persistSharedTicketKeys(keys: string[], action: "add" | "remove" = "add") {
+    const response = await apiFetch("/api/tickets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, keys }),
+    });
+    const data = await response.json();
+    if (!response.ok || data.ok !== true || !Array.isArray(data.keys)) {
+      throw new Error(data.error ?? "공용 티켓 목록 저장에 실패했습니다.");
+    }
+    sharedCustomKeysRef.current = data.keys as string[];
+    return data.keys as string[];
+  }
+
+  async function fetchTicketSubset(keys: string[]): Promise<TicketListApiData> {
+    if (keys.length === 0) return { tickets: [], fetchedAt: new Date().toISOString(), partial: true };
+    const params = new URLSearchParams({ keys: keys.join(",") });
+    const response = await apiFetch(`/api/jira-tickets?${params.toString()}`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || data.error || !Array.isArray(data.tickets)) {
+      throw new Error(data.error ?? "Jira 티켓을 갱신할 수 없습니다.");
+    }
+    return data as TicketListApiData;
+  }
+
+  /**
+   * 12시간 티켓 캐시는 즉시 보여주되 공용 추가 key만 가볍게 재검증한다.
+   * 다른 브라우저에서 추가된 티켓만 Jira 단건 묶음 조회로 합쳐 전체 Sync를 피한다.
+   */
+  async function reconcileSharedCustomTickets(
+    baseTickets: Ticket[],
+    cachedAt: Date,
+    hidden: Set<string>,
+    fullFetchedAt: Date,
+  ) {
+    try {
+      const sharedKeys = await fetchSharedCustomKeys();
+      sharedCustomKeysRef.current = sharedKeys;
+      const missingKeys = findMissingSharedTicketKeys(baseTickets, sharedKeys, hidden);
+      if (missingKeys.length === 0) {
+        writeTicketCache(baseTickets, cachedAt, hidden, sharedKeys, fullFetchedAt);
+        return;
+      }
+
+      const refreshed = await fetchTicketSubset(missingKeys);
+      const merged = mergeRefreshedTickets(baseTickets, refreshed.tickets);
+      const visible = filterVisibleTickets(merged, hidden);
+      ticketsRef.current = visible;
+      setTickets(visible);
+      writeTicketCache(merged, cachedAt, hidden, sharedKeys, fullFetchedAt);
+    } catch (error) {
+      // 캐시 화면은 계속 사용할 수 있어야 하므로 공용 key 보정 실패는 비차단 처리한다.
+      console.warn("[ticket-cache] shared custom ticket reconcile failed", error);
+    }
+  }
+
   // API에서 받은 데이터를 상태 + localStorage에 저장 (사용자 추가 티켓 병합)
-  function applyApiData(data: { tickets: Ticket[]; fetchedAt?: string }) {
+  function applyApiData(data: TicketListApiData) {
     const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
     // hiddenKeys 필터 적용 — ref 사용 (stale closure 방지)
     // loadTickets는 useCallback([], ...) 로 첫 렌더에 생성되므로
@@ -2029,26 +2160,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // hiddenKeysRef.current는 항상 최신값을 가리키므로 ref 사용.
     const hidden = hiddenKeysRef.current;
 
-    setTickets(prev => {
+    if (Array.isArray(data.customKeys)) sharedCustomKeysRef.current = data.customKeys;
+    const nextTickets = (() => {
+      const prev = ticketsRef.current;
       const jiraKeys = new Set(data.tickets.map(t => t.key));
       // KV에서 이미 로드된 custom tickets(prev에 있는 것) 우선 유지
       const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
       const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
       // hiddenKeys 필터 적용
       return filterVisibleTickets([...data.tickets, ...extraByKey.values()], hidden);
-    });
+    })();
+    ticketsRef.current = nextTickets;
+    setTickets(nextTickets);
     setSyncedAt(at);
-    try {
-      // cache hit 시 즉시 hidden 필터링 가능하도록 hiddenKeys도 함께 저장
-      localStorage.setItem(
-        TICKET_CACHE_KEY,
-        JSON.stringify({
-          tickets: data.tickets,
-          fetchedAt: at.toISOString(),
-          hiddenKeys: [...hidden],
-        }),
-      );
-    } catch {}
+    writeTicketCache(data.tickets, at, hidden);
   }
 
   // 클라이언트 fetch에 20초 타임아웃 적용 (서버가 오래 걸릴 때 UI가 멈추지 않도록)
@@ -2067,26 +2192,23 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     try {
       const raw = localStorage.getItem(TICKET_CACHE_KEY);
       if (raw) {
-        const cached = JSON.parse(raw) as {
-          tickets: Ticket[];
-          fetchedAt: string;
-          hiddenKeys?: string[];
-        };
-        if (cached.tickets.length > 0 && Date.now() - new Date(cached.fetchedAt).getTime() < CACHE_MAX_MS) {
+        const cached = JSON.parse(raw) as TicketCachePayload;
+        const fullFetchedAt = new Date(cached.fullFetchedAt ?? cached.fetchedAt);
+        if (cached.tickets.length > 0 && Date.now() - fullFetchedAt.getTime() < CACHE_MAX_MS) {
           // cache에 동봉된 hiddenKeys로 즉시 hydrate → flicker 방지
           // mainFetch가 KV에서 최신 hiddenKeys를 받으면 잠시 후 갱신됨 (stale 보정).
           const cachedHidden = new Set<string>(cached.hiddenKeys ?? []);
           hiddenKeysRef.current = cachedHidden;
           setHiddenKeys(cachedHidden);
           setHiddenLoaded(true);
-          setTickets(prev => {
-            const jiraKeys = new Set(cached.tickets.map((t: Ticket) => t.key));
-            const existingExtra = prev.filter(t => !jiraKeys.has(t.key));
-            const extraByKey = new Map<string, Ticket>(existingExtra.map(t => [t.key, t]));
-            return filterVisibleTickets([...cached.tickets, ...extraByKey.values()], cachedHidden);
-          });
-          setSyncedAt(new Date(cached.fetchedAt));
+          const visibleCached = filterVisibleTickets(cached.tickets, cachedHidden);
+          ticketsRef.current = visibleCached;
+          sharedCustomKeysRef.current = cached.customKeys ?? [];
+          setTickets(visibleCached);
+          const cachedAt = new Date(cached.fetchedAt);
+          setSyncedAt(cachedAt);
           setFetching(false);
+          void reconcileSharedCustomTickets(cached.tickets, cachedAt, cachedHidden, fullFetchedAt);
           return;
         }
       }
@@ -2113,43 +2235,55 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 강제 업데이트: 서버 캐시 무효화 → JIRA 재조회 → 커스텀 티켓도 재조회 → localStorage 갱신
+  // Jira Sync: 미완료·최근 완료·신규 공용 티켓만 JIRA 재조회 → localStorage 병합
   const forceRefresh = useCallback(async () => {
     setFetching(true);
     setFetchError(null);
     try {
-      await fetch("/api/jira-tickets/revalidate", { method: "POST" });
-      const res = await apiFetch("/api/jira-tickets");
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setFetchError(data.error ?? "알 수 없는 오류");
-        return;
+      const hiddenSync = hiddenKeysRef.current;
+      let cachedTickets = ticketsRef.current;
+      let lastFullFetchedAt: Date | null = null;
+      try {
+        const cached = JSON.parse(localStorage.getItem(TICKET_CACHE_KEY) ?? "null") as TicketCachePayload | null;
+        if (Array.isArray(cached?.tickets)) {
+          cachedTickets = mergeRefreshedTickets(cached.tickets, ticketsRef.current);
+          lastFullFetchedAt = new Date(cached.fullFetchedAt ?? cached.fetchedAt);
+        }
+      } catch {}
+
+      const sharedKeys = await fetchSharedCustomKeys();
+      sharedCustomKeysRef.current = sharedKeys;
+      const refreshPlan = buildTicketRefreshPlan(cachedTickets, sharedKeys, hiddenSync, new Date());
+      setJiraSyncTargetCount(refreshPlan.keys.length);
+
+      let data: TicketListApiData;
+      if (cachedTickets.length === 0) {
+        const response = await apiFetch("/api/jira-tickets", { cache: "no-store" });
+        const body = await response.json();
+        if (!response.ok || body.error || !Array.isArray(body.tickets)) {
+          throw new Error(body.error ?? "Jira 티켓을 갱신할 수 없습니다.");
+        }
+        data = body as TicketListApiData;
+      } else {
+        data = await fetchTicketSubset(refreshPlan.keys);
       }
 
-      // 모든 티켓이 TICKET_KEYS(코드)로 관리되므로 커스텀 KV 로드 불필요
-      // JIRA 배치 재조회 결과를 그대로 사용
-
-      // 화면 반영 + localStorage 갱신
       const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
-      // ref 사용 — useCallback([], ...) stale closure 방지
-      const hiddenSync = hiddenKeysRef.current;
-      setTickets((data.tickets as Ticket[]).filter(t => !hiddenSync.has(t.key)));
+      const allNewTickets = cachedTickets.length === 0
+        ? data.tickets
+        : mergeRefreshedTickets(cachedTickets, data.tickets);
+      const visibleTickets = filterVisibleTickets(allNewTickets, hiddenSync);
+      ticketsRef.current = visibleTickets;
+      setTickets(visibleTickets);
       setSyncedAt(at);
       // Transition snapshot 저장 (오늘 1회, 비동기)
-      saveTransitionSnapshot(data.tickets as Ticket[], planning, hiddenSync);
-      try {
-        // hiddenKeys 포함 저장 — 다음 캐시 hydration 시 정확한 필터링 보장
-        localStorage.setItem(
-          TICKET_CACHE_KEY,
-          JSON.stringify({ tickets: data.tickets, fetchedAt: at.toISOString(), hiddenKeys: [...hiddenSync] })
-        );
-      } catch {}
+      saveTransitionSnapshot(allNewTickets, planning, hiddenSync);
+      writeTicketCache(allNewTickets, at, hiddenSync, sharedKeys, lastFullFetchedAt ?? at);
 
       // Phase 7: KV (cc-planning-priorities) 단일 진실. Sheet 폐기.
       // forceRefresh 후 완료 전환 재정렬 + KV 저장.
       try {
         const rawPri = { ...priorities };
-        const allNewTickets = data.tickets as Ticket[];
         const ticketMap = new Map(allNewTickets.map(t => [t.key, t.status]));
 
         // 1. 완료 상태 ticket 의 priority 를 "완료" 마커로 변경
@@ -2189,7 +2323,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       void (async () => {
         const hiddenForSync = hiddenSync;  // 위에서 forceRefresh가 잡아둔 hidden set
         const targetSelection = selectWeeklySyncTargets(
-          data.tickets as Ticket[],
+          allNewTickets,
           hiddenForSync,
           new Date(),
         );
@@ -2458,10 +2592,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
       setFetchError(isTimeout
         ? "JIRA 응답 시간 초과 (20초). 잠시 후 다시 시도하세요."
-        : "네트워크 오류가 발생했습니다."
+        : e instanceof Error ? e.message : "네트워크 오류가 발생했습니다."
       );
     } finally {
       setFetching(false);
+      setJiraSyncTargetCount(null);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -3509,7 +3644,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         setAddKeyError(data.error ?? "티켓을 가져올 수 없습니다.");
       } else {
         const newTicket = data.ticket as Ticket;
-        setTickets(prev => [...prev, newTicket]);
+
+        // 다른 사용자도 일반 새로고침으로 볼 수 있도록 공용 KV 저장을 먼저 확인한다.
+        await persistSharedTicketKeys([trimmed]);
+        mergeIntoTicketCache([newTicket]);
 
         // JIRA startDate → 시작일(Kick-Off) 등록
         // 조건: Kick-Off 없거나, 있어도 날짜가 비어 있으면 Jira Start Date로 보정
@@ -3543,14 +3681,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             body: JSON.stringify({ key: "cc-planning", subKey: trimmed, value: nextEntry }),
           }).catch(() => {});
         }
-
-        // ─── GitHub에 tickets-data.ts 커밋 (영구 저장) ──────────────────────
-        // fire-and-forget: UI는 즉시 반영, GitHub 커밋은 백그라운드
-        fetch("/api/tickets", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "add", key: trimmed }),
-        }).catch(() => {});
 
         setAddKeyInput("");
         // Phase 3: 현재 탭 강제 이동 제거 — 사용자가 선택한 탭 유지.
@@ -3598,7 +3728,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
     } catch (e) {
       const isTimeout = e instanceof DOMException && e.name === "AbortError";
-      setAddKeyError(isTimeout ? "요청 시간 초과 (20초)" : "네트워크 오류");
+      setAddKeyError(isTimeout
+        ? "요청 시간 초과 (20초)"
+        : e instanceof Error ? e.message : "네트워크 오류");
     } finally {
       setAddKeyLoading(false);
     }
@@ -3606,7 +3738,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // 다중 티켓 추가 (쉼표/공백 구분)
   async function addTickets(input: string) {
-    const keys = input.split(/[\s,]+/).map(k => k.trim().toUpperCase()).filter(Boolean);
+    const keys = [...new Set(input.split(/[\s,]+/).map(k => k.trim().toUpperCase()).filter(Boolean))];
     if (keys.length === 0) return;
     if (keys.length === 1) return addTicket(keys[0]);
 
@@ -3650,7 +3782,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
 
     if (fetched.length > 0) {
-      setTickets(prev => [...prev, ...fetched]);
+      try {
+        // 성공한 Jira 티켓들을 한 번에 공용 KV에 저장하고 응답을 확인한 뒤 화면에 반영한다.
+        await persistSharedTicketKeys(fetched.map(ticket => ticket.key));
+      } catch (error) {
+        setAddKeyError(error instanceof Error ? error.message : "공용 티켓 목록 저장에 실패했습니다.");
+        setAddKeyProgress(null);
+        setAddKeyLoading(false);
+        return;
+      }
+      mergeIntoTicketCache(fetched);
 
       // JIRA startDate → 시작일(Kick-Off) 등록
       // 조건: Kick-Off 없거나, 있어도 날짜가 비어 있으면 Jira Start Date로 보정
@@ -3695,17 +3836,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           }).catch(() => {});
         }
       }
-
-      // ─── GitHub에 tickets-data.ts 커밋 (영구 저장) — 각 키 순차 커밋 ────────
-      (async () => {
-        for (const t of fetched) {
-          await fetch("/api/tickets", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ action: "add", key: t.key }),
-          }).catch(() => {});
-        }
-      })();
 
       // 신규 추가 티켓 날짜 기록
       const today = new Date().toISOString().split("T")[0];
@@ -6178,14 +6308,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <button
               onClick={forceRefresh}
               disabled={fetching}
-              title="JIRA에서 즉시 재동기화 (서버 캐시 초기화)"
+              title="미완료·최근 완료·새 공용 티켓만 Jira에서 빠르게 재동기화"
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 transition-colors"
               style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
             >
               <svg className={`w-3 h-3 ${fetching ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
                 <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
               </svg>
-              {fetching ? "Syncing…" : "Jira Sync"}
+              {fetching
+                ? jiraSyncTargetCount === null ? "Syncing…" : `${jiraSyncTargetCount}개 Sync…`
+                : "Jira Sync"}
             </button>
             {/* ── Candidate Review 모달 (Phase C) ─────────────────── */}
             {candidatePanelOpen && (() => {
