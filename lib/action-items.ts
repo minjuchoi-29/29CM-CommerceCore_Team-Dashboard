@@ -21,6 +21,8 @@ export type RoleScheduleMin = {
   status?: string;
   phase?: string;
   archivedAt?: string;
+  source?: string;
+  sourceWeek?: string;
 };
 
 export type EtrInfoMin = {
@@ -129,6 +131,32 @@ function isLaunchSchedule(row: RoleScheduleMin): boolean {
   return LAUNCH_MARKER.test(phaseOrRole);
 }
 
+function sourceWeekNumber(sourceWeek?: string): number | undefined {
+  const matched = sourceWeek?.match(/(\d{1,2})\s*주차/);
+  return matched ? Number(matched[1]) : undefined;
+}
+
+/**
+ * 자동 파싱된 jira_weekly 행은 가장 최신 주차만 판정에 사용한다.
+ * 과거 주차에서 사라진 QA/Launch 행을 현재 일정과 충돌시키지 않기 위함이다.
+ * manual/imported/confirmed/legacy 행은 사용자가 관리하는 기존 데이터이므로 보존한다.
+ */
+function currentScheduleRows(roles: RoleScheduleMin[]): RoleScheduleMin[] {
+  const latestWeek = roles.reduce<number | undefined>((latest, row) => {
+    if (row.source !== "jira_weekly" || row.archivedAt) return latest;
+    const week = sourceWeekNumber(row.sourceWeek);
+    if (week === undefined) return latest;
+    return latest === undefined ? week : Math.max(latest, week);
+  }, undefined);
+
+  return roles.filter(row => {
+    if (row.archivedAt) return false;
+    if (row.source !== "jira_weekly" || latestWeek === undefined) return true;
+    const week = sourceWeekNumber(row.sourceWeek);
+    return week === undefined || week === latestWeek;
+  });
+}
+
 /**
  * Launch/배포 목표일의 출처와 실제 주의 필요 여부를 파생한다.
  *
@@ -142,7 +170,7 @@ export function getLaunchReadiness(
   weeklyText?: string,
   today = new Date().toISOString().split("T")[0],
 ): LaunchReadiness {
-  const activeRows = roles.filter(row => !row.archivedAt);
+  const activeRows = currentScheduleRows(roles);
   const launchRow = activeRows.find(row => isLaunchSchedule(row) && isIsoDate(row.start));
   const contexts = launchContexts(weeklyText);
   const weeklyHasDate = contexts.some(context => LAUNCH_DATE.test(context));

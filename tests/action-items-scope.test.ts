@@ -98,7 +98,25 @@ describe("launch readiness", () => {
   it("TM-2922형: 기한이 있어도 Weekly가 론치 ETA 변경 필요를 명시하면 주의", () => {
     const result = getLaunchReadiness(
       { eta: "2026-08-31" },
-      [],
+      [
+        {
+          role: "QA",
+          phase: "QA",
+          start: "2026-09-03",
+          end: "2026-09-03",
+          status: "예정",
+          source: "jira_weekly",
+          sourceWeek: "29주차",
+        },
+        {
+          role: "QA",
+          phase: "QA",
+          start: "2026-08-26",
+          status: "예정",
+          source: "jira_weekly",
+          sourceWeek: "32주차",
+        },
+      ],
       "* QA 일정에 따라 배포 및 론치 ETA 변경 필요",
       today,
     );
@@ -106,6 +124,28 @@ describe("launch readiness", () => {
     assert.equal(result.attention, "warning");
     assert.equal(result.reason, "change_needed");
     assert.equal(result.label, "론치 일정 재확인 · 기준 8/31");
+  });
+
+  it("최신 Weekly의 QA 종료가 기한을 넘으면 과거 행 필터 후에도 충돌로 판정", () => {
+    const result = getLaunchReadiness(
+      { eta: "2026-08-31" },
+      [
+        {
+          role: "QA",
+          phase: "QA",
+          start: "2026-08-26",
+          end: "2026-09-02",
+          status: "예정",
+          source: "jira_weekly",
+          sourceWeek: "32주차",
+        },
+      ],
+      undefined,
+      today,
+    );
+
+    assert.equal(result.attention, "critical");
+    assert.equal(result.reason, "schedule_conflict");
   });
 
   it("먼 미래의 Jira 기한이 있으면 초기 단계의 TBD만으로 즉시 경고하지 않음", () => {
