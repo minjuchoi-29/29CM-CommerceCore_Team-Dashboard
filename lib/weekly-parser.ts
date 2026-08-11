@@ -44,6 +44,15 @@ export function semanticSlug(text: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
+// 일정 정체성에는 본문 안의 ETA 날짜를 포함하지 않는다.
+// 날짜가 다음 Weekly에서 바뀌어도 같은 작업으로 병합되어야 하며,
+// 과거 파서가 ETA 날짜 직전에서 잘라 만든 stableTaskId와도 호환된다.
+const STABLE_TASK_DATE_RE = /\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}/g;
+
+function stableTaskLabel(text: string): string {
+  return text.replace(STABLE_TASK_DATE_RE, " ").replace(/\s+/g, " ").trim();
+}
+
 /**
  * Deterministic stable row identity.
  * - 일반 phase: `${ticketKey}::${phase}::${semanticSlug(resourceTeam)}`
@@ -65,7 +74,9 @@ export function buildStableTaskId(
     const suffix = startDate || semanticSlug(resourceTeam || "");
     return `${ticketKey}::${phase}::${suffix}`;
   }
-  const semanticParts = [resourceTeam, taskLabel].filter(Boolean).join(" ");
+  const semanticParts = [resourceTeam, taskLabel ? stableTaskLabel(taskLabel) : null]
+    .filter(Boolean)
+    .join(" ");
   return `${ticketKey}::${phase}::${semanticSlug(semanticParts)}`;
 }
 
@@ -346,6 +357,35 @@ function extractDateRange(text: string, fallbackYear?: number): {
 const DATE_RANGE_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/g;
 const DATE_TOKEN_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?(?:\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?)?/g;
 
+function isInlineEtaReferenceDate(line: string, matchIndex: number): boolean {
+  const prefix = line.slice(Math.max(0, matchIndex - 40), matchIndex);
+  return /(?:\(?\s*ETA\s*:?[\s\p{L}]*)$/iu.test(prefix);
+}
+
+function extractBridgedDateRange(
+  line: string,
+  matches: RegExpMatchArray[],
+  fallbackYear?: number,
+): { start: string; end: string; first: RegExpMatchArray; second: RegExpMatchArray } | null {
+  if (matches.length !== 2) return null;
+  const [first, second] = matches;
+  if (extractDateRange(first[0], fallbackYear)?.isRange || extractDateRange(second[0], fallbackYear)?.isRange) {
+    return null;
+  }
+
+  const firstStart = first.index ?? 0;
+  const secondStart = second.index ?? 0;
+  const bridge = line.slice(firstStart + first[0].length, secondStart);
+  // "8/10 배포직후 ~ 8/11 EOD"처럼 날짜 사이에 설명이 들어가도
+  // 물결표가 있으면 서로 다른 작업이 아니라 하나의 실행 기간으로 본다.
+  if (!/[~～–—]/.test(bridge)) return null;
+
+  const start = extractDateRange(first[0], fallbackYear)?.start;
+  const end = extractDateRange(second[0], fallbackYear)?.end;
+  if (!start || !end || end < start) return null;
+  return { start, end, first, second };
+}
+
 function normalizeTaskLabel(text: string, phase: SchedulePhase): string | null {
   const cleaned = text
     .replace(DATE_RANGE_GLOBAL_RE, " ")
@@ -480,9 +520,56 @@ export function parseScheduleLinesWithCtx(
   const transitionItems = parseSameDatePhaseTransition(line, fallbackYear, ticketKey);
   if (transitionItems.length > 0) return transitionItems;
 
-  const matches = Array.from(line.matchAll(DATE_TOKEN_GLOBAL_RE));
+  const allMatches = Array.from(line.matchAll(DATE_TOKEN_GLOBAL_RE));
+  // 첫 날짜는 실행일이므로 항상 유지한다. 이후 날짜가 ETA 설명 안에 있으면
+  // 별도 일정으로 확장하지 않고 현재 작업의 설명으로 보존한다.
+  const matches = allMatches.filter((match, index) => (
+    index === 0 || !isInlineEtaReferenceDate(line, match.index ?? 0)
+  ));
+  const bridgedRange = extractBridgedDateRange(line, matches, fallbackYear);
+  if (bridgedRange) {
+    const item = parseScheduleLineWithCtx(line, ctx, fallbackYear, ticketKey);
+    if (!item || !item.phase || item.phase === "기타") return item ? [item] : [];
+
+    item.startDate = bridgedRange.start;
+    item.endDate = bridgedRange.end;
+    item.dateMentioned = { start: true, end: true };
+    const labelSource = line
+      .replace(bridgedRange.first[0], " ")
+      .replace(bridgedRange.second[0], " ");
+    item.taskLabel = normalizeTaskLabel(labelSource, item.phase);
+    item.rawText = line;
+    if (ticketKey) {
+      item.stableTaskId = buildStableTaskId(
+        ticketKey,
+        item.phase,
+        item.resourceTeam ?? null,
+        MILESTONE_PHASES.has(item.phase) ? item.startDate : null,
+        item.taskLabel,
+      );
+    }
+    return [item];
+  }
   if (matches.length < 2) {
     const item = parseScheduleLineWithCtx(line, ctx, fallbackYear, ticketKey);
+    if (item && allMatches.length > matches.length && matches[0]) {
+      const labelSource = line
+        .replace(matches[0][0], " ")
+        .replace(/^[\s•·\-–—]+/, "")
+        .trim();
+      const phase = item.phase ?? "기타";
+      item.taskLabel = normalizeTaskLabel(labelSource, phase);
+      item.rawText = line;
+      if (ticketKey && phase !== "기타") {
+        item.stableTaskId = buildStableTaskId(
+          ticketKey,
+          phase,
+          item.resourceTeam ?? null,
+          MILESTONE_PHASES.has(phase) ? item.startDate : null,
+          item.taskLabel,
+        );
+      }
+    }
     return item ? [item] : [];
   }
 

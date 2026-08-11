@@ -2,8 +2,11 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildTeamWorkstreamView,
+  getTeamWorkstreamDisplayGroups,
   getTeamWorkstreamSignals,
+  isLikelyScheduleTeamLabel,
   resolveTeamIdentity,
+  selectTeamCurrentStageItems,
 } from "../lib/team-workstreams";
 
 describe("P1-1 팀 명칭 조회 매핑", () => {
@@ -36,6 +39,13 @@ describe("P1-1 팀 명칭 조회 매핑", () => {
       assert.equal(identity.rawLabel, raw);
       assert.equal(identity.mapped, false);
     }
+  });
+
+  it("실제 팀명과 업무 설명 형태의 resourceTeam을 구분한다", () => {
+    assert.equal(isLikelyScheduleTeamLabel("MSS BE"), true);
+    assert.equal(isLikelyScheduleTeamLabel("CBP 정산"), true);
+    assert.equal(isLikelyScheduleTeamLabel("성능, 통합 및 대응 (1MD) 예정"), false);
+    assert.equal(isLikelyScheduleTeamLabel("radar TF 위클리 - 후속 일정 확인 완료"), false);
   });
 });
 
@@ -146,6 +156,53 @@ describe("P1-1 TeamWorkstreamView", () => {
     assert.equal(view.teams[0].planningState, "검토중");
     assert.deepEqual(view.teams[0].rawLabels, ["CFE", "DFE"]);
     assert.deepEqual(view.teams[0].items.map(item => item.detail), ["공통 UI", "전시 UI"]);
+  });
+
+  it("TM-2901 업무 설명을 팀명으로 만들지 않고 PM·BE·QA·팀 미지정으로 일정순 정리한다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "배포완료",
+      jiraStatusCategory: "indeterminate",
+      planning: undefined,
+      schedules: [
+        { role: "기획", phase: "기획", resourceTeam: "PM", detail: "플래닝 및 개발 착수", start: "2026-06-29", end: "2026-06-29", status: "진행중" },
+        { role: "BE", phase: "개발", resourceTeam: "BE", detail: "개발 착수", start: "2026-06-29", end: "2026-08-11", status: "진행중" },
+        { role: "QA", phase: "QA", resourceTeam: "성능, 통합 및 대응 (1MD) 예정", detail: "성능, 통합 및 대응", start: "2026-08-07", end: "2026-08-07", status: "예정" },
+        { role: "개발", phase: "개발", resourceTeam: "radar TF 위클리 - 후속 일정 확인 완료", detail: "EOD 모니터링", start: "2026-08-11", end: "2026-08-11", status: "진행중" },
+      ],
+    });
+
+    assert.deepEqual(view.teams.map(team => team.label), ["PM", "BE", "QA", "공통"]);
+    assert.equal(view.teams.some(team => team.label.includes("위클리")), false);
+    assert.equal(view.teams.some(team => team.label.includes("성능")), false);
+  });
+
+  it("팀별 현재 단계는 최근 진행중 1건과 가장 이른 예정 1건만 시간순으로 선택한다", () => {
+    const selected = selectTeamCurrentStageItems([
+      { role: "개발", detail: "이전 개발", phase: "개발", status: "진행중", rawTeam: "BE", start: "2026-06-01", end: "2026-06-30" },
+      { role: "개발", detail: "현재 개발", phase: "개발", status: "진행중", rawTeam: "BE", start: "2026-07-01", end: "2026-08-11" },
+      { role: "QA", detail: "다음 QA", phase: "QA", status: "예정", rawTeam: "BE", start: "2026-08-12", end: "2026-08-12" },
+      { role: "Release", detail: "후속 배포", phase: "Release", status: "예정", rawTeam: "BE", start: "2026-08-20", end: "2026-08-20" },
+      { role: "개발", detail: ")", phase: "개발", status: "예정", rawTeam: "BE", start: "2026-08-13", end: "2026-08-13" },
+    ]);
+
+    assert.deepEqual(selected.map(item => item.detail), ["현재 개발", "다음 QA"]);
+  });
+
+  it("팀이 없는 Weekly 문장은 팀 목록에서 제외하고 주요 체크 사항 건수로 분리한다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "배포완료",
+      jiraStatusCategory: "indeterminate",
+      planning: undefined,
+      schedules: [
+        { role: "BE", phase: "개발", resourceTeam: "BE", detail: "API 개발", start: "2026-08-01", end: "2026-08-11", status: "진행중" },
+        { role: "개발", phase: "개발", resourceTeam: "radar TF 위클리 - 후속 일정 확인 완료", detail: "배포 후 모니터링", start: "2026-08-11", end: "2026-08-11", status: "진행중" },
+      ],
+    });
+
+    const groups = getTeamWorkstreamDisplayGroups(view.teams);
+
+    assert.deepEqual(groups.teams.map(team => team.label), ["BE"]);
+    assert.deepEqual(groups.checkItems.map(item => item.detail), ["배포 후 모니터링"]);
   });
 
   it("배포완료·개발완료가 Jira 진행 중 카테고리이면 active를 유지한다", () => {

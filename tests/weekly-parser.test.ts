@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   parseWeekly,
+  buildStableTaskId,
   parseScheduleLinesWithCtx,
   parseScheduleLineWithCtx,
   resolvePhaseWithContext,
@@ -175,6 +176,46 @@ describe("parseScheduleLinesWithCtx — 한 역할의 다중 기간", () => {
       parsed.scheduleItems.map(item => item.taskLabel),
       ["일정 산정", "실제 개발"],
     );
+  });
+
+  test("TM-2901 괄호 안 ETA 날짜는 별도 일정이 아니라 작업 설명으로 보존", () => {
+    const resourceTeam = "radar TF 위클리 - 후속 일정 확인 완료";
+    const fullDetail = "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상 8/12)";
+    const items = parseScheduleLinesWithCtx(
+      `8/11 ${fullDetail}`,
+      { parentPhase: "개발", parentText: resourceTeam },
+      2026,
+      "TM-2901",
+    );
+
+    assert.equal(items.length, 1);
+    assert.equal(items[0].startDate, "2026-08-11");
+    assert.equal(items[0].endDate, "2026-08-11");
+    assert.equal(items[0].taskLabel, fullDetail);
+    assert.equal(items[0].resourceTeam, resourceTeam);
+    assert.equal(
+      items[0].stableTaskId,
+      buildStableTaskId(
+        "TM-2901",
+        "개발",
+        resourceTeam,
+        null,
+        "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상",
+      ),
+    );
+  });
+
+  test("TM-2901 문장이 사이에 낀 8/10~8/11 기간을 하나의 일정으로 보존", () => {
+    const line = "8/10 배포직후 ~ 8/11 EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상 8/12)";
+    const items = parseScheduleLinesWithCtx(line, undefined, 2026, "TM-2901");
+
+    assert.equal(items.length, 1);
+    assert.equal(items[0].startDate, "2026-08-10");
+    assert.equal(items[0].endDate, "2026-08-11");
+    assert.equal(items[0].dateMentioned?.start, true);
+    assert.equal(items[0].dateMentioned?.end, true);
+    assert.match(items[0].taskLabel ?? "", /EOD까지 모니터링/);
+    assert.match(items[0].taskLabel ?? "", /ETA : 예상 8\/12/);
   });
 });
 

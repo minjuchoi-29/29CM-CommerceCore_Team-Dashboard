@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { compactSchedulesForDisplay, type ScheduleDisplayRow } from "../lib/schedule-display";
+import {
+  compactSchedulesForDisplay,
+  isPrimaryScheduleRange,
+  isMeaningfulScheduleHistoryRow,
+  type ScheduleDisplayRow,
+} from "../lib/schedule-display";
 
 const futureNow = new Date("2026-07-27T12:00:00+09:00").getTime();
 
@@ -104,4 +109,116 @@ test("재파싱에서 이력화된 자동 행은 현재 일정에서 제외한�
 
   assert.deepEqual(result.current.map(row => row.role), ["MSS BE"]);
   assert.deepEqual(result.history.map(row => row.role), ["BE"]);
+});
+
+test("TM-2901 유사 QA 일정은 최신 Weekly만 남기고 단독 괄호 조각은 노이즈로 이력화한다", () => {
+  const rows: ScheduleDisplayRow[] = [
+    {
+      role: "QA",
+      phase: "QA",
+      resourceTeam: "성능, 통합 및 대응 (1MD) 예정",
+      detail: "성능, 통합 및 대응 (1MD) 예정",
+      start: "2026-08-07",
+      end: "2026-08-07",
+      status: "예정",
+      source: "jira_weekly",
+      sourceWeek: "31주차",
+      lastSeenAt: "2026-08-01T00:00:00Z",
+    },
+    {
+      role: "QA",
+      phase: "QA",
+      resourceTeam: "성능, 통합 및 대응",
+      detail: "성능, 통합 및 대응",
+      start: "2026-08-02",
+      end: "2026-08-02",
+      status: "예정",
+      source: "jira_weekly",
+      sourceWeek: "33주차",
+      lastSeenAt: "2026-08-11T00:00:00Z",
+    },
+    {
+      role: "개발",
+      phase: "개발",
+      resourceTeam: "radar TF 위클리 - 후속 일정 확인 완료",
+      detail: "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단",
+      start: "2026-08-11",
+      end: "2026-08-11",
+      status: "진행중",
+      source: "jira_weekly",
+      sourceWeek: "33주차",
+      lastSeenAt: "2026-08-11T00:00:00Z",
+    },
+    {
+      role: "개발",
+      phase: "개발",
+      resourceTeam: "radar TF 위클리 - 후속 일정 확인 완료",
+      detail: ")",
+      start: "2026-08-12",
+      end: "2026-08-12",
+      status: "예정",
+      source: "jira_weekly",
+      sourceWeek: "33주차",
+      lastSeenAt: "2026-08-11T00:00:01Z",
+    },
+  ];
+
+  const result = compactSchedulesForDisplay(rows, new Date("2026-08-11T12:00:00+09:00").getTime());
+
+  assert.deepEqual(result.current.map(row => row.detail), [
+    "성능, 통합 및 대응",
+    "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단",
+  ]);
+  assert.equal(result.supersededCount, 1);
+  assert.equal(result.noiseCount, 1);
+});
+
+test("이력 펼침에서는 자동 파서의 단독 문장부호만 숨기고 수동 일정은 보호한다", () => {
+  assert.equal(isMeaningfulScheduleHistoryRow({
+    role: "개발",
+    detail: ")",
+    source: "jira_weekly",
+  }), false);
+  assert.equal(isMeaningfulScheduleHistoryRow({
+    role: "개발",
+    detail: "EOD까지 모니터링",
+    source: "jira_weekly",
+  }), true);
+  assert.equal(isMeaningfulScheduleHistoryRow({
+    role: "수동 메모",
+    detail: ")",
+    source: "manual",
+  }), true);
+  assert.equal(isMeaningfulScheduleHistoryRow({
+    role: "BE",
+    phase: "개발",
+    detail: ")",
+    start: "2026-06-29",
+    end: "2026-08-02",
+    source: "jira_weekly",
+  }), true);
+  assert.equal(isPrimaryScheduleRange({
+    role: "BE",
+    phase: "개발",
+    detail: ")",
+    start: "2026-06-29",
+    end: "2026-08-02",
+    source: "jira_weekly",
+  }), true);
+  assert.equal(isPrimaryScheduleRange({
+    role: "기획",
+    phase: "기획",
+    detail: "요구사항 리뷰 일정",
+    start: "2026-06-29",
+    end: "2026-08-02",
+    source: "jira_weekly",
+  }), false);
+  assert.equal(isPrimaryScheduleRange({
+    role: "BE",
+    phase: "개발",
+    detail: "개발 기간",
+    start: "2026-08-10",
+    end: "2026-08-01",
+    source: "jira_weekly",
+  }), false);
 });

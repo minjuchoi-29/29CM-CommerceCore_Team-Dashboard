@@ -34,7 +34,11 @@ import {
 } from "@/lib/priorities";
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
 import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/search-target";
-import { compactSchedulesForDisplay } from "@/lib/schedule-display";
+import {
+  compactSchedulesForDisplay,
+  isMeaningfulScheduleHistoryRow,
+  isPrimaryScheduleRange,
+} from "@/lib/schedule-display";
 import { selectOpenWeeklyNotesForDisplay } from "@/lib/weekly-note-display";
 import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
@@ -42,6 +46,7 @@ import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import {
   buildTeamWorkstreamView,
   getTeamWorkstreamSignals,
+  isLikelyScheduleTeamLabel,
   resolveTeamIdentity,
 } from "@/lib/team-workstreams";
 import { getWeeklyUpdateDisplay } from "@/lib/weekly-update-display";
@@ -544,6 +549,206 @@ const PLACEHOLDER_SEVERITY_STYLE = {
   amber: { dot: "#f59e0b", color: "#fbbf24", bg: "rgba(245,158,11,0.10)",  border: "rgba(251,191,36,0.4)" },
   gray:  { dot: "#64748b", color: "#94a3b8", bg: "rgba(100,116,139,0.08)", border: "rgba(100,116,139,0.3)" },
 } as const;
+
+const FOCUS_SCHEDULE_STATUS_STYLE: Record<RoleSchedule["status"], { color: string; background: string; border: string }> = {
+  완료: { color: "#24735d", background: "#eaf6f1", border: "#b9dfd0" },
+  진행중: { color: "#315b91", background: "#eaf1fa", border: "#bdd0e8" },
+  예정: { color: "#936520", background: "#fff5e5", border: "#e8ca98" },
+  미정: { color: "#68748a", background: "#f3f5f8", border: "#d8dee8" },
+  확인필요: { color: "#9b4c3f", background: "#fff0ed", border: "#e8c2ba" },
+};
+
+const FOCUS_SCHEDULE_PHASE_STYLE: Record<NonNullable<RoleSchedule["phase"]>, { color: string; background: string }> = {
+  "Kick-Off": { color: "#4338ca", background: "#eef2ff" },
+  "기획": { color: "#4338ca", background: "#eef2ff" },
+  "디자인": { color: "#7e22ce", background: "#f7edff" },
+  "개발": { color: "#1d4ed8", background: "#eaf1fa" },
+  "QA": { color: "#24735d", background: "#eaf6f1" },
+  "Release": { color: "#b45309", background: "#fff5e5" },
+  "Launch": { color: "#047857", background: "#eaf6f1" },
+  "기타": { color: "#536078", background: "#f3f5f8" },
+};
+
+type FocusScheduleDateMeta = {
+  kind: "range" | "point" | "open" | "undated";
+  label: string;
+  start?: string;
+  end?: string;
+};
+
+function focusScheduleDateMeta(row: RoleSchedule): FocusScheduleDateMeta {
+  const start = row.start ? formatDateWithDay(row.start) : "";
+  const end = row.end ? formatDateWithDay(row.end) : "";
+  if (start && end && row.start !== row.end) {
+    return { kind: "range", label: "기간", start, end };
+  }
+  if (start && !row.end) {
+    return { kind: "open", label: "기간", start, end: "미정" };
+  }
+  if (!start && end) {
+    return { kind: "point", label: "종료일", end };
+  }
+  if (start || end) {
+    return { kind: "point", label: "기준일", start: start || end };
+  }
+  return { kind: "undated", label: "날짜 미정" };
+}
+
+function meaningfulScheduleText(value?: string | null): string | null {
+  const text = value?.trim() ?? "";
+  if (!text || /^[\s•·\-–—,./:;()[\]{}]+$/.test(text)) return null;
+  return text;
+}
+
+function focusScheduleTask(row: RoleSchedule): string {
+  const resource = row.resourceTeam?.trim() ?? "";
+  const resourceIsTeam = resource ? isLikelyScheduleTeamLabel(resource) : false;
+  const detail = meaningfulScheduleText(row.detail);
+  if (detail) return detail;
+  if (!resourceIsTeam) {
+    const resourceText = meaningfulScheduleText(resource);
+    if (resourceText) return resourceText;
+  }
+  const role = meaningfulScheduleText(row.role);
+  if (role && !isLikelyScheduleTeamLabel(role)) return role;
+  const phase = row.phase ?? inferPhase(row.role) ?? "기타";
+  return `${PHASE_LABEL[phase]} 일정`;
+}
+
+function focusScheduleTeam(row: RoleSchedule): string | null {
+  const resource = row.resourceTeam?.trim();
+  if (!resource || !isLikelyScheduleTeamLabel(resource)) return null;
+  return resolveTeamIdentity(resource).label;
+}
+
+function FocusScheduleTimeline({ roles, ticketDone }: {
+  roles: RoleSchedule[];
+  ticketDone: boolean;
+}) {
+  const [showHistory, setShowHistory] = useState(false);
+  const qualified = roles.filter(row => !isCleanupCandidate(row).isCleanup);
+  const compacted = compactSchedulesForDisplay(
+    qualified.map(row => ({ ...row, phase: row.phase ?? inferPhase(row.role) })),
+    TODAY_MS,
+  );
+  const visibleHistory = compacted.history.filter(isMeaningfulScheduleHistoryRow);
+  // 완료된 과거 일정이라도 시작·종료가 있는 기간은 프로젝트 전체 흐름을 설명하므로
+  // 기본 화면에 유지한다. 단일 과거 이벤트만 추가 이력으로 접는다.
+  const promotedRanges = visibleHistory.filter(isPrimaryScheduleRange);
+  const promotedRangeSet = new Set(promotedRanges);
+  const expandableHistory = visibleHistory.filter(row => !promotedRangeSet.has(row));
+  const historyRows = new Set(expandableHistory);
+  const includeHistory = ticketDone || showHistory;
+  const primaryRows = [...compacted.current, ...promotedRanges];
+  const visibleRows = (includeHistory
+    ? [...primaryRows, ...expandableHistory]
+    : primaryRows
+  ).sort((a, b) => {
+    const dateDelta = (a.start || a.end || "9999-12-31").localeCompare(b.start || b.end || "9999-12-31");
+    if (dateDelta !== 0) return dateDelta;
+    const aPhase = a.phase ?? inferPhase(a.role) ?? "기타";
+    const bPhase = b.phase ?? inferPhase(b.role) ?? "기타";
+    return (PHASE_ORDER[aPhase] ?? 99) - (PHASE_ORDER[bPhase] ?? 99);
+  });
+
+  return (
+    <div className="overflow-hidden rounded-xl" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
+      <div className="flex items-center justify-between gap-3 px-3 py-2" style={{ background: "var(--bg-overlay)", borderBottom: "1px solid var(--border)" }}>
+        <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>
+          주요 {primaryRows.length}건
+          {expandableHistory.length > 0 ? ` · 추가 이력 ${expandableHistory.length}건` : ""}
+        </p>
+        {!ticketDone && expandableHistory.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowHistory(value => !value)}
+            className="rounded-md px-2 py-1 text-[10.5px] font-medium transition-colors"
+            style={{ color: "#315b91", background: "#eaf1fa" }}
+          >
+            {showHistory ? "현재 일정만" : "이력 함께 보기"}
+          </button>
+        ) : null}
+      </div>
+
+      {visibleRows.length > 0 ? (
+        <div className="divide-y" style={{ borderColor: "var(--border)" }}>
+          {visibleRows.map((row, index) => {
+            const phase = row.phase ?? inferPhase(row.role) ?? "기타";
+            const phaseMeta = FOCUS_SCHEDULE_PHASE_STYLE[phase];
+            const statusMeta = FOCUS_SCHEDULE_STATUS_STYLE[row.status];
+            const team = focusScheduleTeam(row);
+            const isHistory = historyRows.has(row);
+            const dateMeta = focusScheduleDateMeta(row);
+            return (
+              <article
+                key={row.mergeKey ?? `${row.role}-${row.start}-${row.end}-${index}`}
+                className="grid grid-cols-[112px_12px_minmax(0,1fr)] gap-2.5 px-3 py-3 sm:grid-cols-[132px_12px_minmax(0,1fr)]"
+                style={{ opacity: isHistory ? 0.58 : 1 }}
+              >
+                <div className="pt-0.5 text-right">
+                  <span
+                    className="inline-flex rounded px-1.5 py-0.5 text-[9px] font-semibold"
+                    style={{ color: "var(--text-muted)", background: "var(--bg-item)" }}
+                  >
+                    {dateMeta.label}
+                  </span>
+                  {dateMeta.kind === "range" || dateMeta.kind === "open" ? (
+                    <div className="mt-1.5 space-y-1 text-[10.5px] leading-snug">
+                      <p className="flex items-center justify-end gap-1.5">
+                        <span style={{ color: "var(--text-muted)" }}>시작</span>
+                        <span className="font-semibold" style={{ color: "var(--text-secondary)" }}>{dateMeta.start}</span>
+                      </p>
+                      <p className="flex items-center justify-end gap-1.5">
+                        <span style={{ color: "var(--text-muted)" }}>종료</span>
+                        <span className="font-semibold" style={{ color: dateMeta.end === "미정" ? "#936520" : "var(--text-secondary)" }}>{dateMeta.end}</span>
+                      </p>
+                    </div>
+                  ) : dateMeta.kind === "point" ? (
+                    <p className="mt-1.5 text-[11px] font-semibold leading-snug" style={{ color: "var(--text-secondary)" }}>
+                      {dateMeta.start || dateMeta.end}
+                    </p>
+                  ) : null}
+                  {isHistory ? <p className="mt-1 text-[9.5px]" style={{ color: "var(--text-muted)" }}>이력</p> : null}
+                </div>
+                <div className="relative flex justify-center">
+                  <span className="absolute bottom-[-12px] top-3 w-px" style={{ background: "var(--border-2)" }} />
+                  <span
+                    className="relative z-[1] mt-1 h-2.5 w-2.5 rounded-full border-2"
+                    style={{ background: phaseMeta.color, borderColor: "var(--bg-canvas)" }}
+                  />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="rounded px-1.5 py-0.5 text-[10px] font-semibold" style={{ color: phaseMeta.color, background: phaseMeta.background }}>
+                      {PHASE_LABEL[phase]}
+                    </span>
+                    {team ? (
+                      <span className="rounded px-1.5 py-0.5 text-[10px] font-medium" style={{ color: "var(--text-secondary)", background: "var(--bg-item)" }}>
+                        {team}
+                      </span>
+                    ) : null}
+                    <span className="rounded border px-1.5 py-0.5 text-[10px] font-semibold" style={{ color: statusMeta.color, background: statusMeta.background, borderColor: statusMeta.border }}>
+                      {row.status}
+                    </span>
+                  </div>
+                  <p className="mt-1.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed" style={{ color: "var(--text-primary)" }}>
+                    {focusScheduleTask(row)}
+                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px]" style={{ color: "var(--text-muted)" }}>
+                    {row.person && row.person !== "-" ? <span>담당 {row.person}</span> : null}
+                    {row.source === "jira_weekly" ? <span>Weekly{row.sourceWeek ? ` · ${row.sourceWeek}` : ""}</span> : <span>수동 일정</span>}
+                  </div>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="px-3 py-5 text-center text-[11px]" style={{ color: "var(--text-muted)" }}>표시할 실행 일정이 없습니다.</p>
+      )}
+    </div>
+  );
+}
 
 function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, ticketDone, ticketActive, ticketStatus, onEditRow, highlightRowKey }: {
   roles?: RoleSchedule[];
@@ -9532,33 +9737,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                           : undefined,
                       }}
                     >
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--text-muted)" }}>
-                          세부 일정
-                        </p>
+                      <div className="mb-2 flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                            세부 일정
+                          </p>
+                          <p className="mt-0.5 text-[10.5px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                            실행 일정을 날짜순으로 확인합니다. 과거·중복 일정은 이력으로 정리됩니다.
+                          </p>
+                        </div>
                         {!editMode && fmRoles.length > 0 && (
                           <button
                             onClick={() => { setEditRows(fmRoles.map(r => ({ ...r }))); setEditMode(true); setEditError(null); }}
-                            className="text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+                            className="shrink-0 text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
                           >편집</button>
                         )}
                       </div>
-                      {/* PR #39 — Weekly Sync Visibility: Focus Mode 의 trace summary */}
-                      <WeeklySyncSummary meta={weeklySyncMeta[selected.key]} />
                       {fmRoles.length > 0 ? (
-                        <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
-                          <GanttChart
-                            roles={fmRoles}
-                            extendedView={false}
-                            forceShowPastDone={false}
-                            fitToContent={true}
-                            ticketDone={fmWorkstreamView.lifecycle === "recently_completed" || fmWorkstreamView.lifecycle === "completed"}
-                            ticketActive={fmWorkstreamView.lifecycle === "active"}
-                            ticketStatus={selected.status}
-                            onEditRow={undefined}
-                            highlightRowKey={highlightedScheduleRow}
-                          />
-                        </div>
+                        <FocusScheduleTimeline
+                          roles={fmRoles}
+                          ticketDone={fmWorkstreamView.lifecycle === "recently_completed" || fmWorkstreamView.lifecycle === "completed"}
+                        />
                       ) : (
                         <p className="text-xs italic px-1" style={{ color: "var(--text-subtle)" }}>등록된 일정이 없습니다</p>
                       )}

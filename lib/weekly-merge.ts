@@ -254,6 +254,7 @@ export function mergeWeeklySync(
       // status=확인필요는 파싱 실패로 간주 → 기존 status 보존
       const newStatus: ScheduleStatus = item.status !== "확인필요" ? item.status : existing.status;
       const newPerson = item.assignee ?? existing.person;
+      const newDetail = item.taskLabel ?? existing.detail;
 
       // idempotent 판정: 동일 주차 + 동일 값이면 lastSeenAt만 갱신
       const sameWeek   = existing.sourceWeek === parsed.sourceWeek;
@@ -261,8 +262,9 @@ export function mergeWeeklySync(
       const sameEnd    = newEnd    === existing.end;
       const sameStatus = newStatus === existing.status;
       const samePerson = newPerson === existing.person;
+      const sameDetail = newDetail === existing.detail;
 
-      if (sameWeek && sameStart && sameEnd && sameStatus && samePerson) {
+      if (sameWeek && sameStart && sameEnd && sameStatus && samePerson && sameDetail) {
         scheduleMap.set(key, {
           ...existing,
           lastSeenAt: nowIso,
@@ -328,7 +330,7 @@ export function mergeWeeklySync(
           end:    newEnd,
           status: toStorageStatus(newStatus),
           person: newPerson,
-          detail: item.taskLabel ?? existing.detail,
+          detail: newDetail,
           sourceWeek: parsed.sourceWeek,
           sourceUpdatedAt: nowIso,
           lastSeenAt: nowIso,

@@ -32,6 +32,24 @@ function normalize(value?: string | null): string {
     .replace(/\s+/g, " ");
 }
 
+function normalizeTaskIdentity(value?: string | null): string {
+  return normalize(value)
+    .replace(/\([^)]*(?:\d+(?:\.\d+)?\s*md|예정|진행\s*중|완료)[^)]*\)/gi, " ")
+    .replace(/(?:^|\s)(?:예정|진행\s*중|완료)(?=$|\s)/gi, " ")
+    .replace(/^[\s•·\-–—]+/, "")
+    .replace(/[\s,./:;()[\]{}]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isLikelyTaskResource(resource: string, taskIdentity: string): boolean {
+  if (!resource || !taskIdentity) return false;
+  const normalizedResource = normalizeTaskIdentity(resource);
+  return normalizedResource === taskIdentity
+    || normalizedResource.includes(taskIdentity)
+    || taskIdentity.includes(normalizedResource);
+}
+
 function weekNumber(sourceWeek?: string): number {
   const match = sourceWeek?.match(/\d+/);
   return match ? Number(match[0]) : -1;
@@ -62,10 +80,12 @@ function weeklyIdentity(row: ScheduleDisplayRow): string {
   const phase = normalize(row.phase);
   if (MILESTONE_PHASES.has(row.phase ?? "")) return `milestone:${phase}`;
 
-  const detail = normalize(row.detail);
-  const role = normalize(row.role);
+  const detail = normalizeTaskIdentity(row.detail);
+  const role = normalizeTaskIdentity(row.role);
   const person = normalize(row.person);
-  const resource = normalize(row.resourceTeam);
+  const rawResource = normalize(row.resourceTeam);
+  const taskIdentity = detail || role;
+  const resource = isLikelyTaskResource(rawResource, taskIdentity) ? "" : rawResource;
   return `work:${phase}|${detail || role}|${person}|${resource}`;
 }
 
@@ -92,9 +112,35 @@ function hasInvalidDate(row: ScheduleDisplayRow): boolean {
 
 function isCoordinationNoise(row: ScheduleDisplayRow): boolean {
   if (row.source !== "jira_weekly") return false;
-  const text = `${row.role} ${row.detail ?? ""}`;
+  const primaryText = row.detail?.trim() || row.role.trim();
+  if (!primaryText || /^[\s•·\-–—,./:;()[\]{}]+$/.test(primaryText)) return true;
+  const text = primaryText;
   return /(논의|회의|미팅|sync|리뷰)/i.test(text)
     || (row.phase === "QA" && /통합검수/.test(text) && /(정책|기획|요구사항)/.test(text));
+}
+
+/**
+ * 이력 펼침에서 사람이 읽을 수 없는 파서 조각만 숨긴다.
+ * 저장값은 유지하고, 수동 일정은 문구와 관계없이 항상 보호한다.
+ */
+export function isMeaningfulScheduleHistoryRow(row: ScheduleDisplayRow): boolean {
+  if (row.source !== "jira_weekly") return true;
+  const primaryText = row.detail?.trim() || row.role.trim();
+  if (primaryText && !/^[\s•·\-–—,./:;()[\]{}]+$/.test(primaryText)) return true;
+  // 구 파서가 detail을 문장부호 조각으로 남겼더라도, 시작과 종료가 다른 기간은
+  // 일정 자체가 의미 있으므로 숨기지 않는다. 단일 ETA 조각은 계속 제외한다.
+  return !!row.start && !!row.end && row.start !== row.end;
+}
+
+export function hasScheduleDateRange(row: ScheduleDisplayRow): boolean {
+  return !!row.start && !!row.end && row.start !== row.end;
+}
+
+export function isPrimaryScheduleRange(row: ScheduleDisplayRow): boolean {
+  if (!hasScheduleDateRange(row) || hasInvalidDate(row)) return false;
+  const primaryText = row.detail?.trim() || row.role.trim();
+  const isParserFragment = !primaryText || /^[\s•·\-–—,./:;()[\]{}]+$/.test(primaryText);
+  return isParserFragment || !isCoordinationNoise(row);
 }
 
 /**
@@ -114,6 +160,9 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
   rows.forEach((row, index) => {
     if (row.source === "jira_weekly" && row.archivedAt) return;
     if (row.source !== "jira_weekly") return;
+    // 노이즈 행이 더 최신으로 판단돼 의미 있는 실제 작업을 밀어내지 않도록
+    // dedupe index에서도 처음부터 제외한다.
+    if (isCoordinationNoise(row)) return;
     const identity = weeklyIdentity(row);
     const previousIndex = latestWeeklyIndex.get(identity);
     if (previousIndex === undefined || isNewer(row, rows[previousIndex])) {

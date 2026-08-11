@@ -17,7 +17,12 @@ import {
   mergeWeeklySync, canAutoApplyToRow, getRowAllKeys, getRowKey,
   type ExtendedSchedule,
 } from "../lib/weekly-merge";
-import { parseWeekly } from "../lib/weekly-parser";
+import {
+  buildStableTaskId,
+  parseScheduleLinesWithCtx,
+  parseWeekly,
+} from "../lib/weekly-parser";
+import type { ParsedWeekly } from "../lib/weekly-types";
 
 // ─── canAutoApplyToRow ───────────────────────────────────────
 
@@ -246,6 +251,126 @@ describe("P0 최신화 정책", () => {
     assert.equal(archived?.archiveReason, "parser_reclassified");
     assert.ok(archived?.archivedAt);
     assert.equal(manual?.archivedAt, undefined);
+  });
+
+  test("TM-2901 ETA 날짜 보완은 기존 자동 행을 중복 생성하지 않고 전체 설명으로 갱신", () => {
+    const ticketKey = "TM-2901";
+    const resourceTeam = "radar TF 위클리 - 후속 일정 확인 완료";
+    const truncatedDetail = "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상";
+    const fullDetail = `${truncatedDetail} 8/12)`;
+    const item = parseScheduleLinesWithCtx(
+      `8/11 ${fullDetail}`,
+      { parentPhase: "개발", parentText: resourceTeam },
+      2026,
+      ticketKey,
+    )[0];
+    assert.ok(item);
+
+    const stableTaskId = buildStableTaskId(
+      ticketKey,
+      "개발",
+      resourceTeam,
+      null,
+      truncatedDetail,
+    );
+    const existing: ExtendedSchedule = {
+      role: resourceTeam,
+      detail: truncatedDetail,
+      person: "",
+      start: "2026-08-11",
+      end: "2026-08-11",
+      status: "진행중",
+      source: "jira_weekly",
+      sourceWeek: "33주차",
+      phase: "개발",
+      resourceTeam,
+      stableTaskId,
+    };
+    const parsed: ParsedWeekly = {
+      ticketKey,
+      sourceWeek: "33주차",
+      sourceText: item.rawText,
+      parsedAt: BASE_DATE.toISOString(),
+      progressItems: [],
+      scheduleItems: [item],
+      risks: [],
+      nextActions: [],
+      noIssues: false,
+    };
+
+    const result = mergeWeeklySync(ticketKey, parsed, [existing], [], BASE_DATE);
+
+    assert.equal(result.updatedSchedules.length, 1);
+    assert.equal(result.updatedSchedules[0].detail, fullDetail);
+    assert.equal(result.updatedSchedules[0].stableTaskId, stableTaskId);
+    assert.equal(result.updatedSchedules[0].archivedAt, undefined);
+  });
+
+  test("TM-2901 8/10·8/11 분리 행은 하나의 기간으로 병합하고 이전 조각을 이력화", () => {
+    const ticketKey = "TM-2901";
+    const sourceText = "8/10 배포직후 ~ 8/11 EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상 8/12)";
+    const item = parseScheduleLinesWithCtx(sourceText, undefined, 2026, ticketKey)[0];
+    assert.ok(item);
+
+    const releaseKey = buildStableTaskId(ticketKey, "Release", null, "2026-08-10", null);
+    const splitKey = buildStableTaskId(
+      ticketKey,
+      "개발",
+      null,
+      null,
+      "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상",
+    );
+    const existing: ExtendedSchedule[] = [
+      {
+        role: "배포일",
+        detail: "배포직후 ~",
+        person: "",
+        start: "2026-08-10",
+        end: "2026-08-10",
+        status: "예정",
+        source: "jira_weekly",
+        sourceWeek: "33주차",
+        phase: "Release",
+        resourceTeam: null,
+        stableTaskId: releaseKey,
+      },
+      {
+        role: "개발",
+        detail: "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상",
+        person: "",
+        start: "2026-08-11",
+        end: "2026-08-11",
+        status: "진행중",
+        source: "jira_weekly",
+        sourceWeek: "33주차",
+        phase: "개발",
+        resourceTeam: null,
+        stableTaskId: splitKey,
+      },
+    ];
+    const parsed: ParsedWeekly = {
+      ticketKey,
+      sourceWeek: "33주차",
+      sourceText,
+      parsedAt: BASE_DATE.toISOString(),
+      progressItems: [],
+      scheduleItems: [item],
+      risks: [],
+      nextActions: [],
+      noIssues: false,
+    };
+
+    const result = mergeWeeklySync(ticketKey, parsed, existing, [], BASE_DATE);
+    const active = result.updatedSchedules.filter(row => !row.archivedAt);
+    const archived = result.updatedSchedules.filter(row => row.archivedAt);
+
+    assert.equal(active.length, 1);
+    assert.equal(active[0].start, "2026-08-10");
+    assert.equal(active[0].end, "2026-08-11");
+    assert.match(active[0].detail ?? "", /ETA : 예상 8\/12/);
+    assert.equal(archived.length, 1);
+    assert.equal(archived[0].stableTaskId, splitKey);
+    assert.equal(archived[0].archiveReason, "parser_reclassified");
   });
 });
 

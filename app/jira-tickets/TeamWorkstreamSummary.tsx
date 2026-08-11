@@ -1,7 +1,9 @@
-import type {
-  TeamWorkItem,
-  TeamWorkstream,
-  TeamWorkstreamView,
+import {
+  getTeamWorkstreamDisplayGroups,
+  selectTeamCurrentStageItems,
+  type TeamWorkItem,
+  type TeamWorkstream,
+  type TeamWorkstreamView,
 } from "@/lib/team-workstreams";
 
 type PlanningNote = {
@@ -25,7 +27,7 @@ const LIFECYCLE_META = {
   },
   active: {
     title: "팀별 현재 단계",
-    description: "Weekly에서 읽은 실제 일정의 팀·단계·상태를 함께 보여줍니다.",
+    description: "팀별 현재 작업과 다음 작업만 요약합니다. 전체 기간은 세부 일정에서 확인합니다.",
     badge: "진행 중",
     accent: "#315b91",
   },
@@ -110,13 +112,12 @@ function WorkItemRow({ item }: { item: TeamWorkItem }) {
 
 function TeamRow({ team, planning }: { team: TeamWorkstream; planning: boolean }) {
   const alias = rawAliasLabel(team);
-  const visibleItems = team.items.slice(0, 3);
-  const hiddenItems = team.items.slice(3);
+  const visibleItems = planning ? [] : selectTeamCurrentStageItems(team.items);
   return (
     <div className="grid gap-2 border-t py-2.5 first:border-t-0 md:grid-cols-[100px_minmax(0,1fr)]" style={{ borderColor: "var(--border)" }}>
       <div>
         <p className="text-[12px] font-semibold" style={{ color: "var(--text-primary)" }}>{teamLabel(team)}</p>
-        {alias ? <p className="mt-0.5 text-[9.5px] leading-snug" style={{ color: "var(--text-muted)" }}>원문 {alias}</p> : null}
+        {planning && alias ? <p className="mt-0.5 text-[9.5px] leading-snug" style={{ color: "var(--text-muted)" }}>원문 {alias}</p> : null}
       </div>
       <div className="min-w-0">
         {planning ? (
@@ -125,19 +126,9 @@ function TeamRow({ team, planning }: { team: TeamWorkstream; planning: boolean }
             <span className="text-[10px]" style={{ color: "var(--text-muted)" }}>팀별 플래닝 상태</span>
           </div>
         ) : team.items.length > 0 ? (
-          <>
-            {visibleItems.map((item, index) => <WorkItemRow key={`${item.role}-${item.start}-${item.end}-${index}`} item={item} />)}
-            {hiddenItems.length > 0 ? (
-              <details className="border-t pt-2" style={{ borderColor: "var(--border)" }}>
-                <summary className="cursor-pointer text-[10.5px] font-medium" style={{ color: "#315b91" }}>
-                  추가 일정 {hiddenItems.length}개 보기
-                </summary>
-                <div className="mt-1">
-                  {hiddenItems.map((item, index) => <WorkItemRow key={`${item.role}-${item.start}-${item.end}-hidden-${index}`} item={item} />)}
-                </div>
-              </details>
-            ) : null}
-          </>
+          visibleItems.length > 0
+            ? visibleItems.map((item, index) => <WorkItemRow key={`${item.role}-${item.start}-${item.end}-${index}`} item={item} />)
+            : <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>현재 표시할 실행 일정이 없습니다.</p>
         ) : (
           <p className="text-[11px]" style={{ color: "var(--text-muted)" }}>등록된 작업별 일정이 없습니다.</p>
         )}
@@ -154,6 +145,11 @@ export default function TeamWorkstreamSummary({
   const meta = LIFECYCLE_META[view.lifecycle];
   const isPlanning = view.lifecycle === "planning";
   const recentNotes = planningNotes.slice(-2).reverse();
+  const displayGroups = isPlanning
+    ? { teams: view.teams, checkItems: [] }
+    : getTeamWorkstreamDisplayGroups(view.teams);
+  const displayTeams = displayGroups.teams;
+  const teamCountLabel = `${displayTeams.length}개 팀`;
 
   return (
     <section
@@ -202,17 +198,33 @@ export default function TeamWorkstreamSummary({
                 ? "완료·후속 일정"
                 : "팀별 실행 상태"}
           </p>
-          <span className="text-[9.5px]" style={{ color: "var(--text-muted)" }}>{view.teams.length}개 팀</span>
+          <span className="text-[9.5px]" style={{ color: "var(--text-muted)" }}>{teamCountLabel}</span>
         </div>
-        {view.teams.length > 0 ? (
+        {displayTeams.length > 0 ? (
           <div>
-            {view.teams.map(team => <TeamRow key={team.key} team={team} planning={isPlanning} />)}
+            {displayTeams.map(team => <TeamRow key={team.key} team={team} planning={isPlanning} />)}
           </div>
         ) : (
           <div className="rounded-lg border px-3 py-3 text-[11px]" style={{ borderColor: "var(--border)", background: "var(--bg-overlay)", color: "var(--text-muted)" }}>
-            {isPlanning ? "필요한 팀이 아직 선택되지 않았습니다." : "표시할 작업별 일정이 없습니다."}
+            {isPlanning ? "필요한 팀이 아직 선택되지 않았습니다." : "팀이 명시된 실행 일정이 없습니다."}
           </div>
         )}
+        {!isPlanning && displayGroups.checkItems.length > 0 ? (
+          <div
+            className="mt-2 flex items-center justify-between gap-3 rounded-lg border px-3 py-2"
+            style={{ borderColor: "var(--border)", background: "var(--bg-overlay)" }}
+          >
+            <div>
+              <p className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>주요 체크 사항</p>
+              <p className="mt-0.5 text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
+                팀이 명시되지 않은 운영 내용은 최근 Weekly 요약과 세부 일정에서 확인합니다.
+              </p>
+            </div>
+            <span className="shrink-0 text-[10px] font-semibold" style={{ color: "#315b91" }}>
+              {displayGroups.checkItems.length}건
+            </span>
+          </div>
+        ) : null}
       </div>
 
       {isPlanning && recentNotes.length > 0 ? (

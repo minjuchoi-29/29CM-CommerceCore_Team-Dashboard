@@ -73,6 +73,11 @@ export type TeamWorkstreamSignal = {
   status: string;
 };
 
+export type TeamWorkstreamDisplayGroups = {
+  teams: TeamWorkstream[];
+  checkItems: TeamWorkItem[];
+};
+
 type BuildTeamWorkstreamInput = {
   jiraStatus: string;
   jiraStatusCategory?: JiraStatusCategory;
@@ -153,14 +158,34 @@ export function resolveTeamIdentity(rawValue: string): TeamIdentity {
   };
 }
 
-function identityFromSchedule(row: WorkstreamSchedule): TeamIdentity {
+const TEAM_RESOURCE_HINT = /(?:^|[\s/_-])(be|fe|qa|qe|pm|pd|cfe|dfe|sp|pp|mobile|app|design|pricing|purchase|mss|cbp|sotatek)(?:$|[\s/_-])|(?:팀|메가존|정산)/i;
+const TASK_RESOURCE_HINT = /(eta|예정|진행\s*중|완료|착수|대응|연동|모니터링|위클리|weekly|일정|작업|성능|통합|확인)/i;
+
+/**
+ * parser의 자유형 resourceTeam 중 실제 팀처럼 보이는 값만 팀 축으로 사용한다.
+ * 계획 화면의 requiredTeams 직접 입력값에는 적용하지 않으므로 수동 팀명은 그대로 보호된다.
+ */
+export function isLikelyScheduleTeamLabel(rawValue: string): boolean {
+  const value = rawValue.trim();
+  if (!value) return false;
+  if (resolveTeamIdentity(value).mapped) return true;
+  if (value.length > 32 || value.split(/\s+/).length > 5) return false;
+  if (TASK_RESOURCE_HINT.test(value) || /[→]|\([^)]*\d/.test(value)) return false;
+  return TEAM_RESOURCE_HINT.test(value);
+}
+
+function identityFromSchedule(row: WorkstreamSchedule, phase: string): TeamIdentity | null {
   const explicit = row.resourceTeam?.trim();
-  if (explicit) return resolveTeamIdentity(explicit);
+  if (explicit && isLikelyScheduleTeamLabel(explicit)) return resolveTeamIdentity(explicit);
 
   // resourceTeam이 없는 legacy row는 role 전체가 합의된 alias일 때만 팀으로 해석한다.
   // 작업명처럼 보이는 임의 문자열을 팀 이름으로 오인하지 않는다.
   const roleIdentity = resolveTeamIdentity(row.role);
-  return roleIdentity.mapped ? roleIdentity : resolveTeamIdentity("공통");
+  if (roleIdentity.mapped) return roleIdentity;
+  const phaseIdentity = resolveTeamIdentity(phase);
+  return phaseIdentity.mapped && phase !== "기타"
+    ? phaseIdentity
+    : resolveTeamIdentity("공통");
 }
 
 function inferPhase(row: WorkstreamSchedule): string {
@@ -227,7 +252,8 @@ function addScheduleItem(teams: Map<string, TeamWorkstream>, row: WorkstreamSche
   const phase = inferPhase(row);
   // 마일스톤은 Gantt에서 확인하며, 실행 팀이 아니므로 팀별 현재 단계 집계에서는 제외한다.
   if (MILESTONE_PHASES.has(phase)) return;
-  const identity = identityFromSchedule(row);
+  const identity = identityFromSchedule(row, phase);
+  if (!identity) return;
   const existing = teams.get(identity.key) ?? {
     key: identity.key,
     label: identity.label,
@@ -248,6 +274,72 @@ function addScheduleItem(teams: Map<string, TeamWorkstream>, row: WorkstreamSche
     rawTeam: identity.rawLabel,
   });
   teams.set(identity.key, existing);
+}
+
+const CURRENT_STAGE_STATUSES = new Set(["진행중", "확인필요", "지연", "보류"]);
+
+function stageItemDate(item: TeamWorkItem): string {
+  return item.start || item.end || "9999-12-31";
+}
+
+function compareStageItems(a: TeamWorkItem, b: TeamWorkItem): number {
+  return stageItemDate(a).localeCompare(stageItemDate(b), "ko-KR")
+    || (a.end || "9999-12-31").localeCompare(b.end || "9999-12-31", "ko-KR")
+    || a.phase.localeCompare(b.phase, "ko-KR")
+    || a.detail.localeCompare(b.detail, "ko-KR");
+}
+
+function isMeaningfulStageItem(item: TeamWorkItem): boolean {
+  const detail = item.detail.trim();
+  if (!detail || /^[\s•·\-–—,./:;()[\]{}]+$/.test(detail)) return false;
+  return !/(위클리|weekly).*(후속|일정).*(확인|완료)/i.test(detail);
+}
+
+/**
+ * 팀별 현재 단계에는 전체 일정 대신 현재 작업 1건과 다음 작업 1건만 노출한다.
+ * 데이터는 변경하지 않고 화면용으로만 선택한다.
+ */
+export function selectTeamCurrentStageItems(
+  items: TeamWorkItem[],
+  limit = 2,
+): TeamWorkItem[] {
+  if (limit <= 0) return [];
+  const ordered = items.filter(isMeaningfulStageItem).sort(compareStageItems);
+  if (ordered.length === 0) return [];
+
+  const current = ordered.filter(item => CURRENT_STAGE_STATUSES.has(item.status)).at(-1);
+  const planned = ordered.filter(item => item.status === "예정");
+  const currentDate = current ? stageItemDate(current) : "";
+  const next = planned.find(item => !current || stageItemDate(item) >= currentDate)
+    ?? planned.at(-1);
+  const latestCompleted = [...ordered].reverse().find(item => item.status === "완료");
+  const selected = [current, next]
+    .filter((item): item is TeamWorkItem => !!item)
+    .filter((item, index, list) => list.indexOf(item) === index);
+  if (selected.length === 0 && latestCompleted) selected.push(latestCompleted);
+
+  return selected.slice(0, limit).sort(compareStageItems);
+}
+
+/**
+ * 팀을 확인할 수 없는 Weekly 실행 문장은 팀별 현재 단계에서 반복하지 않는다.
+ * 원문은 최근 Weekly와 세부 일정에 유지하고, 팀 요약에는 건수 안내만 제공한다.
+ */
+export function getTeamWorkstreamDisplayGroups(
+  teams: TeamWorkstream[],
+): TeamWorkstreamDisplayGroups {
+  const namedTeams: TeamWorkstream[] = [];
+  const checkItems: TeamWorkItem[] = [];
+
+  for (const team of teams) {
+    if (team.label === "공통") {
+      checkItems.push(...selectTeamCurrentStageItems(team.items));
+    } else {
+      namedTeams.push(team);
+    }
+  }
+
+  return { teams: namedTeams, checkItems: checkItems.sort(compareStageItems) };
 }
 
 /**
@@ -304,9 +396,19 @@ export function buildTeamWorkstreamView(input: BuildTeamWorkstreamInput): TeamWo
     }
   }
 
+  const teamOrder = (team: TeamWorkstream) => TEAM_ORDER.get(team.key) ?? 50;
+  const teamStageDate = (team: TeamWorkstream) => {
+    const firstItem = selectTeamCurrentStageItems(team.items, 1)[0];
+    return firstItem ? stageItemDate(firstItem) : "9999-12-31";
+  };
   const sortedTeams = [...officialTeams.values()].sort((a, b) => {
-    const aOrder = TEAM_ORDER.get(a.key) ?? 50;
-    const bOrder = TEAM_ORDER.get(b.key) ?? 50;
+    if (lifecycle !== "planning") {
+      const aDate = teamStageDate(a);
+      const bDate = teamStageDate(b);
+      if (aDate !== bDate) return aDate.localeCompare(bDate, "ko-KR");
+    }
+    const aOrder = teamOrder(a);
+    const bOrder = teamOrder(b);
     return aOrder - bOrder || a.label.localeCompare(b.label, "ko-KR");
   });
 
@@ -353,12 +455,13 @@ export function getTeamWorkstreamSignals(
         };
       }
 
-      const item = [...team.items].sort((a, b) => {
-        const statusDelta = (EXECUTION_STATUS_ORDER.get(a.status) ?? 50)
-          - (EXECUTION_STATUS_ORDER.get(b.status) ?? 50);
-        if (statusDelta !== 0) return statusDelta;
-        return (b.end || b.start || "").localeCompare(a.end || a.start || "");
-      })[0];
+      const item = selectTeamCurrentStageItems(team.items, 1)[0]
+        ?? [...team.items].sort((a, b) => {
+          const statusDelta = (EXECUTION_STATUS_ORDER.get(a.status) ?? 50)
+            - (EXECUTION_STATUS_ORDER.get(b.status) ?? 50);
+          if (statusDelta !== 0) return statusDelta;
+          return (b.end || b.start || "").localeCompare(a.end || a.start || "");
+        })[0];
       if (!item) return null;
       return {
         team: displayTeamLabel(team),
