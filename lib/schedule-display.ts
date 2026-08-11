@@ -20,6 +20,7 @@ export type CompactScheduleResult<T> = {
   supersededCount: number;
   completedCount: number;
   staleCount: number;
+  redundantPlaceholderCount: number;
   invalidCount: number;
   noiseCount: number;
 };
@@ -90,6 +91,34 @@ function weeklyIdentity(row: ScheduleDisplayRow): string {
   const taskIdentity = detail || role;
   const resource = isLikelyTaskResource(rawResource, taskIdentity) ? "" : rawResource;
   return `work:${phase}|${detail || role}|${person}|${resource}`;
+}
+
+function milestonePhase(row: ScheduleDisplayRow): string | null {
+  if (MILESTONE_PHASES.has(row.phase ?? "")) return row.phase ?? null;
+  if (MILESTONE_PHASES.has(row.role)) return row.role;
+  return null;
+}
+
+/**
+ * 날짜가 확정된 같은 마일스톤이 있을 때만 감출 수 있는 빈 수동 틀인지 판별한다.
+ * 담당자나 별도 설명이 있으면 사용자가 남긴 정보로 보고 계속 노출한다.
+ */
+function isEmptyMilestonePlaceholder(row: ScheduleDisplayRow): boolean {
+  const phase = milestonePhase(row);
+  if (!phase || row.start || row.end) return false;
+  if (row.source === "jira_weekly") return false;
+  if (row.status && row.status !== "미정" && row.status !== "확인필요") return false;
+  if (row.person?.trim() && row.person.trim() !== "-") return false;
+
+  const detail = normalizeTaskIdentity(row.detail);
+  const role = normalizeTaskIdentity(row.role);
+  const normalizedPhase = normalizeTaskIdentity(phase);
+  if (detail && detail !== role && detail !== normalizedPhase && detail !== `${normalizedPhase} 일정`) {
+    return false;
+  }
+
+  const resource = normalizeTaskIdentity(row.resourceTeam);
+  return !resource || resource === role || resource === normalizedPhase;
 }
 
 function rowDate(row: ScheduleDisplayRow): number | null {
@@ -199,6 +228,7 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
   let supersededCount = 0;
   let completedCount = 0;
   let staleCount = 0;
+  let redundantPlaceholderCount = 0;
   let invalidCount = 0;
   let noiseCount = 0;
 
@@ -244,5 +274,29 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
     current.push(row);
   });
 
-  return { current, history, supersededCount, completedCount, staleCount, invalidCount, noiseCount };
+  const datedCurrentMilestones = new Set(
+    current
+      .filter(row => !!(row.start || row.end))
+      .map(milestonePhase)
+      .filter((phase): phase is string => !!phase),
+  );
+  const visibleCurrent = current.filter(row => {
+    const phase = milestonePhase(row);
+    const isRedundant = !!phase
+      && datedCurrentMilestones.has(phase)
+      && isEmptyMilestonePlaceholder(row);
+    if (isRedundant) redundantPlaceholderCount += 1;
+    return !isRedundant;
+  });
+
+  return {
+    current: visibleCurrent,
+    history,
+    supersededCount,
+    completedCount,
+    staleCount,
+    redundantPlaceholderCount,
+    invalidCount,
+    noiseCount,
+  };
 }

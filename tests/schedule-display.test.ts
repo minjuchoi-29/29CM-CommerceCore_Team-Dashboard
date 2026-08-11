@@ -61,6 +61,52 @@ test("수동 일정은 Weekly 일정과 관계없이 보호되어 현재 일정�
   assert.equal(result.staleCount, 1);
 });
 
+test("TM-2771 날짜가 확정된 Release가 있으면 정보 없는 수동 미정 틀은 중복 노출하지 않는다", () => {
+  const rows: ScheduleDisplayRow[] = [
+    {
+      role: "배포일", phase: "Release", detail: "Release",
+      start: "2026-08-25", end: "2026-08-26", status: "예정",
+      source: "jira_weekly", sourceWeek: "33주차",
+    },
+    {
+      role: "Release", phase: "Release", status: "미정", source: "manual",
+    },
+  ];
+
+  const result = compactSchedulesForDisplay(
+    rows,
+    new Date("2026-08-11T12:00:00+09:00").getTime(),
+  );
+
+  assert.deepEqual(result.current.map(row => row.source), ["jira_weekly"]);
+  assert.equal(result.history.length, 0);
+  assert.equal(result.redundantPlaceholderCount, 1);
+  assert.equal(rows.length, 2, "저장 원본은 삭제하거나 변경하지 않는다");
+});
+
+test("날짜가 없더라도 담당자·설명이 있는 수동 마일스톤과 단독 미정 틀은 보호한다", () => {
+  const datedWeekly: ScheduleDisplayRow = {
+    role: "배포일", phase: "Release", detail: "Release",
+    start: "2026-08-25", end: "2026-08-26", status: "예정",
+    source: "jira_weekly", sourceWeek: "33주차",
+  };
+  const manualWithContext: ScheduleDisplayRow = {
+    role: "Release", phase: "Release", detail: "운영 승인 후 점진 배포",
+    person: "담당 PM", status: "미정", source: "manual",
+  };
+  const standalonePlaceholder: ScheduleDisplayRow = {
+    role: "Launch", phase: "Launch", status: "미정", source: "manual",
+  };
+
+  const result = compactSchedulesForDisplay(
+    [datedWeekly, manualWithContext, standalonePlaceholder],
+    new Date("2026-08-11T12:00:00+09:00").getTime(),
+  );
+
+  assert.deepEqual(result.current, [datedWeekly, manualWithContext, standalonePlaceholder]);
+  assert.equal(result.redundantPlaceholderCount, 0);
+});
+
 test("TM-2771 과거 자동 예정·오래된 진행 일정은 현재가 아니라 이력으로 분리한다", () => {
   const now = new Date("2026-08-11T12:00:00+09:00").getTime();
   const rows: ScheduleDisplayRow[] = [
