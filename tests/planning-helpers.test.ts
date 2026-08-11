@@ -9,12 +9,24 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   aggregateDevState,
+  DESIGN_TEAM_DISPLAY_NAME,
+  getDevTrackDisplayName,
   getPlanningView,
   getPlanningStateSummary,
   isDevAggregateReadOnly,
   patchPlanningEntry,
   planningViewsMatch,
 } from "../lib/planning-helpers";
+
+describe("공식 팀 표시명", () => {
+  it("내부 저장 키를 바꾸지 않고 합의된 공식 조직명으로 표시한다", () => {
+    assert.equal(getDevTrackDisplayName("SP"), "BE - Pricing");
+    assert.equal(getDevTrackDisplayName("PP"), "BE - Purchase");
+    assert.equal(getDevTrackDisplayName("CFE"), "FE - Commerce");
+    assert.equal(getDevTrackDisplayName("DFE"), "FE - Commerce");
+    assert.equal(DESIGN_TEAM_DISPLAY_NAME, "Design");
+  });
+});
 
 describe("aggregateDevState — 보수적 정책", () => {
   it("빈 입력 → 대기중", () => {

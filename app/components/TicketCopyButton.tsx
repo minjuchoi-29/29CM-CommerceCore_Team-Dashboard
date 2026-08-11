@@ -23,12 +23,14 @@ export default function TicketCopyButton({
 
   return (
     <button
+      type="button"
       onClick={handleClick}
-      title={copied ? "복사됨!" : "티켓 번호+제목 복사"}
+      title={copied ? "복사됨" : "티켓 번호·링크·제목 복사"}
+      aria-label={copied ? `${ticketKey} 티켓 정보 복사됨` : `${ticketKey} 티켓 번호·링크·제목 복사`}
       className={`shrink-0 flex items-center justify-center rounded transition-all ${
-        copied ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100"
+        copied ? "opacity-100" : "opacity-55 hover:!opacity-100 focus-visible:opacity-100"
       }`}
-      style={{ color: copied ? "#34d399" : "var(--text-muted)" }}
+      style={{ color: copied ? "var(--accent-success)" : "var(--text-muted)" }}
     >
       {copied ? (
         <svg className={dim} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2.5}>

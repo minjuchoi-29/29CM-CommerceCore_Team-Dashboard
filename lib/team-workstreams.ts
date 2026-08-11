@@ -1,4 +1,11 @@
-import { getPlanningView, type DevTrackKey, type TrackState } from "./planning-helpers";
+import {
+  DESIGN_TEAM_DISPLAY_NAME,
+  PM_TEAM_DISPLAY_NAME,
+  getDevTrackDisplayName,
+  getPlanningView,
+  type DevTrackKey,
+  type TrackState,
+} from "./planning-helpers";
 import { getPreplanningView, type PreplanningStatus } from "./preplanning";
 import {
   COMPLETED_WEEKLY_TRACKING_DAYS,
@@ -60,6 +67,12 @@ export type TeamWorkstreamView = {
   trackingDaysRemaining?: number;
 };
 
+export type TeamWorkstreamSignal = {
+  team: string;
+  phase: string;
+  status: string;
+};
+
 type BuildTeamWorkstreamInput = {
   jiraStatus: string;
   jiraStatusCategory?: JiraStatusCategory;
@@ -71,19 +84,34 @@ type BuildTeamWorkstreamInput = {
 };
 
 const TEAM_ALIASES: Record<string, Omit<TeamIdentity, "rawLabel">> = {
-  SP: { key: "SP", label: "SP", mapped: true },
-  "BE-SP": { key: "SP", label: "SP", mapped: true },
-  PRICING: { key: "SP", label: "SP", mapped: true },
-  PP: { key: "PP", label: "PP", mapped: true },
-  "BE-PP": { key: "PP", label: "PP", mapped: true },
-  PURCHASE: { key: "PP", label: "PP", mapped: true },
-  CFE: { key: "CFE", label: "CFE", parentTeam: "FE", mapped: true },
-  CMFE: { key: "CFE", label: "CFE", parentTeam: "FE", mapped: true },
-  "FE-CFE": { key: "CFE", label: "CFE", parentTeam: "FE", mapped: true },
-  DFE: { key: "DFE", label: "DFE", parentTeam: "FE", mapped: true },
-  "FE-DFE": { key: "DFE", label: "DFE", parentTeam: "FE", mapped: true },
-  FE: { key: "FE", label: "FE", mapped: true },
-  "29CM FE": { key: "FE", label: "FE", mapped: true },
+  SP: { key: "SP", label: getDevTrackDisplayName("SP"), mapped: true },
+  "BE-SP": { key: "SP", label: getDevTrackDisplayName("SP"), mapped: true },
+  PRICING: { key: "SP", label: getDevTrackDisplayName("SP"), mapped: true },
+  "BE - PRICING": { key: "SP", label: getDevTrackDisplayName("SP"), mapped: true },
+  "29CM PRICING BE": { key: "SP", label: getDevTrackDisplayName("SP"), mapped: true },
+  PP: { key: "PP", label: getDevTrackDisplayName("PP"), mapped: true },
+  "BE-PP": { key: "PP", label: getDevTrackDisplayName("PP"), mapped: true },
+  PURCHASE: { key: "PP", label: getDevTrackDisplayName("PP"), mapped: true },
+  "BE - PURCHASE": { key: "PP", label: getDevTrackDisplayName("PP"), mapped: true },
+  "29CM PURCHASE BE": { key: "PP", label: getDevTrackDisplayName("PP"), mapped: true },
+  CFE: { key: "CFE", label: getDevTrackDisplayName("CFE"), parentTeam: "FE", mapped: true },
+  CMFE: { key: "CFE", label: getDevTrackDisplayName("CFE"), parentTeam: "FE", mapped: true },
+  "FE-CFE": { key: "CFE", label: getDevTrackDisplayName("CFE"), parentTeam: "FE", mapped: true },
+  DFE: { key: "DFE", label: getDevTrackDisplayName("DFE"), parentTeam: "FE", mapped: true },
+  "FE-DFE": { key: "DFE", label: getDevTrackDisplayName("DFE"), parentTeam: "FE", mapped: true },
+  FE: { key: "FE", label: getDevTrackDisplayName("CFE"), mapped: true },
+  "FE - COMMERCE": { key: "FE", label: getDevTrackDisplayName("CFE"), mapped: true },
+  "29CM FE": { key: "FE", label: getDevTrackDisplayName("CFE"), mapped: true },
+  "29CM COMMERCE FE": { key: "FE", label: getDevTrackDisplayName("CFE"), mapped: true },
+  PM: { key: "PM", label: PM_TEAM_DISPLAY_NAME, mapped: true },
+  PRODUCT: { key: "PM", label: PM_TEAM_DISPLAY_NAME, mapped: true },
+  "기획": { key: "PM", label: PM_TEAM_DISPLAY_NAME, mapped: true },
+  "ORDERS N PRICING": { key: "PM", label: PM_TEAM_DISPLAY_NAME, mapped: true },
+  "29CM ORDERS N PRICING": { key: "PM", label: PM_TEAM_DISPLAY_NAME, mapped: true },
+  PD: { key: "Design", label: DESIGN_TEAM_DISPLAY_NAME, mapped: true },
+  DESIGN: { key: "Design", label: DESIGN_TEAM_DISPLAY_NAME, mapped: true },
+  "디자인": { key: "Design", label: DESIGN_TEAM_DISPLAY_NAME, mapped: true },
+  "COMMERCE DESIGN": { key: "Design", label: DESIGN_TEAM_DISPLAY_NAME, mapped: true },
   MOBILE: { key: "Mobile", label: "Mobile", mapped: true },
   APP: { key: "Mobile", label: "Mobile", mapped: true },
   QA: { key: "QA", label: "QA", mapped: true },
@@ -91,13 +119,15 @@ const TEAM_ALIASES: Record<string, Omit<TeamIdentity, "rawLabel">> = {
 };
 
 const TEAM_ORDER = new Map([
-  ["SP", 0],
-  ["PP", 1],
-  ["CFE", 2],
-  ["DFE", 3],
-  ["FE", 4],
-  ["Mobile", 5],
-  ["QA", 6],
+  ["PM", 0],
+  ["Design", 1],
+  ["SP", 2],
+  ["PP", 3],
+  ["CFE", 4],
+  ["DFE", 5],
+  ["FE", 6],
+  ["Mobile", 7],
+  ["QA", 8],
   ["기타", 98],
 ]);
 
@@ -251,7 +281,30 @@ export function buildTeamWorkstreamView(input: BuildTeamWorkstreamInput): TeamWo
     }) === "done"
     ? completedTracking(input.resolutionDate, input.now ?? new Date())
     : undefined;
-  const sortedTeams = [...teams.values()].sort((a, b) => {
+  // CFE/DFE/FE처럼 내부 저장 키가 달라도 공식 팀명이 같으면 조회 화면에서 한 팀으로 묶는다.
+  const officialTeams = new Map<string, TeamWorkstream>();
+  for (const team of teams.values()) {
+    const existing = officialTeams.get(team.label);
+    if (!existing) {
+      officialTeams.set(team.label, { ...team, rawLabels: [...team.rawLabels], items: [...team.items] });
+      continue;
+    }
+    existing.rawLabels = [...new Set([...existing.rawLabels, ...team.rawLabels])];
+    existing.items.push(...team.items);
+    existing.mapped = existing.mapped && team.mapped;
+    if (team.planningState) {
+      const states = [existing.planningState, team.planningState].filter(Boolean) as TrackState[];
+      existing.planningState = states.includes("대기중")
+        ? "대기중"
+        : states.includes("검토중")
+          ? "검토중"
+          : states.includes("완료")
+            ? "완료"
+            : "대상아님";
+    }
+  }
+
+  const sortedTeams = [...officialTeams.values()].sort((a, b) => {
     const aOrder = TEAM_ORDER.get(a.key) ?? 50;
     const bOrder = TEAM_ORDER.get(b.key) ?? 50;
     return aOrder - bOrder || a.label.localeCompare(b.label, "ko-KR");
@@ -266,4 +319,53 @@ export function buildTeamWorkstreamView(input: BuildTeamWorkstreamInput): TeamWo
     completedDaysAgo: tracking?.completedDaysAgo,
     trackingDaysRemaining: tracking?.trackingDaysRemaining,
   };
+}
+
+const EXECUTION_STATUS_ORDER = new Map([
+  ["진행중", 0],
+  ["예정", 1],
+  ["확인필요", 2],
+  ["미정", 3],
+  ["보류", 4],
+  ["지연", 5],
+  ["완료", 6],
+]);
+
+function displayTeamLabel(team: TeamWorkstream): string {
+  return team.label;
+}
+
+/** 목록용 팀·단계 요약. 저장값을 만들거나 변경하지 않는 파생 정보다. */
+export function getTeamWorkstreamSignals(
+  view: TeamWorkstreamView,
+  limit = 2,
+): TeamWorkstreamSignal[] {
+  if (limit <= 0) return [];
+
+  return view.teams
+    .map((team): TeamWorkstreamSignal | null => {
+      if (view.lifecycle === "planning") {
+        if (!team.planningState) return null;
+        return {
+          team: displayTeamLabel(team),
+          phase: "플래닝",
+          status: team.planningState,
+        };
+      }
+
+      const item = [...team.items].sort((a, b) => {
+        const statusDelta = (EXECUTION_STATUS_ORDER.get(a.status) ?? 50)
+          - (EXECUTION_STATUS_ORDER.get(b.status) ?? 50);
+        if (statusDelta !== 0) return statusDelta;
+        return (b.end || b.start || "").localeCompare(a.end || a.start || "");
+      })[0];
+      if (!item) return null;
+      return {
+        team: displayTeamLabel(team),
+        phase: item.phase,
+        status: item.status,
+      };
+    })
+    .filter((signal): signal is TeamWorkstreamSignal => signal !== null)
+    .slice(0, limit);
 }

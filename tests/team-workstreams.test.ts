@@ -1,21 +1,32 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { buildTeamWorkstreamView, resolveTeamIdentity } from "../lib/team-workstreams";
+import {
+  buildTeamWorkstreamView,
+  getTeamWorkstreamSignals,
+  resolveTeamIdentity,
+} from "../lib/team-workstreams";
 
 describe("P1-1 팀 명칭 조회 매핑", () => {
   it("합의된 별칭만 저장값 변경 없이 같은 팀으로 묶는다", () => {
     assert.deepEqual(resolveTeamIdentity("Pricing"), {
-      key: "SP", label: "SP", rawLabel: "Pricing", mapped: true,
+      key: "SP", label: "BE - Pricing", rawLabel: "Pricing", mapped: true,
     });
     assert.deepEqual(resolveTeamIdentity("Purchase"), {
-      key: "PP", label: "PP", rawLabel: "Purchase", mapped: true,
+      key: "PP", label: "BE - Purchase", rawLabel: "Purchase", mapped: true,
     });
     assert.deepEqual(resolveTeamIdentity("CMFE"), {
-      key: "CFE", label: "CFE", parentTeam: "FE", rawLabel: "CMFE", mapped: true,
+      key: "CFE", label: "FE - Commerce", parentTeam: "FE", rawLabel: "CMFE", mapped: true,
     });
     assert.equal(resolveTeamIdentity("APP").key, "Mobile");
     assert.equal(resolveTeamIdentity("BE-SP").key, "SP");
     assert.equal(resolveTeamIdentity("BE-PP").key, "PP");
+    assert.equal(resolveTeamIdentity("PM").label, "PM");
+    assert.equal(resolveTeamIdentity("기획").label, "PM");
+    assert.equal(resolveTeamIdentity("PD").label, "Design");
+    assert.equal(resolveTeamIdentity("디자인").label, "Design");
+    assert.equal(resolveTeamIdentity("BE - Pricing").key, "SP");
+    assert.equal(resolveTeamIdentity("BE - Purchase").key, "PP");
+    assert.equal(resolveTeamIdentity("FE - Commerce").label, "FE - Commerce");
   });
 
   it("합의되지 않은 QE/CBP 정산/MSS BE는 원문 그대로 둔다", () => {
@@ -45,6 +56,23 @@ describe("P1-1 TeamWorkstreamView", () => {
     assert.equal(view.targetSprint, "35~36주차");
     assert.deepEqual(view.teams.map(team => [team.key, team.planningState]), [
       ["SP", "검토중"], ["PP", "대기중"], ["CFE", "완료"],
+    ]);
+  });
+
+  it("초안 검토 중은 Jira 진행형 카테고리여도 플래닝 대기로 보여준다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "초안 검토 중",
+      jiraStatusCategory: "indeterminate",
+      planning: {
+        preplanningStatus: "검토 대기",
+        devTracks: { PP: "대기중" },
+      },
+      schedules: [],
+    });
+
+    assert.equal(view.lifecycle, "planning");
+    assert.deepEqual(view.teams.map(team => [team.label, team.planningState]), [
+      ["BE - Purchase", "대기중"],
     ]);
   });
 
@@ -83,6 +111,41 @@ describe("P1-1 TeamWorkstreamView", () => {
     assert.deepEqual(sp?.items.map(item => [item.phase, item.status]), [["개발", "진행중"], ["개발", "진행중"]]);
     assert.equal(view.teams.find(team => team.key === "CFE")?.parentTeam, "FE");
     assert.equal(view.teams.find(team => team.label === "CBP 정산")?.mapped, false);
+    assert.deepEqual(getTeamWorkstreamSignals(view), [
+      { team: "BE - Pricing", phase: "개발", status: "진행중" },
+      { team: "FE - Commerce", phase: "개발", status: "진행중" },
+    ]);
+  });
+
+  it("목록 요약은 진행중인 단계를 완료된 단계보다 우선한다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "In Progress",
+      planning: undefined,
+      schedules: [
+        { role: "개발", resourceTeam: "PP", phase: "개발", status: "완료", end: "2026-08-01" },
+        { role: "QA", resourceTeam: "PP", phase: "QA", status: "예정", start: "2026-08-12" },
+      ],
+    });
+    assert.deepEqual(getTeamWorkstreamSignals(view, 1), [
+      { team: "BE - Purchase", phase: "QA", status: "예정" },
+    ]);
+  });
+
+  it("CFE와 DFE는 저장 키를 유지하면서 화면에서는 한 공식 팀으로 묶는다", () => {
+    const view = buildTeamWorkstreamView({
+      jiraStatus: "In Progress",
+      planning: { devTracks: { CFE: "완료", DFE: "검토중" } },
+      schedules: [
+        { role: "개발", resourceTeam: "CFE", phase: "개발", status: "완료", detail: "공통 UI" },
+        { role: "개발", resourceTeam: "DFE", phase: "개발", status: "진행중", detail: "전시 UI" },
+      ],
+    });
+
+    assert.equal(view.teams.length, 1);
+    assert.equal(view.teams[0].label, "FE - Commerce");
+    assert.equal(view.teams[0].planningState, "검토중");
+    assert.deepEqual(view.teams[0].rawLabels, ["CFE", "DFE"]);
+    assert.deepEqual(view.teams[0].items.map(item => item.detail), ["공통 UI", "전시 UI"]);
   });
 
   it("배포완료·개발완료가 Jira 진행 중 카테고리이면 active를 유지한다", () => {

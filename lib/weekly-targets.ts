@@ -52,6 +52,10 @@ const PLANNING_STATUS_OVERRIDES = new Set([
   "Postponed",
   "Blocked",
   "준비중",
+  // 일부 Jira workflow는 초안 검토 상태를 indeterminate로 분류하지만,
+  // 실제 운영 의미는 개발 실행 전 프리플래닝 단계다.
+  "초안 검토 중",
+  "초안 검토중",
 ]);
 
 export type WeeklyTargetTicket = {

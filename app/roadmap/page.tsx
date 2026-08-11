@@ -9,7 +9,11 @@ import {
 } from "@/lib/derived/roadmap";
 import { classifyType } from "@/lib/derived/tickets";
 import type { JiraTypeGroup } from "@/lib/types";
-import { getPlanningView } from "@/lib/planning-helpers";
+import {
+  DESIGN_TEAM_DISPLAY_NAME,
+  getDevTrackDisplayName,
+  getPlanningView,
+} from "@/lib/planning-helpers";
 
 // ─── 로컬 유틸 (roadmap 페이지 내부 전용) ───────────────────────────────────
 
@@ -559,7 +563,7 @@ export default function RoadmapPage() {
                                 {sm.design["검토중"] > 0 && (
                                   <span className="px-1.5 py-0.5 rounded"
                                     style={{ background: "rgba(124,58,237,0.15)", color: "#a78bfa" }}>
-                                    Design 검토중 {sm.design["검토중"]}
+                                    {DESIGN_TEAM_DISPLAY_NAME} 검토중 {sm.design["검토중"]}
                                   </span>
                                 )}
                                 {sm.dev["검토중"] > 0 && (
@@ -972,7 +976,7 @@ export default function RoadmapPage() {
                                     {t.assignee && t.assignee !== "-" && <span>{t.assignee}</span>}
                                     {t.eta && t.eta !== "-" && <span>ETA {t.eta}</span>}
                                     {tp.design && tp.design !== "대기중" && (
-                                      <span style={{ color: "#a78bfa" }}>Design {tp.design}</span>
+                                      <span style={{ color: "#a78bfa" }}>{DESIGN_TEAM_DISPLAY_NAME} {tp.design}</span>
                                     )}
                                     {tp.dev && tp.dev !== "대기중" && (
                                       <span style={{ color: "#60a5fa" }}>Dev {tp.dev}</span>
@@ -1269,7 +1273,7 @@ export default function RoadmapPage() {
                 <div className="grid grid-cols-2 gap-1.5 text-[10px]">
                   {(["대기중", "검토중", "완료", "대상아님"] as TrackState[]).map(s => (
                     <div key={`d-${s}`} className="flex items-center justify-between">
-                      <span style={{ color: "var(--text-muted)" }}>Design {s}</span>
+                      <span style={{ color: "var(--text-muted)" }}>{DESIGN_TEAM_DISPLAY_NAME} {s}</span>
                       <span className="font-semibold" style={{ color: editSummary.design[s] > 0 ? "var(--text-primary)" : "var(--text-subtle)" }}>
                         {editSummary.design[s]}
                       </span>
@@ -1296,7 +1300,7 @@ export default function RoadmapPage() {
                       return (
                         <span key={tk} className="text-[10px] px-1.5 py-0.5 rounded"
                           style={{ background: "var(--bg-item)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
-                          {tk} {cnt}
+                          {getDevTrackDisplayName(tk)} {cnt}
                         </span>
                       );
                     })}

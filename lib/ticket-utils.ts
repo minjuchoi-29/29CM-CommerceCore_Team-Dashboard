@@ -2,13 +2,19 @@ import { RoleSchedule } from "@/lib/types";
 
 export const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
-/** 클립보드에 "[KEY] 제목\nURL" 형식으로 복사 */
+/** 회의록·메신저에 바로 붙여 넣을 수 있는 Markdown 티켓 참조를 만든다. */
+export function buildTicketReference(key: string, summary: string): string {
+  const normalizedKey = key.trim();
+  const normalizedSummary = summary.trim();
+  return `[${normalizedKey}](${JIRA_BASE}${normalizedKey}) · ${normalizedSummary}`;
+}
+
+/** 클립보드에 "[KEY](URL) · 제목" 형식으로 복사 */
 export async function copyTicketReference(
   key: string,
   summary: string
 ): Promise<void> {
-  const text = `[${key}] ${summary}\n${JIRA_BASE}${key}`;
-  await navigator.clipboard.writeText(text);
+  await navigator.clipboard.writeText(buildTicketReference(key, summary));
 }
 
 /** 주어진 티켓 키가 숨김 목록에 있는지 확인 */

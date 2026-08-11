@@ -26,6 +26,23 @@ export const TRACK_STATES: TrackState[] = ["대기중", "검토중", "완료", "
 export type DevTrackKey = "SP" | "PP" | "CFE" | "Mobile" | "DFE" | "QA" | "기타";
 export const DEV_TRACK_KEYS: DevTrackKey[] = ["SP", "PP", "CFE", "Mobile", "DFE", "QA", "기타"];
 
+/** 저장 키는 유지하고 회의 화면에서 사용하는 간결한 조직 표시명. */
+export const PM_TEAM_DISPLAY_NAME = "PM";
+export const DESIGN_TEAM_DISPLAY_NAME = "Design";
+export const DEV_TRACK_DISPLAY_NAMES: Record<DevTrackKey, string> = {
+  SP: "BE - Pricing",
+  PP: "BE - Purchase",
+  CFE: "FE - Commerce",
+  DFE: "FE - Commerce",
+  Mobile: "Mobile",
+  QA: "QA",
+  기타: "기타",
+};
+
+export function getDevTrackDisplayName(track: DevTrackKey): string {
+  return DEV_TRACK_DISPLAY_NAMES[track];
+}
+
 export interface PlanningView {
   design: TrackState;
   dev: TrackState;

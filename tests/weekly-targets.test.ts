@@ -17,6 +17,7 @@ describe("Weekly Sync 대상 — 완료 후 보고 유예기간", () => {
     { key: "TM-DONE-OLD", status: "론치완료", statusCategory: "done", resolutionDate: "2026-07-23T23:59:59.000Z" },
     { key: "TM-DONE-UPDATED", status: "완료", statusCategory: "done", updatedAt: "2026-08-06T00:00:00.000Z" },
     { key: "TM-DONE-UNKNOWN", status: "완료", statusCategory: "done" },
+    { key: "TM-DRAFT-REVIEW", status: "초안 검토 중", statusCategory: "indeterminate" },
   ];
 
   it("활성 과제와 완료 후 14일 이내 과제를 포함", () => {
@@ -35,6 +36,7 @@ describe("Weekly Sync 대상 — 완료 후 보고 유예기간", () => {
     const result = selectWeeklySyncTargets(tickets, new Set(), NOW);
     assert.deepEqual(result.excludedCompletedKeys, ["TM-DONE-OLD", "TM-DONE-UPDATED", "TM-DONE-UNKNOWN"]);
     assert.equal(result.targets.some(ticket => ticket.key === "TM-PLANNING"), false);
+    assert.equal(result.targets.some(ticket => ticket.key === "TM-DRAFT-REVIEW"), false);
     assert.equal(result.targets.some(ticket => ticket.key === "TM-CANCELLED"), false);
   });
 
@@ -53,6 +55,8 @@ describe("Weekly Sync 대상 — 완료 후 보고 유예기간", () => {
     assert.equal(classifyTicketLifecycle({ status: "개발완료", statusCategory: "indeterminate" }), "active");
     assert.equal(classifyTicketLifecycle({ status: "론치완료", statusCategory: "done" }), "done");
     assert.equal(classifyTicketLifecycle({ status: "HOLD", statusCategory: "indeterminate" }), "planning");
+    assert.equal(classifyTicketLifecycle({ status: "초안 검토 중", statusCategory: "indeterminate" }), "planning");
+    assert.equal(classifyTicketLifecycle({ status: "초안 검토중", statusCategory: "indeterminate" }), "planning");
     assert.equal(classifyTicketLifecycle({ status: "Dropped", statusCategory: "done" }), "terminal");
   });
 

@@ -74,7 +74,7 @@ function dateRange(item: TeamWorkItem): string {
 }
 
 function teamLabel(team: TeamWorkstream): string {
-  return team.parentTeam ? `${team.parentTeam} / ${team.label}` : team.label;
+  return team.label;
 }
 
 function rawAliasLabel(team: TeamWorkstream): string | null {
