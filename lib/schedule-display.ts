@@ -19,11 +19,14 @@ export type CompactScheduleResult<T> = {
   history: T[];
   supersededCount: number;
   completedCount: number;
+  staleCount: number;
   invalidCount: number;
   noiseCount: number;
 };
 
 const MILESTONE_PHASES = new Set(["Kick-Off", "Release", "Launch"]);
+const STALE_ACTIVE_DAYS = 14;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function normalize(value?: string | null): string {
   return (value ?? "")
@@ -137,10 +140,31 @@ export function hasScheduleDateRange(row: ScheduleDisplayRow): boolean {
 }
 
 export function isPrimaryScheduleRange(row: ScheduleDisplayRow): boolean {
-  if (!hasScheduleDateRange(row) || hasInvalidDate(row)) return false;
+  // 기본 화면으로 다시 올리는 과거 기간은 실제 완료가 확인된 경우로 제한한다.
+  // 과거의 예정/진행중 기간은 상태를 추정하지 않고 접힌 이력에 둔다.
+  if (row.status !== "완료" || !hasScheduleDateRange(row) || hasInvalidDate(row)) return false;
   const primaryText = row.detail?.trim() || row.role.trim();
   const isParserFragment = !primaryText || /^[\s•·\-–—,./:;()[\]{}]+$/.test(primaryText);
   return isParserFragment || !isCoordinationNoise(row);
+}
+
+/**
+ * 날짜가 지났지만 후속 Weekly에서 상태가 확정되지 않은 자동 일정을 식별한다.
+ * 완료로 추정하거나 저장값을 바꾸지 않고, 화면에서만 이력으로 분리한다.
+ */
+export function isStaleAutomaticSchedule(
+  row: ScheduleDisplayRow,
+  nowMs = Date.now(),
+): boolean {
+  if (row.source !== "jira_weekly") return false;
+  const date = rowDate(row);
+  if (date === null || date >= nowMs) return false;
+  if (row.status === "예정") return true;
+  if (row.status !== "진행중" || !row.lastSeenAt) return false;
+
+  const lastSeen = new Date(row.lastSeenAt).getTime();
+  if (Number.isNaN(lastSeen)) return false;
+  return nowMs - lastSeen > STALE_ACTIVE_DAYS * DAY_MS;
 }
 
 /**
@@ -174,6 +198,7 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
   const history: T[] = [];
   let supersededCount = 0;
   let completedCount = 0;
+  let staleCount = 0;
   let invalidCount = 0;
   let noiseCount = 0;
 
@@ -202,6 +227,12 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
       }
     }
 
+    if (isStaleAutomaticSchedule(row, nowMs)) {
+      history.push(row);
+      staleCount += 1;
+      return;
+    }
+
     const date = rowDate(row);
     const isPastCompleted = row.status === "완료" && date !== null && date < nowMs;
     if (isPastCompleted) {
@@ -213,5 +244,5 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
     current.push(row);
   });
 
-  return { current, history, supersededCount, completedCount, invalidCount, noiseCount };
+  return { current, history, supersededCount, completedCount, staleCount, invalidCount, noiseCount };
 }

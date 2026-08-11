@@ -38,6 +38,7 @@ import {
   compactSchedulesForDisplay,
   isMeaningfulScheduleHistoryRow,
   isPrimaryScheduleRange,
+  isStaleAutomaticSchedule,
 } from "@/lib/schedule-display";
 import { selectOpenWeeklyNotesForDisplay } from "@/lib/weekly-note-display";
 import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
@@ -675,9 +676,15 @@ function FocusScheduleTimeline({ roles, ticketDone }: {
           {visibleRows.map((row, index) => {
             const phase = row.phase ?? inferPhase(row.role) ?? "기타";
             const phaseMeta = FOCUS_SCHEDULE_PHASE_STYLE[phase];
-            const statusMeta = FOCUS_SCHEDULE_STATUS_STYLE[row.status];
             const team = focusScheduleTeam(row);
             const isHistory = historyRows.has(row);
+            const isStaleHistory = isHistory && isStaleAutomaticSchedule(row, TODAY_MS);
+            const statusMeta = isStaleHistory
+              ? { color: "#68748a", background: "#f3f5f8", border: "#d8dee8" }
+              : FOCUS_SCHEDULE_STATUS_STYLE[row.status];
+            const statusLabel = isStaleHistory
+              ? (row.status === "예정" ? "과거 계획" : "이전 기록")
+              : row.status;
             const dateMeta = focusScheduleDateMeta(row);
             return (
               <article
@@ -728,7 +735,7 @@ function FocusScheduleTimeline({ roles, ticketDone }: {
                       </span>
                     ) : null}
                     <span className="rounded border px-1.5 py-0.5 text-[10px] font-semibold" style={{ color: statusMeta.color, background: statusMeta.background, borderColor: statusMeta.border }}>
-                      {row.status}
+                      {statusLabel}
                     </span>
                   </div>
                   <p className="mt-1.5 whitespace-pre-wrap break-words text-[12.5px] leading-relaxed" style={{ color: "var(--text-primary)" }}>

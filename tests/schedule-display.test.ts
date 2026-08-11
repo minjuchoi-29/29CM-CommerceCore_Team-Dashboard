@@ -5,10 +5,12 @@ import {
   compactSchedulesForDisplay,
   isPrimaryScheduleRange,
   isMeaningfulScheduleHistoryRow,
+  isStaleAutomaticSchedule,
   type ScheduleDisplayRow,
 } from "../lib/schedule-display";
 
 const futureNow = new Date("2026-07-27T12:00:00+09:00").getTime();
+const beforeReleaseNow = new Date("2026-07-19T12:00:00+09:00").getTime();
 
 test("Weekly 배포 마일스톤은 최신 주차만 현재 일정에 남긴다", () => {
   const rows: ScheduleDisplayRow[] = [
@@ -16,7 +18,7 @@ test("Weekly 배포 마일스톤은 최신 주차만 현재 일정에 남긴다"
     { role: "배포일", phase: "Release", start: "2026-07-21", end: "2026-07-21", status: "예정", source: "jira_weekly", sourceWeek: "30주차" },
   ];
 
-  const result = compactSchedulesForDisplay(rows, futureNow);
+  const result = compactSchedulesForDisplay(rows, beforeReleaseNow);
 
   assert.deepEqual(result.current.map(row => row.sourceWeek), ["30주차"]);
   assert.deepEqual(result.history.map(row => row.sourceWeek), ["29주차"]);
@@ -54,8 +56,44 @@ test("수동 일정은 Weekly 일정과 관계없이 보호되어 현재 일정�
 
   const result = compactSchedulesForDisplay(rows, futureNow);
 
-  assert.equal(result.current.length, 2);
-  assert.equal(result.history.length, 0);
+  assert.deepEqual(result.current.map(row => row.source), ["manual"]);
+  assert.deepEqual(result.history.map(row => row.source), ["jira_weekly"]);
+  assert.equal(result.staleCount, 1);
+});
+
+test("TM-2771 과거 자동 예정·오래된 진행 일정은 현재가 아니라 이력으로 분리한다", () => {
+  const now = new Date("2026-08-11T12:00:00+09:00").getTime();
+  const rows: ScheduleDisplayRow[] = [
+    {
+      role: "QA", phase: "QA", detail: "29CM 투입",
+      start: "2026-05-26", end: "2026-05-26", status: "예정",
+      source: "jira_weekly", sourceWeek: "21주차", lastSeenAt: "2026-05-22T06:00:00+09:00",
+    },
+    {
+      role: "QA", phase: "QA", detail: "운영 자체 진행",
+      start: "2026-05-26", end: "2026-06-02", status: "진행중",
+      source: "jira_weekly", sourceWeek: "22주차", lastSeenAt: "2026-05-29T06:00:00+09:00",
+    },
+    {
+      role: "QA", phase: "QA", detail: "통합 QA/UAT",
+      start: "2026-08-18", end: "2026-08-21", status: "예정",
+      source: "jira_weekly", sourceWeek: "33주차", lastSeenAt: "2026-08-11T06:00:00+09:00",
+    },
+    {
+      role: "수동 확인", phase: "QA", detail: "수동으로 관리하는 과거 일정",
+      start: "2026-05-20", end: "2026-05-20", status: "예정", source: "manual",
+    },
+  ];
+
+  const result = compactSchedulesForDisplay(rows, now);
+
+  assert.deepEqual(result.current.map(row => row.detail), ["통합 QA/UAT", "수동으로 관리하는 과거 일정"]);
+  assert.deepEqual(result.history.map(row => row.detail), ["29CM 투입", "운영 자체 진행"]);
+  assert.equal(result.staleCount, 2);
+  assert.equal(isStaleAutomaticSchedule(rows[0], now), true);
+  assert.equal(isStaleAutomaticSchedule(rows[1], now), true);
+  assert.equal(isStaleAutomaticSchedule(rows[2], now), false);
+  assert.equal(isStaleAutomaticSchedule(rows[3], now), false);
 });
 
 test("완료된 과거 일정은 이력으로 이동한다", () => {
@@ -166,10 +204,10 @@ test("TM-2901 유사 QA 일정은 최신 Weekly만 남기고 단독 괄호 조�
   const result = compactSchedulesForDisplay(rows, new Date("2026-08-11T12:00:00+09:00").getTime());
 
   assert.deepEqual(result.current.map(row => row.detail), [
-    "성능, 통합 및 대응",
     "EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단",
   ]);
   assert.equal(result.supersededCount, 1);
+  assert.equal(result.staleCount, 1);
   assert.equal(result.noiseCount, 1);
 });
 
@@ -195,6 +233,7 @@ test("이력 펼침에서는 자동 파서의 단독 문장부호만 숨기고 �
     detail: ")",
     start: "2026-06-29",
     end: "2026-08-02",
+    status: "완료",
     source: "jira_weekly",
   }), true);
   assert.equal(isPrimaryScheduleRange({
@@ -203,6 +242,7 @@ test("이력 펼침에서는 자동 파서의 단독 문장부호만 숨기고 �
     detail: ")",
     start: "2026-06-29",
     end: "2026-08-02",
+    status: "완료",
     source: "jira_weekly",
   }), true);
   assert.equal(isPrimaryScheduleRange({
@@ -211,6 +251,7 @@ test("이력 펼침에서는 자동 파서의 단독 문장부호만 숨기고 �
     detail: "요구사항 리뷰 일정",
     start: "2026-06-29",
     end: "2026-08-02",
+    status: "완료",
     source: "jira_weekly",
   }), false);
   assert.equal(isPrimaryScheduleRange({
@@ -219,6 +260,16 @@ test("이력 펼침에서는 자동 파서의 단독 문장부호만 숨기고 �
     detail: "개발 기간",
     start: "2026-08-10",
     end: "2026-08-01",
+    status: "완료",
+    source: "jira_weekly",
+  }), false);
+  assert.equal(isPrimaryScheduleRange({
+    role: "QA",
+    phase: "QA",
+    detail: "과거 QA 계획",
+    start: "2026-05-26",
+    end: "2026-06-02",
+    status: "예정",
     source: "jira_weekly",
   }), false);
 });

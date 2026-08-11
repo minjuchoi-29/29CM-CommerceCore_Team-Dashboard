@@ -282,6 +282,13 @@ function stageItemDate(item: TeamWorkItem): string {
   return item.start || item.end || "9999-12-31";
 }
 
+function stageItemTimestamp(item: TeamWorkItem): number | null {
+  const value = item.start || item.end;
+  if (!value) return null;
+  const timestamp = new Date(`${value}T23:59:59`).getTime();
+  return Number.isNaN(timestamp) ? null : timestamp;
+}
+
 function compareStageItems(a: TeamWorkItem, b: TeamWorkItem): number {
   return stageItemDate(a).localeCompare(stageItemDate(b), "ko-KR")
     || (a.end || "9999-12-31").localeCompare(b.end || "9999-12-31", "ko-KR")
@@ -302,16 +309,26 @@ function isMeaningfulStageItem(item: TeamWorkItem): boolean {
 export function selectTeamCurrentStageItems(
   items: TeamWorkItem[],
   limit = 2,
+  nowMs = Date.now(),
 ): TeamWorkItem[] {
   if (limit <= 0) return [];
   const ordered = items.filter(isMeaningfulStageItem).sort(compareStageItems);
   if (ordered.length === 0) return [];
 
   const current = ordered.filter(item => CURRENT_STAGE_STATUSES.has(item.status)).at(-1);
-  const planned = ordered.filter(item => item.status === "예정");
-  const currentDate = current ? stageItemDate(current) : "";
-  const next = planned.find(item => !current || stageItemDate(item) >= currentDate)
-    ?? planned.at(-1);
+  // 이미 지난 계획은 팀의 "다음 작업"으로 다시 선택하지 않는다.
+  // 날짜 미정 계획은 미래 일정이 없을 때 확인할 수 있도록 후보로 유지한다.
+  const planned = ordered.filter(item => {
+    if (item.status !== "예정") return false;
+    const timestamp = stageItemTimestamp(item);
+    return timestamp === null || timestamp >= nowMs;
+  });
+  const currentEnd = current ? stageItemTimestamp(current) : null;
+  const nextThreshold = Math.max(nowMs, currentEnd ?? nowMs);
+  const next = planned.find(item => {
+    const timestamp = stageItemTimestamp(item);
+    return timestamp === null || timestamp >= nextThreshold;
+  }) ?? planned.at(0);
   const latestCompleted = [...ordered].reverse().find(item => item.status === "완료");
   const selected = [current, next]
     .filter((item): item is TeamWorkItem => !!item)

@@ -171,7 +171,7 @@ describe("P1-1 TeamWorkstreamView", () => {
       ],
     });
 
-    assert.deepEqual(view.teams.map(team => team.label), ["PM", "BE", "QA", "공통"]);
+    assert.deepEqual(view.teams.map(team => team.label), ["PM", "BE", "공통", "QA"]);
     assert.equal(view.teams.some(team => team.label.includes("위클리")), false);
     assert.equal(view.teams.some(team => team.label.includes("성능")), false);
   });
@@ -183,9 +183,19 @@ describe("P1-1 TeamWorkstreamView", () => {
       { role: "QA", detail: "다음 QA", phase: "QA", status: "예정", rawTeam: "BE", start: "2026-08-12", end: "2026-08-12" },
       { role: "Release", detail: "후속 배포", phase: "Release", status: "예정", rawTeam: "BE", start: "2026-08-20", end: "2026-08-20" },
       { role: "개발", detail: ")", phase: "개발", status: "예정", rawTeam: "BE", start: "2026-08-13", end: "2026-08-13" },
-    ]);
+    ], 2, new Date("2026-08-11T12:00:00+09:00").getTime());
 
     assert.deepEqual(selected.map(item => item.detail), ["현재 개발", "다음 QA"]);
+  });
+
+  it("TM-2771 과거 예정은 다음 작업에서 제외하고 오늘 이후 가장 이른 QA를 선택한다", () => {
+    const selected = selectTeamCurrentStageItems([
+      { role: "QA", detail: "29CM 투입", phase: "QA", status: "예정", rawTeam: "QA", start: "2026-05-26", end: "2026-05-26" },
+      { role: "QA", detail: "통합 QA/UAT", phase: "QA", status: "예정", rawTeam: "QA", start: "2026-08-18", end: "2026-08-21" },
+      { role: "Release", detail: "점진적 배포", phase: "Release", status: "예정", rawTeam: "QA", start: "2026-08-25", end: "2026-08-26" },
+    ], 2, new Date("2026-08-11T12:00:00+09:00").getTime());
+
+    assert.deepEqual(selected.map(item => item.detail), ["통합 QA/UAT"]);
   });
 
   it("팀이 없는 Weekly 문장은 팀 목록에서 제외하고 주요 체크 사항 건수로 분리한다", () => {
