@@ -21,6 +21,7 @@ export type CompactScheduleResult<T> = {
   completedCount: number;
   staleCount: number;
   redundantPlaceholderCount: number;
+  redundantMilestoneCount: number;
   invalidCount: number;
   noiseCount: number;
 };
@@ -97,6 +98,86 @@ function milestonePhase(row: ScheduleDisplayRow): string | null {
   if (MILESTONE_PHASES.has(row.phase ?? "")) return row.phase ?? null;
   if (MILESTONE_PHASES.has(row.role)) return row.role;
   return null;
+}
+
+function isReleaseOrLaunch(row: ScheduleDisplayRow): boolean {
+  const phase = milestonePhase(row);
+  return phase === "Release" || phase === "Launch";
+}
+
+function isGenericMilestoneContent(row: ScheduleDisplayRow): boolean {
+  const phase = milestonePhase(row);
+  if (phase !== "Release" && phase !== "Launch") return false;
+  if (row.person?.trim() && row.person.trim() !== "-") return false;
+
+  const resource = normalizeTaskIdentity(row.resourceTeam);
+  const normalizedPhase = normalizeTaskIdentity(phase);
+  const normalizedRole = normalizeTaskIdentity(row.role);
+  if (resource && resource !== normalizedPhase && resource !== normalizedRole) return false;
+
+  const detail = normalizeTaskIdentity(row.detail);
+  if (!detail) return true;
+  const genericLabels = phase === "Release"
+    ? new Set([normalizedPhase, normalizedRole, "배포일", "배포 일정", "release 일정"])
+    : new Set([normalizedPhase, normalizedRole, "오픈일", "런칭", "런칭 일정", "launch 일정"]);
+  return genericLabels.has(detail);
+}
+
+/**
+ * 날짜가 같은 Weekly Launch/Release가 있을 때 과거 UI가 만든 설명 없는 반대편
+ * 수동 마일스톤만 화면에서 감춘다. 저장 원본과 의미 있는 수동 일정은 유지한다.
+ */
+function removeRedundantLegacyMilestones<T extends ScheduleDisplayRow>(rows: T[], evidenceRows: T[] = rows): {
+  rows: T[];
+  count: number;
+} {
+  const weeklyByDate = new Map<string, T[]>();
+  for (const row of evidenceRows) {
+    if (row.source !== "jira_weekly" || !isReleaseOrLaunch(row)) continue;
+    if (row.archivedAt || hasInvalidDate(row)) continue;
+    const date = row.end || row.start;
+    if (!date) continue;
+    weeklyByDate.set(date, [...(weeklyByDate.get(date) ?? []), row]);
+  }
+
+  let count = 0;
+  const visible = rows.filter(row => {
+    if (row.source === "jira_weekly" || !isGenericMilestoneContent(row)) return true;
+    const date = row.end || row.start;
+    const phase = milestonePhase(row);
+    if (!date || !phase) return true;
+    const hasWeeklyCounterpart = (weeklyByDate.get(date) ?? [])
+      .some(peer => milestonePhase(peer) !== phase);
+    if (!hasWeeklyCounterpart) return true;
+    count += 1;
+    return false;
+  });
+
+  return { rows: visible, count };
+}
+
+/**
+ * 편집 화면에서도 중복 마일스톤은 감추되, 저장 시 원본을 다시 합칠 수 있도록
+ * 감춘 행을 별도로 돌려준다. 이 함수는 행을 수정하거나 삭제하지 않는다.
+ */
+export function partitionRedundantLegacyMilestones<T extends ScheduleDisplayRow>(rows: T[]): {
+  visible: T[];
+  preserved: T[];
+} {
+  const { rows: visible } = removeRedundantLegacyMilestones(rows);
+  const visibleRows = new Set(visible);
+  return {
+    visible,
+    preserved: rows.filter(row => !visibleRows.has(row)),
+  };
+}
+
+/** 세부 일정 헤더에서 사용자가 실제로 확인해야 하는 행만 판별한다. */
+export function isActionableScheduleConfirmation(row: ScheduleDisplayRow): boolean {
+  if (isReleaseOrLaunch(row)) return false;
+  if (row.status === "완료" || row.status === "미정") return false;
+  if (row.status === "확인필요") return true;
+  return !row.start && !row.end && (row.status === "진행중" || row.status === "예정");
 }
 
 /**
@@ -229,6 +310,7 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
   let completedCount = 0;
   let staleCount = 0;
   let redundantPlaceholderCount = 0;
+  let redundantMilestoneCount = 0;
   let invalidCount = 0;
   let noiseCount = 0;
 
@@ -289,13 +371,17 @@ export function compactSchedulesForDisplay<T extends ScheduleDisplayRow>(
     return !isRedundant;
   });
 
+  const milestoneCompaction = removeRedundantLegacyMilestones(visibleCurrent, rows);
+  redundantMilestoneCount = milestoneCompaction.count;
+
   return {
-    current: visibleCurrent,
+    current: milestoneCompaction.rows,
     history,
     supersededCount,
     completedCount,
     staleCount,
     redundantPlaceholderCount,
+    redundantMilestoneCount,
     invalidCount,
     noiseCount,
   };

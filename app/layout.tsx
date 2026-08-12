@@ -56,9 +56,9 @@ export default async function RootLayout({
 
           {/* 메인 콘텐츠 */}
           <div className="flex-1 min-w-0">
+            <GlobalSearchOverlay />
             {children}
           </div>
-          <GlobalSearchOverlay />
         </ThemeProvider>
       </body>
     </html>

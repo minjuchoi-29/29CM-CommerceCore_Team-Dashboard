@@ -16,10 +16,46 @@ type JiraLinkParsed = {
   status?: string;
   type?: string;
 };
+type JiraIssueLinkStub = {
+  key: string;
+  fields?: {
+    summary?: string;
+    status?: { name?: string };
+    issuetype?: { name?: string };
+  };
+};
+type JiraIssueLinkRaw = {
+  type?: { name?: string };
+  outwardIssue?: JiraIssueLinkStub;
+  inwardIssue?: JiraIssueLinkStub;
+};
+type JiraIssueRaw = {
+  key: string;
+  fields: {
+    summary: string;
+    status: { name: string; statusCategory?: { key?: string } };
+    assignee?: { displayName?: string };
+    reporter?: { displayName?: string };
+    duedate?: string;
+    updated?: string;
+    resolutiondate?: string;
+    issuetype: { name: string };
+    project: { key: string };
+    customfield_10015?: string;
+    customfield_10036?: number;
+    customfield_10070?: unknown;
+    customfield_10071?: { value?: string };
+    customfield_14402?: { value?: string };
+    customfield_10067?: unknown;
+    priority?: { name?: string };
+    parent?: { key?: string };
+    issuelinks?: unknown;
+  };
+};
 function parseIssuelinks(raw: unknown): JiraLinkParsed[] {
   if (!Array.isArray(raw)) return [];
   const result: JiraLinkParsed[] = [];
-  for (const link of raw as Array<Record<string, any>>) {
+  for (const link of raw as JiraIssueLinkRaw[]) {
     const t = link?.type?.name ?? "Relates";
     if (link?.outwardIssue) {
       const i = link.outwardIssue;
@@ -80,6 +116,7 @@ async function fetchWithTimeout(url: string, options: RequestInit): Promise<Resp
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const key = searchParams.get("key")?.trim().toUpperCase() ?? "";
+  const strict = searchParams.get("strict") === "1";
 
   if (!key || !/^[A-Z][A-Z0-9]*-\d+$/.test(key)) {
     return NextResponse.json(
@@ -125,6 +162,12 @@ export async function GET(request: Request) {
     const data = await res.json();
 
     if (!data.issues || (data.issues as unknown[]).length === 0) {
+      if (strict) {
+        return NextResponse.json(
+          { error: `${key} 티켓을 Jira에서 확인할 수 없습니다.` },
+          { status: 404 },
+        );
+      }
       // JIRA에서 가져올 수 없을 때 — TICKET_OVERRIDES + 플레이스홀더로 fallback
       const ov = TICKET_OVERRIDES[key] ?? {};
       const ticket = {
@@ -140,7 +183,7 @@ export async function GET(request: Request) {
       return NextResponse.json({ ticket });
     }
 
-    const issue = (data.issues as Array<Record<string, any>>)[0];
+    const issue = (data.issues as JiraIssueRaw[])[0];
     const override = TICKET_OVERRIDES[issue.key] ?? {};
     const f = issue.fields;
     const ticket: Ticket = {

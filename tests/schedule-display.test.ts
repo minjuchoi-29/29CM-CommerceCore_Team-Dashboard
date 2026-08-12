@@ -3,9 +3,11 @@ import test from "node:test";
 
 import {
   compactSchedulesForDisplay,
+  isActionableScheduleConfirmation,
   isPrimaryScheduleRange,
   isMeaningfulScheduleHistoryRow,
   isStaleAutomaticSchedule,
+  partitionRedundantLegacyMilestones,
   type ScheduleDisplayRow,
 } from "../lib/schedule-display";
 
@@ -105,6 +107,89 @@ test("날짜가 없더라도 담당자·설명이 있는 수동 마일스톤과 
 
   assert.deepEqual(result.current, [datedWeekly, manualWithContext, standalonePlaceholder]);
   assert.equal(result.redundantPlaceholderCount, 0);
+});
+
+test("TM-2215 같은 날짜의 기본 수동 Release보다 Weekly Launch를 우선 표시한다", () => {
+  const manualRelease: ScheduleDisplayRow = {
+    role: "Release", phase: "Release", detail: "Release", person: "-",
+    start: "2026-08-27", end: "2026-08-27", status: "예정", source: "manual",
+  };
+  const weeklyLaunch: ScheduleDisplayRow = {
+    role: "Launch", phase: "Launch", detail: "Launch", person: "-",
+    start: "2026-08-27", end: "2026-08-27", status: "예정",
+    source: "jira_weekly", sourceWeek: "33주차",
+  };
+
+  const rows = [manualRelease, weeklyLaunch];
+  const result = compactSchedulesForDisplay(
+    rows,
+    new Date("2026-08-11T12:00:00+09:00").getTime(),
+  );
+
+  assert.deepEqual(result.current, [weeklyLaunch]);
+  assert.equal(result.redundantMilestoneCount, 1);
+  assert.equal(rows.length, 2, "수동 저장 원본은 삭제하지 않는다");
+
+  const afterLaunch = compactSchedulesForDisplay(
+    rows,
+    new Date("2026-09-01T12:00:00+09:00").getTime(),
+  );
+  assert.deepEqual(afterLaunch.current, [], "Weekly Launch가 이력화된 뒤에도 기본 Release가 다시 나타나지 않는다");
+  assert.deepEqual(afterLaunch.history, [weeklyLaunch]);
+});
+
+test("편집용 분리는 중복 수동 Release를 숨기되 원본 행을 별도로 보존한다", () => {
+  const manualRelease: ScheduleDisplayRow = {
+    role: "Release", phase: "Release", detail: "Release", person: "-",
+    start: "2026-08-27", end: "2026-08-27", status: "예정", source: "manual",
+  };
+  const weeklyLaunch: ScheduleDisplayRow = {
+    role: "Launch", phase: "Launch", detail: "Launch", person: "-",
+    start: "2026-08-27", end: "2026-08-27", status: "예정", source: "jira_weekly", sourceWeek: "33주차",
+  };
+
+  const result = partitionRedundantLegacyMilestones([manualRelease, weeklyLaunch]);
+
+  assert.deepEqual(result.visible, [weeklyLaunch]);
+  assert.deepEqual(result.preserved, [manualRelease]);
+});
+
+test("같은 날짜라도 설명이 있는 수동 Release는 Weekly Launch와 함께 보호한다", () => {
+  const manualRelease: ScheduleDisplayRow = {
+    role: "Release", phase: "Release", detail: "운영 승인 후 점진 배포", person: "담당 PM",
+    start: "2026-08-27", end: "2026-08-27", status: "예정", source: "manual",
+  };
+  const weeklyLaunch: ScheduleDisplayRow = {
+    role: "Launch", phase: "Launch", detail: "대고객 런칭",
+    start: "2026-08-27", end: "2026-08-27", status: "예정",
+    source: "jira_weekly", sourceWeek: "33주차",
+  };
+
+  const result = compactSchedulesForDisplay(
+    [manualRelease, weeklyLaunch],
+    new Date("2026-08-11T12:00:00+09:00").getTime(),
+  );
+
+  assert.deepEqual(result.current, [manualRelease, weeklyLaunch]);
+  assert.equal(result.redundantMilestoneCount, 0);
+});
+
+test("확인 필요 집계는 일반 실행 일정만 포함하고 미정·Release·Launch는 제외한다", () => {
+  assert.equal(isActionableScheduleConfirmation({
+    role: "QA", phase: "QA", status: "확인필요",
+  }), true);
+  assert.equal(isActionableScheduleConfirmation({
+    role: "개발", phase: "개발", status: "진행중",
+  }), true);
+  assert.equal(isActionableScheduleConfirmation({
+    role: "개발", phase: "개발", status: "미정",
+  }), false);
+  assert.equal(isActionableScheduleConfirmation({
+    role: "Release", phase: "Release", status: "확인필요",
+  }), false);
+  assert.equal(isActionableScheduleConfirmation({
+    role: "Launch", phase: "Launch", status: "예정",
+  }), false);
 });
 
 test("TM-2771 과거 자동 예정·오래된 진행 일정은 현재가 아니라 이력으로 분리한다", () => {

@@ -2,6 +2,7 @@
 import { useState, useMemo, useEffect, useCallback, useRef, Fragment } from "react";
 import Link from "next/link";
 import TicketCopyButton from "@/app/components/TicketCopyButton";
+import ScheduleEditor, { type EditableScheduleRow } from "@/app/jira-tickets/ScheduleEditor";
 import TeamWorkstreamSummary from "@/app/jira-tickets/TeamWorkstreamSummary";
 import { Tooltip } from "@/app/components/Tooltip";
 import { ActivityEntry } from "@/lib/activity";
@@ -23,7 +24,7 @@ import {
   selectCompareSnapshot,
   summarizeTransitions,
 } from "@/lib/transitions";
-import type { WeeklyNote, UpdateCandidate, ScheduleSource, WeeklySourceText, WeeklySyncMeta, WeeklyDetectedSource, WeeklyReplaySource } from "@/lib/weekly-types";
+import type { WeeklyNote, UpdateCandidate, WeeklySourceText, WeeklySyncMeta, WeeklyDetectedSource, WeeklyReplaySource } from "@/lib/weekly-types";
 import { filterVisibleTickets } from "@/lib/ticket-utils";
 import { isTicketPastRolePhase } from "@/lib/derived/phase-order";
 import {
@@ -36,9 +37,11 @@ import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@
 import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/search-target";
 import {
   compactSchedulesForDisplay,
+  isActionableScheduleConfirmation,
   isMeaningfulScheduleHistoryRow,
   isPrimaryScheduleRange,
   isStaleAutomaticSchedule,
+  partitionRedundantLegacyMilestones,
 } from "@/lib/schedule-display";
 import { selectOpenWeeklyNotesForDisplay } from "@/lib/weekly-note-display";
 import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
@@ -67,6 +70,16 @@ import {
   getTicketViewLifecycle,
   selectWeeklySyncTargets,
 } from "@/lib/weekly-targets";
+import {
+  DASHBOARD_JIRA_SYNC_REQUEST_EVENT,
+  DASHBOARD_JIRA_SYNC_STATE_EVENT,
+  DASHBOARD_LIST_CONTEXT_EVENT,
+  DASHBOARD_SEARCH_CHANGE_EVENT,
+  DASHBOARD_TICKET_INDEX_EVENT,
+  DASHBOARD_TICKETS_ADDED_EVENT,
+  type DashboardSearchChangeDetail,
+  type DashboardTicketsAddedDetail,
+} from "@/lib/dashboard-events";
 import {
   type TrackState,
   TRACK_STATES,
@@ -143,29 +156,7 @@ const ROLE_COLOR: Record<string, string> = {
   "개발FE":  "bg-cyan-500",
 };
 
-type RoleSchedule = {
-  role: string;
-  person: string;
-  start: string;
-  end: string;
-  status: "완료" | "진행중" | "예정" | "미정" | "확인필요";
-  detail?: string;
-  detailPerson?: string;
-  vacationDays?: number;
-  // Weekly sync source metadata (optional, backward compatible)
-  source?: ScheduleSource;
-  sourceWeek?: string;
-  manualLocked?: boolean;
-  mergeKey?: string;
-  lastSeenAt?: string;
-  confidence?: "high" | "medium" | "low";
-  // Phase taxonomy + resource team 분리 (optional, backward compatible).
-  // 기존 row는 없을 수 있음 → infer via inferPhase(role) helper로 fallback.
-  phase?: "Kick-Off" | "기획" | "디자인" | "개발" | "QA" | "Release" | "Launch" | "기타";
-  resourceTeam?: string | null;
-  archivedAt?: string;
-  archiveReason?: string;
-};
+type RoleSchedule = EditableScheduleRow;
 
 // 기존 row에 phase가 없을 때 role 문자열에서 phase를 추정.
 // weekly-parser의 extractPhaseAndResource와 일관된 룰 (lib import는 client bundle 부담 → 인라인).
@@ -498,10 +489,7 @@ function calcWorkingDays(start: string, end: string): number {
   return count;
 }
 
-// ─── Placeholder schedule helpers (module-level, GanttChart + PlaceholderSummary 공유) ───
-// 미확정 일정 분류·사유·severity 정책은 GanttChart 내부에 있던 로직을
-// 2026-06-02 module-level로 승격 — Focus Mode top-strip(PlaceholderSummary)이 같은 분류를
-// 사용하도록 단일 source of truth 유지. GanttChart placeholder grid와 drift 방지.
+// ─── Gantt 내부의 미확정 일정 분류·사유·severity 정책 ───
 
 function isPlaceholderSchedule(r: RoleSchedule): boolean {
   const noDate = !r.start && !r.end;
@@ -766,7 +754,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   ticketActive?: boolean;        // 진행중·완료 티켓: Kick-Off 미입력 시 "확인필요", Release/Launch 미입력 시 "미정"
   ticketStatus?: string;         // Schedule Reconciliation Phase 1: Jira status — overdue suppression 판정
   onEditRow?: (r: RoleSchedule) => void;
-  highlightRowKey?: string | null; // PlaceholderSummary 클릭으로 강조될 placeholder row의 stable key
+  highlightRowKey?: string | null; // 외부 진입 시 강조할 placeholder row의 stable key
 }) {
   // 미확정 일정 섹션 펼치기 — 기본 접힘.
   const [showPlaceholders, setShowPlaceholders] = useState(false);
@@ -877,17 +865,11 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   //   PM은 "이 티켓이 지금까지 무엇을 했는가"를 봐야 하므로 history를 숨기지 않는다.
   //   톤다운은 row wrapper opacity로 처리 (아래 렌더 부분).
 
-  // 배포일(Release)과 오픈일(Launch)이 같은 날이면 오픈일 숨김 (dedup).
-  const dedupedRoles = (() => {
-    const releaseRow = sortedRoles.find(r => (r.phase ?? inferPhase(r.role)) === "Release");
-    const launchRow  = sortedRoles.find(r => (r.phase ?? inferPhase(r.role)) === "Launch");
-    if (releaseRow?.end && launchRow?.end && releaseRow.end === launchRow.end) {
-      return sortedRoles.filter(r => (r.phase ?? inferPhase(r.role)) !== "Launch");
-    }
-    return sortedRoles;
-  })();
+  // Release/Launch 중복은 compactSchedulesForDisplay가 source와 설명을 비교해 정리한다.
+  // 같은 날짜라는 이유만으로 Weekly Launch를 숨기지 않는다.
+  const dedupedRoles = sortedRoles;
 
-  // Placeholder 분리 — module-level isPlaceholderSchedule 사용 (PlaceholderSummary와 공유)
+  // Placeholder 분리 — module-level 정책을 Gantt의 목록·집계가 함께 사용
   const confirmedRoles   = dedupedRoles.filter(r => !isPlaceholderSchedule(r));
   const placeholderRoles = dedupedRoles.filter(isPlaceholderSchedule);
   const overdueCount = confirmedRoles.filter(r => {
@@ -919,7 +901,7 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
     return "weak";
   })();
 
-  // 미확정 사유는 module-level placeholderScheduleReason 사용 (PlaceholderSummary와 공유).
+  // 미확정 사유는 module-level placeholderScheduleReason을 사용한다.
   // local alias 유지로 기존 callsite 변경 최소화.
   const placeholderReason = placeholderScheduleReason;
 
@@ -1434,198 +1416,30 @@ function GanttChart({ roles, forceShowPastDone, extendedView, fitToContent, tick
   );
 }
 
-/** 미확정 일정 Summary — Focus Mode 상단 strip(`strip` layout) + Split View Overview 카드(`card` layout).
- *
- *  목적: PM이 "지금 확정해야 할 일정"을 Gantt까지 스크롤 없이 즉시 파악.
- *
- *  표시 정책 (2026-06-04, 3차-보정 PR):
- *    - 0건  → 컴포넌트 자체 렌더 안 함 (early return null)
- *    - 1~3건 → 전부 펼침 (토글 없음)
- *    - 4건+ → severity 내림차순(red→amber→gray)으로 상위 3건 표시 + "+N건 더 보기" 토글
- *
- *  chip 표시: 카드형 수직 stack (시스템 로그 톤 X)
- *    Line 1: severity dot + (milestone diamond?) + phase 라벨 (bold severity 색)
- *    Line 2: 담당 · {person|resource} (있을 때만)
- *    Line 3: reason 텍스트
- *
- *  클릭: onJump(rowKey) → 부모가 (탭 전환 +) scrollIntoView + 강조 수행.
- */
-function PlaceholderSummary({ roles, onJump, highlightRowKey, layout = "strip" }: {
-  roles: RoleSchedule[];
-  onJump: (rowKey: string) => void;
-  highlightRowKey?: string | null;
-  layout?: "strip" | "card";
-}) {
-  const [expanded, setExpanded] = useState(false);
-
-  const placeholders = roles.filter(isPlaceholderSchedule);
-  if (placeholders.length === 0) return null;
-
-  // severity 내림차순 정렬 — 4건+ 절단 시 가장 critical한 항목이 상위 3건에 노출되도록
-  const SEVERITY_RANK: Record<"red" | "amber" | "gray", number> = { red: 0, amber: 1, gray: 2 };
-  const sorted = [...placeholders].sort((a, b) => {
-    const ra = SEVERITY_RANK[placeholderScheduleSeverity(placeholderScheduleReason(a))];
-    const rb = SEVERITY_RANK[placeholderScheduleSeverity(placeholderScheduleReason(b))];
-    return ra - rb;
-  });
-
-  const COLLAPSED_LIMIT = 3;
-  const shouldTruncate = sorted.length > COLLAPSED_LIMIT;
-  const visible = shouldTruncate && !expanded ? sorted.slice(0, COLLAPSED_LIMIT) : sorted;
-  const hiddenCount = shouldTruncate && !expanded ? sorted.length - COLLAPSED_LIMIT : 0;
-
-  const renderChip = (r: RoleSchedule) => {
-    const reason = placeholderScheduleReason(r);
-    const severity = placeholderScheduleSeverity(reason);
-    const phase = r.phase ?? inferPhase(r.role);
-    const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
-    const label = phase ? PHASE_LABEL[phase] : r.role;
-    const isMilestone = MILESTONE_ROLES.includes(r.role)
-      || phase === "Kick-Off" || phase === "Release" || phase === "Launch";
-    const rowKey = placeholderScheduleRowKey(r);
-    const isActive = highlightRowKey === rowKey;
-    const s = PLACEHOLDER_SEVERITY_STYLE[severity];
-    const showPerson = r.person && r.person !== "-";
-    const showResourceAsPerson = !showPerson && resourceTeam && resourceTeam !== label;
-
-    return (
-      <button
-        key={rowKey}
-        onClick={() => onJump(rowKey)}
-        className="flex flex-col items-start gap-0.5 px-2.5 py-1.5 rounded-lg text-left transition-all hover:opacity-85"
-        style={{
-          background: s.bg,
-          border: `1px solid ${s.border}`,
-          borderLeft: `3px solid ${s.dot}`,
-          boxShadow: isActive ? `0 0 0 2px ${s.dot}55, 0 0 10px ${s.dot}40` : undefined,
-          minWidth: layout === "strip" ? 140 : 0,
-        }}
-        title={`${label}${showPerson ? ` · ${r.person}` : showResourceAsPerson ? ` · ${resourceTeam}` : ""}: ${reason}\n클릭 시 Gantt에서 해당 행을 강조 표시합니다`}
-      >
-        {/* Line 1: severity dot + (milestone diamond?) + phase */}
-        <div className="flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: s.dot }} />
-          {isMilestone && (
-            <span
-              className="inline-block shrink-0"
-              style={{ width: 7, height: 7, background: s.color, transform: "rotate(45deg)", borderRadius: 1, opacity: 0.85 }}
-              aria-label="milestone"
-            />
-          )}
-          <span className="text-[12px] font-bold whitespace-nowrap" style={{ color: s.color }}>{label}</span>
-        </div>
-        {/* Line 2: 담당 (있을 때만) */}
-        {(showPerson || showResourceAsPerson) && (
-          <div className="text-[11px] font-medium pl-3 whitespace-nowrap" style={{ color: "var(--text-secondary)" }}>
-            담당 · {showPerson ? r.person : resourceTeam}
-          </div>
-        )}
-        {/* Line 3: reason */}
-        <div className="text-[10.5px] pl-3 leading-tight" style={{ color: s.color, opacity: 0.82 }}>
-          {reason}
-        </div>
-      </button>
-    );
-  };
-
-  const toggleButton = shouldTruncate && (
-    <button
-      key="__toggle"
-      onClick={() => setExpanded(e => !e)}
-      className="text-[11px] font-medium px-2.5 py-1.5 rounded-md transition-colors hover:opacity-80 self-stretch flex items-center"
-      style={{
-        color: "var(--text-secondary)",
-        background: "var(--bg-overlay)",
-        border: "1px dashed var(--border-2)",
-      }}
-      title={expanded ? "접기" : `남은 ${hiddenCount}건 모두 표시`}
-    >
-      {expanded ? "▴ 접기" : `+${hiddenCount}건 더 보기`}
-    </button>
-  );
-
-  // ── card layout: Split View Overview 탭에서 Action Guidance 다음 카드로 노출 ──
-  if (layout === "card") {
-    return (
-      <div
-        className="rounded-lg px-3 py-2.5 mb-3"
-        style={{ background: "rgba(251,191,36,0.04)", border: "1px solid rgba(251,191,36,0.32)" }}
-      >
-        <p
-          className="text-[11px] font-semibold uppercase tracking-wide mb-2 flex items-center gap-1.5"
-          style={{ color: "#fbbf24" }}
-        >
-          <span>⚠ 미확정 일정</span>
-          <span
-            className="px-1.5 py-0.5 rounded text-[10px] font-bold normal-case"
-            style={{ background: "rgba(251,191,36,0.18)", color: "#fbbf24" }}
-          >
-            {placeholders.length}건
-          </span>
-        </p>
-        <div
-          className="grid gap-1.5"
-          style={{ gridTemplateColumns: "repeat(auto-fill, minmax(180px, 1fr))" }}
-        >
-          {visible.map(renderChip)}
-        </div>
-        {toggleButton && <div className="mt-2 flex">{toggleButton}</div>}
-      </div>
-    );
-  }
-
-  // ── strip layout: Focus Mode 상단 strip ──
-  return (
-    <div
-      className="shrink-0 flex items-start gap-2 px-4 py-2 flex-wrap"
-      style={{ borderBottom: "1px solid var(--border)", background: "rgba(251,191,36,0.04)" }}
-    >
-      <span
-        className="text-[11px] font-bold uppercase tracking-wide shrink-0 mr-0.5 self-center"
-        style={{ color: "#fbbf24" }}
-        title="이 티켓에서 PM이 즉시 확정해야 할 일정 항목"
-      >
-        ⚠ 미확정 일정 {placeholders.length}건
-      </span>
-      <div className="flex items-stretch gap-1.5 flex-wrap">
-        {visible.map(renderChip)}
-        {toggleButton}
-      </div>
-    </div>
-  );
-}
-
 const MILESTONE_ROLES = ["Kick-Off", "Release", "Launch"];
 const MILESTONE_KO: Record<string, string> = {
   "Kick-Off": "시작일",
   "Release":  "배포일",
   "Launch":   "오픈일",
 };
-const MILESTONE_CHIP: Record<string, string> = {
-  "Kick-Off": "bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 border-indigo-200 dark:border-indigo-700/40",
-  "Release":  "bg-orange-50 dark:bg-orange-900/30 text-orange-600 dark:text-orange-400 border-orange-200 dark:border-orange-700/40",
-  "Launch":   "bg-green-50 dark:bg-green-900/30 text-green-700 dark:text-green-400 border-green-200 dark:border-green-700/40",
-};
-const MILESTONE_DOT: Record<string, string> = {
-  "Kick-Off": "bg-indigo-500",
-  "Release":  "bg-orange-500",
-  "Launch":   "bg-green-600",
-};
 const MILESTONE_DOT_HEX: Record<string, string> = {
   "Kick-Off": "#6366f1",
   "Release":  "#f97316",
   "Launch":   "#16a34a",
 };
-const PRESET_ROLES = ["기획", "디자인", "BE-SP", "BE-PP", "BE-CE", "BE-메가존", "FE-CFE", "FE-DFE", "FE-Sotatek", "Mobile", "DA", "QA"];
-const ALL_PRESET_ROLES = [...MILESTONE_ROLES, ...PRESET_ROLES];
-
-function isCustomRole(role: string) {
-  return !ALL_PRESET_ROLES.includes(role);
-}
-const STATUS_OPTIONS: RoleSchedule["status"][] = ["확인필요", "미정", "예정", "진행중", "완료"];
 
 function newRow(): RoleSchedule {
-  return { role: "기획", person: "", start: "", end: "", status: "예정" };
+  return {
+    role: "기획",
+    person: "",
+    start: "",
+    end: "",
+    status: "예정",
+    phase: "기획",
+    resourceTeam: null,
+    source: "manual",
+    manualLocked: true,
+  };
 }
 
 type EtrTicketInfo = {
@@ -1983,7 +1797,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [fetching, setFetching]     = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
   const [syncedAt, setSyncedAt]     = useState<Date | null>(null);
-  const [jiraSyncTargetCount, setJiraSyncTargetCount] = useState<number | null>(null);
   const [planningSyncing, setPlanningSyncing] = useState(false);
   const [planningSyncError, setPlanningSyncError] = useState<string | null>(null);
   const [planningSyncedAt, setPlanningSyncedAt] = useState<Date | null>(() => {
@@ -1994,6 +1807,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return Number.isFinite(parsed.getTime()) ? parsed : null;
   });
 
+  useEffect(() => {
+    if (fetching && tickets.length === 0) {
+      window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+        detail: { running: true, label: "Jira 불러오는 중…" },
+      }));
+      return;
+    }
+    if (!fetching) {
+      window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+        detail: { running: false },
+      }));
+    }
+  }, [fetching, tickets.length]);
+
   const [selected, setSelected]     = useState<Ticket | null>(null);
   const [quarters, setQuarters]     = useState<Set<string>>(new Set());
   const [projects, setProjects]     = useState<Set<string>>(new Set());
@@ -2003,12 +1830,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [targetFilter, setTargetFilter] = useState<Set<string>>(new Set());
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
   const [search, setSearch]         = useState("");
-  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // localStorage 기반 일정 데이터
   const [schedules, setSchedules]   = useState<Record<string, RoleSchedule[]>>({});
   const [editMode, setEditMode]     = useState(false);
   const [editRows, setEditRows]     = useState<RoleSchedule[]>([]);
+  const [preservedEditRows, setPreservedEditRows] = useState<RoleSchedule[]>([]);
   const [editError, setEditError]   = useState<string | null>(null);
   const [editFocusKey, setEditFocusKey] = useState<string | null>(null); // 직접 수정 버튼으로 진입 시 포커스할 행 키
   const editRowRefs = useRef<(HTMLDivElement | null)[]>([]); // 편집 폼 행 ref (스크롤용)
@@ -2084,8 +1911,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [focusForKey,      setFocusForKey]      = useState<string | null>(null);
   const [focusContext,     setFocusContext]      = useState<string | null>(null);
   const [sectionHighlight, setSectionHighlight] = useState<string | null>(null);
-  // PlaceholderSummary → Gantt placeholder row 강조 연결 (3차 PR, 2026-06-02)
-  const [highlightedScheduleRow, setHighlightedScheduleRow] = useState<string | null>(null);
   // Split View Overview 탭의 ▼ 참조 정보 그룹 펼침 상태 (4차 PR, 2026-06-05) — 기본 접힘.
   // 기존 referenceExpanded(Weekly 참고 메모 토글)와 다른 state — 이름 충돌 방지.
   const [overviewRefExpanded, setOverviewRefExpanded] = useState(false);
@@ -2106,7 +1931,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // Focus Mode 2-column 스크롤 대상 ref
   const focusLeftColRef  = useRef<HTMLDivElement>(null);
   const focusRightColRef = useRef<HTMLDivElement>(null);
-  // Split View 우측 panel scroll 컨테이너 — PlaceholderSummary card→Gantt row scroll에 사용
+  // Split View 우측 panel scroll 컨테이너
   const splitScrollRef   = useRef<HTMLDivElement>(null);
   // Action Resolve 피드백 — Focus Mode에서 action 수가 줄면 toast 표시
   const [resolveToast, setResolveToast]   = useState<{ count: number } | null>(null);
@@ -2232,15 +2057,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, [sortBy]);
   const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기" | "기획" | "디자인" | "준비중" | "개발" | "QA">("전체");
 
-  // 사용자 직접 추가 티켓 관리
-  const [addKeyInput, setAddKeyInput]     = useState("");
-  const [addKeyLoading, setAddKeyLoading] = useState(false);
-  const [addKeyError, setAddKeyError]     = useState<string | null>(null);
-  // Phase 3: 추가 후 강제 탭 이동 대신 toast (이동 link 포함)
-  const [addedTicketInfo, setAddedTicketInfo] = useState<{ key: string; suggestedTab: string } | null>(null);
-  const [addKeyProgress, setAddKeyProgress] = useState<{ current: number; total: number } | null>(null);
   const [newlyAddedKeys, setNewlyAddedKeys] = useState<Set<string>>(new Set());
-  const [duplicateKeys, setDuplicateKeys] = useState<Set<string>>(new Set());
   // customKeys: 모든 티켓이 TICKET_KEYS(코드)로 관리되므로 더 이상 사용 안 함
   const [hiddenKeys, setHiddenKeys]       = useState<Set<string>>(new Set());
   // Source 메타데이터 (secondary fetch — 메인 렌더 비블로킹)
@@ -2345,20 +2162,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (!response.ok || !Array.isArray(data.keys)) {
       throw new Error(data.error ?? "공용 추가 티켓 목록을 확인할 수 없습니다.");
     }
-    return data.keys as string[];
-  }
-
-  async function persistSharedTicketKeys(keys: string[], action: "add" | "remove" = "add") {
-    const response = await apiFetch("/api/tickets", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, keys }),
-    });
-    const data = await response.json();
-    if (!response.ok || data.ok !== true || !Array.isArray(data.keys)) {
-      throw new Error(data.error ?? "공용 티켓 목록 저장에 실패했습니다.");
-    }
-    sharedCustomKeysRef.current = data.keys as string[];
     return data.keys as string[];
   }
 
@@ -2490,6 +2293,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // Jira Sync: 미완료·최근 완료·신규 공용 티켓만 JIRA 재조회 → localStorage 병합
   const forceRefresh = useCallback(async () => {
+    window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+      detail: { running: true, label: "Jira Sync 중…" },
+    }));
     setFetching(true);
     setFetchError(null);
     try {
@@ -2507,7 +2313,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const sharedKeys = await fetchSharedCustomKeys();
       sharedCustomKeysRef.current = sharedKeys;
       const refreshPlan = buildTicketRefreshPlan(cachedTickets, sharedKeys, hiddenSync, new Date());
-      setJiraSyncTargetCount(refreshPlan.keys.length);
+      window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+        detail: { running: true, label: `Jira Sync 중 · ${refreshPlan.keys.length}개` },
+      }));
 
       let data: TicketListApiData;
       if (cachedTickets.length === 0) {
@@ -2850,9 +2658,83 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       );
     } finally {
       setFetching(false);
-      setJiraSyncTargetCount(null);
+      window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+        detail: { running: false },
+      }));
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const onSyncRequest = () => { void forceRefresh(); };
+    const onSearchChange = (event: Event) => {
+      const detail = (event as CustomEvent<DashboardSearchChangeDetail>).detail;
+      setSearch(detail?.applyToCurrentList ? detail.query : "");
+    };
+    const onTicketsAdded = (event: Event) => {
+      const detail = (event as CustomEvent<DashboardTicketsAddedDetail<Ticket>>).detail;
+      const added = Array.isArray(detail?.tickets)
+        ? detail.tickets.filter(ticket => !ticket.key.startsWith("ETR-"))
+        : [];
+      if (added.length === 0) return;
+      mergeIntoTicketCache(added);
+
+      // 기존 수동 일정·플래닝 값은 유지하고, 비어 있는 신규 티켓 메타만 초기화한다.
+      const scheduleUpdates: Record<string, RoleSchedule[]> = {};
+      const planningUpdates: Record<string, { design: TrackState; dev: TrackState }> = {};
+      for (const ticket of added) {
+        const kickoff = schedules[ticket.key]?.find(row => row.role === "Kick-Off");
+        if (ticket.startDate && (!kickoff || !kickoff.start)) {
+          scheduleUpdates[ticket.key] = [
+            {
+              role: "Kick-Off",
+              person: "-",
+              start: ticket.startDate,
+              end: ticket.startDate,
+              status: "예정",
+            },
+            ...(schedules[ticket.key] ?? []).filter(row => row.role !== "Kick-Off"),
+          ];
+        }
+
+        const lifecycle = getTicketViewLifecycle(ticket);
+        if (["active", "recently_completed", "completed"].includes(lifecycle) && !planning[ticket.key]) {
+          planningUpdates[ticket.key] = { design: "완료", dev: "완료" };
+        }
+      }
+
+      if (Object.keys(scheduleUpdates).length > 0) {
+        setSchedules(current => ({ ...current, ...scheduleUpdates }));
+        for (const [key, value] of Object.entries(scheduleUpdates)) {
+          fetch("/api/kv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: "cc-schedules", subKey: key, value }),
+          }).catch(() => {});
+        }
+      }
+      if (Object.keys(planningUpdates).length > 0) {
+        setPlanning(current => ({ ...current, ...planningUpdates }));
+        for (const [key, value] of Object.entries(planningUpdates)) {
+          fetch("/api/kv", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: "cc-planning", subKey: key, value }),
+          }).catch(() => {});
+        }
+      }
+
+      setNewlyAddedKeys(new Set(added.map(ticket => ticket.key)));
+      window.setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
+    };
+    window.addEventListener(DASHBOARD_JIRA_SYNC_REQUEST_EVENT, onSyncRequest);
+    window.addEventListener(DASHBOARD_SEARCH_CHANGE_EVENT, onSearchChange);
+    window.addEventListener(DASHBOARD_TICKETS_ADDED_EVENT, onTicketsAdded);
+    return () => {
+      window.removeEventListener(DASHBOARD_JIRA_SYNC_REQUEST_EVENT, onSyncRequest);
+      window.removeEventListener(DASHBOARD_SEARCH_CHANGE_EVENT, onSearchChange);
+      window.removeEventListener(DASHBOARD_TICKETS_ADDED_EVENT, onTicketsAdded);
+    };
+  }, [forceRefresh, planning, schedules, syncedAt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * 플래닝 화면 전용 Jira 메타 갱신.
@@ -3933,267 +3815,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setSnapshotsLoaded(false);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 티켓 키 직접 추가: 입력 → JIRA 단건 조회 → 상태 + localStorage 갱신
-  async function addTicket(key: string) {
-    const trimmed = key.trim().toUpperCase();
-    if (!trimmed) return;
-    if (!/^[A-Z][A-Z0-9]*-\d+$/.test(trimmed)) {
-      setAddKeyError("올바른 형식이 아닙니다. 예: TM-1234");
-      return;
-    }
-    // Phase 2: ETR 은 /etr-review 페이지에서만 추가 가능
-    if (trimmed.startsWith("ETR-")) {
-      setAddKeyError("ETR 요청은 [ETR 검토] 메뉴에서 추가해주세요.");
-      return;
-    }
-    if (tickets.some(t => t.key === trimmed)) {
-      setAddKeyError(`${trimmed}은(는) 이미 등록되어 있습니다.`);
-      setAddKeyInput("");
-      setDuplicateKeys(new Set([trimmed]));
-      setTimeout(() => setDuplicateKeys(new Set()), 3000);
-      return;
-    }
-    setAddKeyLoading(true);
-    setAddKeyError(null);
-    try {
-      const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(trimmed)}`);
-      const data = await res.json();
-      if (!res.ok || data.error) {
-        setAddKeyError(data.error ?? "티켓을 가져올 수 없습니다.");
-      } else {
-        const newTicket = data.ticket as Ticket;
-
-        // 다른 사용자도 일반 새로고침으로 볼 수 있도록 공용 KV 저장을 먼저 확인한다.
-        await persistSharedTicketKeys([trimmed]);
-        mergeIntoTicketCache([newTicket]);
-
-        // JIRA startDate → 시작일(Kick-Off) 등록
-        // 조건: Kick-Off 없거나, 있어도 날짜가 비어 있으면 Jira Start Date로 보정
-        // (사용자가 수동 입력한 날짜가 있으면 덮어쓰지 않음)
-        const existingKOOnAdd = schedules[trimmed]?.find(r => r.role === "Kick-Off");
-        if (newTicket.startDate && (!existingKOOnAdd || !existingKOOnAdd.start)) {
-          const kickoffRow: RoleSchedule = {
-            role: "Kick-Off",
-            person: "-",
-            start: newTicket.startDate,
-            end: newTicket.startDate,
-            status: "예정",
-          };
-          const newTicketSchedule = [kickoffRow, ...(schedules[trimmed] ?? []).filter(r => r.role !== "Kick-Off")];
-          setSchedules(prev => ({ ...prev, [trimmed]: newTicketSchedule }));
-          // subKey 방식: 해당 티켓만 업데이트
-          fetch("/api/kv", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: "cc-schedules", subKey: trimmed, value: newTicketSchedule }),
-          }).catch(() => {});
-        }
-
-        // Jira에서 실행/완료 단계로 확인된 티켓은 플래닝을 거친 것으로 간주한다.
-        // statusCategory를 우선하므로 "배포완료"처럼 이름만 완료인 실행 상태를 잘못 종료하지 않는다.
-        if (["active", "recently_completed", "completed"].includes(getTicketViewLifecycle(newTicket))) {
-          const nextEntry = { ...getPlanningVal(planning[trimmed]), design: "완료" as TrackState, dev: "완료" as TrackState };
-          setPlanning(prev => ({ ...prev, [trimmed]: nextEntry }));
-          fetch("/api/kv", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: "cc-planning", subKey: trimmed, value: nextEntry }),
-          }).catch(() => {});
-        }
-
-        setAddKeyInput("");
-        // Phase 3: 현재 탭 강제 이동 제거 — 사용자가 선택한 탭 유지.
-        // 추가된 티켓이 보일 탭은 toast 의 [이동] 링크로 안내.
-        const suggestedTab = getPlanningTabForTicket(newTicket);
-        setAddedTicketInfo({ key: trimmed, suggestedTab });
-        setTimeout(() => setAddedTicketInfo(null), 8000);
-        setNewlyAddedKeys(new Set([trimmed]));
-        setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
-
-        // 구글 시트 A열에 추가 (실패해도 티켓 추가에 영향 없음)
-        fetch("/api/sheet-append", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ keys: [trimmed] }),
-        }).catch(() => {});
-
-        // 메모가 없을 때만 AI 요약 1회 생성
-        const memoVal = memos[trimmed];
-        const hasMemo = typeof memoVal === "string" ? !!memoVal.trim() : !!memoVal?.text?.trim();
-        if (!hasMemo) {
-          setSummaryLoading(prev => new Set([...prev, trimmed]));
-          fetch(`/api/ai-summary?key=${encodeURIComponent(trimmed)}`)
-            .then(r => {
-              console.log("[ai-summary] HTTP status:", r.status, r.statusText);
-              return r.json();
-            })
-            .then(d => {
-              console.log("[ai-summary] response body:", d);
-              if (d.summary) saveMemoVersion(trimmed, d.summary, true);
-            })
-            .catch((err) => { console.error("[ai-summary] fetch error:", err); })
-            .finally(() => {
-              setSummaryLoading(prev => {
-                const next = new Set(prev);
-                next.delete(trimmed);
-                return next;
-              });
-            });
-        }
-      }
-    } catch (e) {
-      const isTimeout = e instanceof DOMException && e.name === "AbortError";
-      setAddKeyError(isTimeout
-        ? "요청 시간 초과 (20초)"
-        : e instanceof Error ? e.message : "네트워크 오류");
-    } finally {
-      setAddKeyLoading(false);
-    }
-  }
-
-  // 다중 티켓 추가 (쉼표/공백 구분)
-  async function addTickets(input: string) {
-    const keys = [...new Set(input.split(/[\s,]+/).map(k => k.trim().toUpperCase()).filter(Boolean))];
-    if (keys.length === 0) return;
-    if (keys.length === 1) return addTicket(keys[0]);
-
-    const invalid = keys.filter(k => !/^[A-Z][A-Z0-9]*-\d+$/.test(k));
-    if (invalid.length > 0) {
-      setAddKeyError(`형식 오류: ${invalid.join(", ")} (예: TM-1234)`);
-      return;
-    }
-    const dupKeys = keys.filter(k => tickets.some(t => t.key === k));
-    const newKeys = keys.filter(k => !tickets.some(t => t.key === k));
-
-    if (dupKeys.length > 0) {
-      setDuplicateKeys(new Set(dupKeys));
-      setTimeout(() => setDuplicateKeys(new Set()), 3000);
-    }
-
-    if (newKeys.length === 0) {
-      setAddKeyError(`이미 등록된 티켓입니다: ${dupKeys.join(", ")}`);
-      setAddKeyInput("");
-      return;
-    }
-
-    setAddKeyLoading(true);
-    setAddKeyError(null);
-    setAddKeyInput("");
-    setAddKeyProgress({ current: 0, total: newKeys.length });
-
-    const fetched: Ticket[] = [];
-    const errors: string[] = [];
-
-    for (let i = 0; i < newKeys.length; i++) {
-      setAddKeyProgress({ current: i + 1, total: newKeys.length });
-      try {
-        const res = await apiFetch(`/api/jira-tickets/single?key=${encodeURIComponent(newKeys[i])}`);
-        const data = await res.json();
-        if (!res.ok || data.error) errors.push(newKeys[i]);
-        else fetched.push(data.ticket as Ticket);
-      } catch {
-        errors.push(newKeys[i]);
-      }
-    }
-
-    if (fetched.length > 0) {
-      try {
-        // 성공한 Jira 티켓들을 한 번에 공용 KV에 저장하고 응답을 확인한 뒤 화면에 반영한다.
-        await persistSharedTicketKeys(fetched.map(ticket => ticket.key));
-      } catch (error) {
-        setAddKeyError(error instanceof Error ? error.message : "공용 티켓 목록 저장에 실패했습니다.");
-        setAddKeyProgress(null);
-        setAddKeyLoading(false);
-        return;
-      }
-      mergeIntoTicketCache(fetched);
-
-      // JIRA startDate → 시작일(Kick-Off) 등록
-      // 조건: Kick-Off 없거나, 있어도 날짜가 비어 있으면 Jira Start Date로 보정
-      const ticketsWithStart = fetched.filter(t => {
-        if (!t.startDate) return false;
-        const existingKO = schedules[t.key]?.find(r => r.role === "Kick-Off");
-        return !existingKO || !existingKO.start;
-      });
-      if (ticketsWithStart.length > 0) {
-        // subKey 방식: 각 티켓 별로 개별 업데이트 (전체 덮어쓰기 방지)
-        for (const t of ticketsWithStart) {
-          const kickoffRow: RoleSchedule = {
-            role: "Kick-Off",
-            person: "-",
-            start: t.startDate!,
-            end: t.startDate!,
-            status: "예정",
-          };
-          const newTicketSchedule = [kickoffRow, ...(schedules[t.key] ?? []).filter(r => r.role !== "Kick-Off")];
-          setSchedules(prev => ({ ...prev, [t.key]: newTicketSchedule }));
-          fetch("/api/kv", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: "cc-schedules", subKey: t.key, value: newTicketSchedule }),
-          }).catch(() => {});
-        }
-      }
-
-      // Jira 실행/완료 단계 티켓은 플래닝을 거친 것으로 처리한다.
-      const executedTickets = fetched.filter(t =>
-        ["active", "recently_completed", "completed"].includes(getTicketViewLifecycle(t))
-      );
-      if (executedTickets.length > 0) {
-        const entries: Record<string, unknown> = {};
-        for (const t of executedTickets) {
-          entries[t.key] = { ...getPlanningVal(planning[t.key]), design: "완료" as TrackState, dev: "완료" as TrackState };
-        }
-        setPlanning(prev => ({ ...prev, ...entries }));
-        for (const [key, value] of Object.entries(entries)) {
-          await fetch("/api/kv", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ key: "cc-planning", subKey: key, value }),
-          }).catch(() => {});
-        }
-      }
-
-      // 신규 추가 티켓 날짜 기록
-      const today = new Date().toISOString().split("T")[0];
-      const updatedDates = { ...ticketAddedDates };
-      for (const t of fetched) if (!updatedDates[t.key]) updatedDates[t.key] = today;
-      setTicketAddedDates(updatedDates);
-      fetch("/api/kv", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key: "cc-ticket-added-dates", value: updatedDates }) }).catch(() => {});
-
-      for (const t of fetched) {
-        const hasMemo = !!getCurrentMemo(t.key);
-        if (!hasMemo) {
-          setSummaryLoading(prev => new Set([...prev, t.key]));
-          fetch(`/api/ai-summary?key=${encodeURIComponent(t.key)}`)
-            .then(r => r.json())
-            .then(d => { if (d.summary) saveMemoVersion(t.key, d.summary, true); })
-            .catch(() => {})
-            .finally(() => { setSummaryLoading(prev => { const n = new Set(prev); n.delete(t.key); return n; }); });
-        }
-      }
-    }
-
-    setAddKeyProgress(null);
-    setAddKeyLoading(false);
-    if (fetched.length > 0) {
-      // Phase 3: 강제 탭 이동 제거. 현재 탭 유지.
-      // bulk add 토스트는 별도로 처리해도 되지만 일단 newlyAddedKeys highlight 만 유지.
-      setNewlyAddedKeys(new Set(fetched.map(t => t.key)));
-      setTimeout(() => setNewlyAddedKeys(new Set()), 3000);
-
-      // 구글 시트 A열에 일괄 추가
-      fetch("/api/sheet-append", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keys: fetched.map(t => t.key) }),
-      }).catch(() => {});
-    }
-    if (errors.length > 0) setAddKeyError(`추가 실패: ${errors.join(", ")}`);
-    else if (dupKeys.length > 0) setAddKeyError(`이미 등록된 티켓 제외: ${dupKeys.join(", ")}`);
-  }
-
   // 사용자 추가 티켓 제거
   // PR #33 — Priority KV save helpers (planning + execution 각각).
   //   Phase 7.1 동작 보존: 저장 실패 시 Promise<boolean> 반환 → 호출부 rollback.
@@ -5086,16 +4707,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return () => clearTimeout(timer);
   }, [newlyAddedKeys]);
 
-  useEffect(() => {
-    if (duplicateKeys.size === 0) return;
-    const firstKey = [...duplicateKeys][0];
-    const timer = setTimeout(() => {
-      document.querySelector(`[data-ticket-key="${firstKey}"]`)
-        ?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }, 100);
-    return () => clearTimeout(timer);
-  }, [duplicateKeys]);
-
   function getRoles(t: Ticket): RoleSchedule[] {
     return schedules[t.key] ?? t.roles ?? [];
   }
@@ -5127,62 +4738,45 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     });
   }
 
-  function saveSchedule(ticketKey: string, rows: RoleSchedule[]) {
-    const updated = { ...schedules, [ticketKey]: rows };
-    setSchedules(updated);
-
-    // 저장 상태 → saving
+  async function saveSchedule(ticketKey: string, rows: RoleSchedule[]): Promise<boolean> {
     if (kvSaveTimerRef.current) clearTimeout(kvSaveTimerRef.current);
     setKvSaveStatus("saving");
 
-    // subKey 방식: 서버가 현재 값을 읽어 해당 티켓만 교체 → race condition 최소화
-    fetch("/api/kv", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "cc-schedules", subKey: ticketKey, value: rows }),
-    })
-      .then(async (r) => {
-        if (!r.ok) {
-          const err = await r.json().catch(() => ({ error: "알 수 없는 오류" }));
-          console.error("[saveSchedule] KV 저장 실패:", err);
-          setKvSaveStatus("error");
-        } else {
-          setKvSaveStatus("saved");
-        }
-        kvSaveTimerRef.current = setTimeout(() => setKvSaveStatus("idle"), 3000);
-      })
-      .catch((e) => {
-        console.error("[saveSchedule] 네트워크 오류:", e);
-        setKvSaveStatus("error");
-        kvSaveTimerRef.current = setTimeout(() => setKvSaveStatus("idle"), 3000);
+    try {
+      // subKey 방식: 서버가 현재 값을 읽어 해당 티켓만 교체 → race condition 최소화
+      const response = await fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "cc-schedules", subKey: ticketKey, value: rows }),
       });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: "알 수 없는 오류" }));
+        console.error("[saveSchedule] KV 저장 실패:", error);
+        setKvSaveStatus("error");
+        return false;
+      }
+
+      // 공용 KV 저장이 성공한 뒤에만 현재 화면을 갱신한다.
+      setSchedules(previous => ({ ...previous, [ticketKey]: rows }));
+      setKvSaveStatus("saved");
+      return true;
+    } catch (error) {
+      console.error("[saveSchedule] 네트워크 오류:", error);
+      setKvSaveStatus("error");
+      return false;
+    } finally {
+      kvSaveTimerRef.current = setTimeout(() => setKvSaveStatus("idle"), 3000);
+    }
   }
 
   function startEdit(focusKey?: string) {
     if (!selected) return;
-    const existing = getRoles(selected).map(r => ({ ...r }));
-    const existingMap = Object.fromEntries(existing.map(r => [r.role, r]));
-
-    // 마일스톤 3개는 항상 상단 고정 (기존 데이터 있으면 사용, 없으면 빈 기본값)
-    const milestoneRows: RoleSchedule[] = MILESTONE_ROLES.map(role => {
-      if (existingMap[role]) return existingMap[role];
-      // Kick-Off: Jira Start Date로 pre-fill (날짜가 있을 때만)
-      if (role === "Kick-Off" && selected.startDate) {
-        return { role, person: "-", start: selected.startDate, end: selected.startDate, status: "예정" as const };
-      }
-      // 빈 placeholder — saveEdit에서 저장 제외됨 (날짜 없는 milestone은 KV 저장 안 됨)
-      return {
-        role,
-        person: "-",
-        start: "",
-        end: "",
-        status: "미정" as const,
-      };
-    });
-
-    // 나머지 작업 행 (마일스톤 제외), 오래된순 정렬
-    const workRows = existing
-      .filter(r => !MILESTONE_ROLES.includes(r.role))
+    const existing = getRoles(selected)
+      .map(row => {
+        const phase = row.phase ?? inferPhase(row.role) ?? "기타";
+        const resourceTeam = row.resourceTeam ?? inferResourceTeam(row.role) ?? null;
+        return { ...row, phase, resourceTeam };
+      })
       .sort((a, b) => {
         const aS = a.start ? new Date(a.start).getTime() : Infinity;
         const bS = b.start ? new Date(b.start).getTime() : Infinity;
@@ -5192,7 +4786,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         return aE - bE;
       });
 
-    setEditRows([...milestoneRows, ...workRows]);
+    // Release/Launch/Kick-Off 빈 기본 행은 만들지 않는다. 필요한 마일스톤은
+    // 편집기에서 사용자가 명시적으로 추가한다.
+    const { visible, preserved } = partitionRedundantLegacyMilestones(existing);
+    setEditRows(visible);
+    setPreservedEditRows(preserved);
     setEditFocusKey(focusKey ?? null);
     setEditMode(true);
   }
@@ -5202,10 +4800,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return `${r.role}|||${r.person}|||${r.start ?? ""}`;
   }
 
-  function saveEdit() {
+  async function saveEdit() {
     if (!selected) return;
     const invalid = editRows.find(r => {
-      if (!r.role || !r.person) return true;
+      if (!r.role) return true;
       // 미정/확인필요 상태는 날짜 불필요
       if (r.status === "미정" || r.status === "확인필요") return false;
       return !r.start || !r.end;
@@ -5213,7 +4811,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (invalid) {
       const missing: string[] = [];
       if (!invalid.role)   missing.push("작업명");
-      if (!invalid.person) missing.push("담당자명");
       if (invalid.status !== "미정" && invalid.status !== "확인필요") {
         if (!invalid.start) missing.push("시작일");
         if (!invalid.end)   missing.push("종료일");
@@ -5225,12 +4822,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     // 빈 milestone placeholder 저장 차단:
     // start/end 모두 비어 있는 MILESTONE_ROLES row는 KV에 저장하지 않음 (시작일 오염 방지).
     // 날짜가 하나라도 입력된 milestone, 일반 작업 row는 항상 보존.
-    const rowsToSave = editRows.filter(r => {
-      if (!MILESTONE_ROLES.includes(r.role)) return true; // 일반 작업 row는 무조건 보존
+    const editableRowsToSave = editRows.filter(r => {
+      const phase = r.phase ?? inferPhase(r.role);
+      if (!phase || !MILESTONE_ROLES.includes(phase)) return true; // 일반 작업 row는 무조건 보존
       return !!(r.start || r.end); // milestone은 날짜가 있을 때만 저장
     });
-    saveSchedule(selected.key, rowsToSave);
+    // 화면에서 감춘 과거 중복 마일스톤은 값 변경 없이 다시 합쳐 데이터 손실을 막는다.
+    const rowsToSave = [...editableRowsToSave, ...preservedEditRows];
+    const saved = await saveSchedule(selected.key, rowsToSave);
+    if (!saved) {
+      setEditError("공용 일정 저장에 실패했습니다. 입력 내용은 유지됩니다. 잠시 후 다시 시도해주세요.");
+      return;
+    }
     setEditMode(false);
+    setPreservedEditRows([]);
     // Activity 기록 (fire-and-forget)
     fetch("/api/activity", {
       method: "POST",
@@ -5240,14 +4845,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         ticketKey: selected.key,
         actor: userName,
         at: new Date().toISOString(),
-        meta: { rows: editRows.length },
+        meta: { rows: rowsToSave.length },
       }),
     }).catch(() => {});
   }
 
-  function updateRow(i: number, field: keyof RoleSchedule, value: string) {
+  function updateEditRow(i: number, patch: Partial<RoleSchedule>) {
     setEditRows(prev => prev.map((r, idx) => idx === i
-      ? { ...r, [field]: value, source: "manual", manualLocked: true }
+      ? { ...r, ...patch, source: "manual", manualLocked: true }
       : r
     ));
   }
@@ -5313,13 +4918,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kvLoaded, tickets.length]);
 
-  // addKeyError 자동 해제 (5초 후)
-  useEffect(() => {
-    if (!addKeyError) return;
-    const t = setTimeout(() => setAddKeyError(null), 5000);
-    return () => clearTimeout(t);
-  }, [addKeyError]);
-
   // key 기준 중복 제거 (배치 + 커스텀 동시 로드 시 race condition 방어)
   const dedupedTickets = useMemo(() => {
     // hidden hydrate 전에는 derived state를 모두 빈 결과로 두어 flicker 방지.
@@ -5335,6 +4933,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       return true;
     });
   }, [tickets, hiddenLoaded, hiddenKeys]);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(DASHBOARD_TICKET_INDEX_EVENT, {
+      detail: { tickets: dedupedTickets },
+    }));
+  }, [dedupedTickets]);
 
   // Phase 1: ETR Linked Work / Linked Docs
   const ticketByKey = useMemo(() => {
@@ -5764,6 +5368,17 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
     return result;
   }, [preFiltered, statusTab, sortBy, priorities, executionPriorities, reviewFilter, attentionFilter, newFilter, planningTab, getTicketAttention, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const statusLabel = statusTab === "전체" ? "" : ` · ${statusTab}`;
+    window.dispatchEvent(new CustomEvent(DASHBOARD_LIST_CONTEXT_EVENT, {
+      detail: {
+        scope: "tickets",
+        label: `${planningTab}${statusLabel}`,
+        keys: filtered.map(ticket => ticket.key),
+      },
+    }));
+  }, [filtered, planningTab, statusTab]);
 
   /**
    * Cross-tab hint dataset — search 만 적용. planningTab / quarters / levels 등
@@ -6389,9 +6004,75 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     setPlanningOpen(false);
   }
 
+  const selectedScheduleConfirmationCount = selected
+    ? compactSchedulesForDisplay(
+        getRoles(selected).map(row => ({ ...row, phase: row.phase ?? inferPhase(row.role) })),
+        TODAY_MS,
+      ).current.filter(isActionableScheduleConfirmation).length
+    : 0;
+
+  function renderScheduleEditor() {
+    return (
+      <ScheduleEditor
+        rows={editRows}
+        editError={editError}
+        focusKey={editFocusKey}
+        saving={kvSaveStatus === "saving"}
+        preservedLegacyCount={preservedEditRows.length}
+        rowRefs={editRowRefs}
+        makeFocusKey={makeEditFocusKey}
+        onChangeRow={(index, patch) => {
+          setEditError(null);
+          updateEditRow(index, patch);
+        }}
+        onRemoveRow={(index) => {
+          setEditError(null);
+          setEditRows(previous => previous.filter((_, rowIndex) => rowIndex !== index));
+        }}
+        onAddWork={() => {
+          setEditError(null);
+          setEditRows(previous => [...previous, newRow()]);
+        }}
+        onAddMilestone={(phase) => {
+          setEditError(null);
+          setEditRows(previous => [
+            ...previous,
+            {
+              role: phase,
+              person: "-",
+              start: "",
+              end: "",
+              status: "예정",
+              phase,
+              resourceTeam: null,
+              source: "manual",
+              manualLocked: true,
+            },
+          ]);
+        }}
+        onSort={(direction) => {
+          setEditRows(previous => [...previous].sort((a, b) => {
+            const aDate = a.start || a.end || "9999-12-31";
+            const bDate = b.start || b.end || "9999-12-31";
+            return direction === "oldest"
+              ? aDate.localeCompare(bDate)
+              : bDate.localeCompare(aDate);
+          }));
+        }}
+        onSave={() => { void saveEdit(); }}
+        onCancel={() => {
+          setEditMode(false);
+          setPreservedEditRows([]);
+          setEditError(null);
+          setEditFocusKey(null);
+        }}
+      />
+    );
+  }
+
   if (fetching && tickets.length === 0) {
     return (
-      <div className="flex items-center justify-center min-h-screen" style={{ background: "var(--bg-canvas)" }}>
+      <div className="flex items-center justify-center min-h-[calc(100vh-3.5rem)]" style={{ background: "var(--bg-canvas)" }}>
         <div className="text-center">
           <svg className="w-8 h-8 animate-spin text-indigo-400 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
@@ -6404,7 +6085,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   return (
-    <div className="flex min-h-screen" style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}>
+    <div className="flex min-h-[calc(100vh-3.5rem)]" style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}>
       {/* ── 리스트 패널 ── */}
       <div onClick={handleBackgroundClick} className={`ticket-board-list-panel ${selected ? "ticket-board-list-panel--detail-open" : ""} ${isDetailExpanded ? "shrink-0 overflow-hidden" : "flex-1 min-w-0"} ${isDetailExpanded ? "px-0 pt-0 pb-0" : "px-3 py-8"} overflow-hidden`} style={{ background: "var(--bg-canvas)", ...(isDetailExpanded ? { width: "220px", borderRight: "1px solid var(--border-2)" } : {}) }}>
         {isDetailExpanded && (
@@ -6576,20 +6257,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 숨긴 티켓 {hiddenMeta.length}
               </button>
             )}
-            <button
-              onClick={forceRefresh}
-              disabled={fetching || planningSyncing}
-              title="진행 중·최근 완료·새 공용 티켓만 Jira에서 빠르게 재동기화"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium disabled:opacity-50 transition-colors"
-              style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
-            >
-              <svg className={`w-3 h-3 ${fetching ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-              {fetching
-                ? jiraSyncTargetCount === null ? "Syncing…" : `${jiraSyncTargetCount}개 Sync…`
-                : "Jira Sync"}
-            </button>
             {/* ── Candidate Review 모달 (Phase C) ─────────────────── */}
             {candidatePanelOpen && (() => {
               const FIELD_LABEL: Record<string, string> = {
@@ -8032,150 +7699,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <span className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 text-[9px]" style={{ color: "#a78bfa" }}>▾</span>
             </div>
           </div>
-
-          {/* 검색 그룹 */}
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>검색</span>
-            <div className="relative">
-              <svg className="absolute left-2.5 top-1/2 -translate-y-1/2" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-              <input
-                ref={searchInputRef}
-                type="text"
-                placeholder="티켓 번호 · 제목 · 담당자"
-                value={search}
-                onChange={e => setSearch(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === "Escape") {
-                    if (search) { setSearch(""); }
-                    else { (e.currentTarget as HTMLInputElement).blur(); }
-                  }
-                }}
-                className="pl-7 pr-7 py-1.5 rounded-lg text-xs border transition-all"
-                style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none", width: "210px" }}
-              />
-              {search && (
-                <button
-                  type="button"
-                  onClick={() => { setSearch(""); searchInputRef.current?.focus(); }}
-                  title="검색어 지우기 (Esc)"
-                  aria-label="검색어 지우기"
-                  className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold transition-colors"
-                  style={{ color: "var(--text-muted)", background: "var(--border-2)" }}
-                  onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-primary)"; (e.currentTarget as HTMLElement).style.background = "var(--text-subtle)"; }}
-                  onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; (e.currentTarget as HTMLElement).style.background = "var(--border-2)"; }}
-                >×</button>
-              )}
-            </div>
-          </div>
-
-          {/* 티켓 추가 그룹 — Phase 2: 실행 과제 전용. ETR 은 /etr-review 페이지에서 추가 */}
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-            <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>+ 과제 추가</span>
-            <div className="flex items-center gap-1.5">
-            <input
-              type="text"
-              placeholder="TM-1234, CMALL-5678 등 실행 과제 티켓"
-              value={addKeyInput}
-              onChange={e => { setAddKeyInput(e.target.value.toUpperCase()); setAddKeyError(null); }}
-              onKeyDown={e => e.key === "Enter" && addTickets(addKeyInput)}
-              className="px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-all"
-              style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none", width: "180px" }}
-            />
-            {addKeyInput && (
-              <button
-                onClick={() => { setAddKeyInput(""); setAddKeyError(null); }}
-                title="입력 초기화"
-                className="flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold transition-colors shrink-0"
-                style={{ color: "var(--text-muted)", background: "var(--border-2)" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-primary)"; (e.currentTarget as HTMLElement).style.background = "var(--text-subtle)"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; (e.currentTarget as HTMLElement).style.background = "var(--border-2)"; }}
-              >×</button>
-            )}
-            <button
-              onClick={() => addTickets(addKeyInput)}
-              disabled={addKeyLoading || !addKeyInput.trim()}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
-              style={{ background: "#7c3aed", color: "white" }}
-            >
-              {addKeyLoading ? (addKeyProgress ? `${addKeyProgress.current}/${addKeyProgress.total}` : "추가 중…") : "추가"}
-            </button>
-            {/* Phase 3: 추가 완료 토스트 — 이동 link 포함 (강제 이동 대신 사용자 선택) */}
-            {addedTicketInfo && (
-              <div
-                className="flex items-center gap-2 text-[11.5px] px-2.5 py-1 rounded-md"
-                style={{ background: "rgba(16,185,129,0.10)", border: "1px solid rgba(16,185,129,0.30)", color: "#34d399" }}
-              >
-                <span className="font-mono font-semibold">{addedTicketInfo.key}</span>
-                <span>추가됨</span>
-                {addedTicketInfo.suggestedTab !== planningTab && (
-                  <button
-                    onClick={() => {
-                      changeTab(addedTicketInfo.suggestedTab);
-                      setTimeout(() => {
-                        document.querySelector(`[data-ticket-key="${addedTicketInfo.key}"]`)
-                          ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                      }, 80);
-                      setAddedTicketInfo(null);
-                    }}
-                    className="ml-1 px-1.5 py-0.5 rounded text-[10.5px] hover:underline transition-colors"
-                    style={{ background: "rgba(16,185,129,0.18)", color: "#10b981", border: "1px solid rgba(16,185,129,0.35)" }}
-                    title={`${addedTicketInfo.suggestedTab} 탭으로 이동`}
-                  >→ {addedTicketInfo.suggestedTab}</button>
-                )}
-                <button
-                  onClick={() => setAddedTicketInfo(null)}
-                  className="ml-auto opacity-60 hover:opacity-100"
-                  title="닫기"
-                >×</button>
-              </div>
-            )}
-            {addKeyError && (() => {
-              // 이미 등록된 티켓 키 추출 → 클릭 시 해당 행으로 스크롤
-              const dupMatch = addKeyError.match(/^([A-Z][A-Z0-9]*-\d+)은\(는\) 이미 등록/);
-              const dupKey   = dupMatch ? dupMatch[1] : null;
-              const scrollTo = (key: string) => {
-                // Phase 2: ETR 은 별도 페이지(/etr-review) — duplicate scroll redirect
-                if (key.startsWith("ETR-")) {
-                  window.location.href = "/etr-review";
-                  return;
-                }
-                setPlanningTab("전체");
-                setStatusTab("전체");
-                setReviewFilter(false);
-                setTimeout(() => {
-                  document.querySelector(`[data-ticket-key="${key}"]`)
-                    ?.scrollIntoView({ behavior: "smooth", block: "center" });
-                  setDuplicateKeys(new Set([key]));
-                  // 하이라이트 끝나면 에러 문구도 함께 제거
-                  setTimeout(() => {
-                    setDuplicateKeys(new Set());
-                    setAddKeyError(null);
-                  }, 2500);
-                }, 150);
-              };
-              return (
-                <span className="text-xs flex items-center gap-1" style={{ color: "#f87171" }}>
-                  {dupKey ? (
-                    <>
-                      <button
-                        onClick={() => scrollTo(dupKey)}
-                        className="underline underline-offset-2 font-semibold transition-opacity hover:opacity-70"
-                        style={{ color: "#f87171" }}
-                        title="목록에서 위치 확인"
-                      >
-                        {dupKey}
-                      </button>
-                      은(는) 이미 등록되어 있습니다 ↑
-                    </>
-                  ) : addKeyError}
-                </span>
-              );
-            })()}
-            </div>
-          </div>
         </div>
-
-
 
         {/* 티켓 목록 */}
         <div className="rounded-xl overflow-hidden" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
@@ -8352,7 +7876,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const { ticket: t, teamSignals, weeklyUpdate } = item;
               const isSelected = selected?.key === t.key;
               const isNew = newlyAddedKeys.has(t.key);
-              const isDuplicate = duplicateKeys.has(t.key);
               const preplanningView = getPreplanningView(t.status, planning[t.key]);
 
               // ETA 경고: 완료/진행중 상태가 아닌데 ETA가 경과·임박한 경우
@@ -8372,7 +7895,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
               // row background = selection/focus 전용 (상태 표현은 left border + badge 중심)
               const rowBg = isSelected  ? "var(--accent-workspace-soft)"
-                : isDuplicate           ? "rgba(245,158,11,0.08)"   // 임시: 중복 감지
                 : isNew                 ? "rgba(16,185,129,0.06)"   // 임시: 신규 추가
                 : undefined;
 
@@ -8397,7 +7919,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <div
                   key={t.key}
                   data-ticket-key={t.key}
-                  className={`group transition-colors duration-700 ${isDuplicate ? "ring-1 ring-inset ring-amber-700/40" : ""} cursor-pointer`}
+                  className="group transition-colors duration-700 cursor-pointer"
                   style={fmCardStyle}
                   onClick={() => handleSelect(t)}
                   onMouseEnter={e => { if (!isSelected) (e.currentTarget as HTMLDivElement).style.background = "var(--bg-item)"; }}
@@ -8636,12 +8158,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {SHOW_LIST_MILESTONES && !isDetailExpanded && (() => {
                     const lifecycle = getTicketViewLifecycle(t);
                     const isTicketActive = lifecycle === "active" || lifecycle === "recently_completed";
-                    const existingMap = Object.fromEntries(
-                      (schedules[t.key] ?? [])
-                        .filter(r => MILESTONE_ROLES.includes(r.role))
-                        .map(r => [r.role, r])
-                    );
-                    const hasAnyMilestoneData = Object.keys(existingMap).length > 0;
+                    const milestoneRows = compactSchedulesForDisplay(
+                      (schedules[t.key] ?? []).map(row => ({ ...row, phase: row.phase ?? inferPhase(row.role) })),
+                      Number.NEGATIVE_INFINITY,
+                    ).current.filter(row => {
+                      const phase = row.phase ?? inferPhase(row.role);
+                      return !!phase && MILESTONE_ROLES.includes(phase);
+                    });
+                    const hasAnyMilestoneData = milestoneRows.length > 0;
 
                     // 플래닝 상태 먼저 계산 (서브행 표시 조건에 사용)
                     const p = getPlanningVal(planning[t.key]);
@@ -8654,19 +8178,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     // → 그 외는 항상 표시 (대기중/대기중인 2756도 포함)
                     if (!isTicketActive && !hasAnyMilestoneData && planningAllResolved) return null;
 
-                    // 실제 데이터가 있는 milestone만 표시 — placeholder 행 생성 없음 (Bug 4, 6)
-                    // 배포일(Release)과 오픈일(Launch)이 같은 날이면 오픈일 숨김
-                    const milestones: RoleSchedule[] = (() => {
-                      const present = MILESTONE_ROLES
-                        .map(role => existingMap[role])
-                        .filter((r): r is RoleSchedule => !!r);
-                      const releaseRow = present.find(r => r.role === "Release");
-                      const launchRow  = present.find(r => r.role === "Launch");
-                      if (releaseRow?.end && launchRow?.end && releaseRow.end === launchRow.end) {
-                        return present.filter(r => r.role !== "Launch");
-                      }
-                      return present;
-                    })();
+                    // 실제 근거가 있는 milestone만 표시한다. 같은 날짜의 과거 기본 행은
+                    // 공통 표시 정책에서 정리하고, Weekly Launch를 임의로 숨기지 않는다.
+                    const milestones = [...milestoneRows].sort((a, b) => {
+                      const aPhase = a.phase ?? inferPhase(a.role) ?? "기타";
+                      const bPhase = b.phase ?? inferPhase(b.role) ?? "기타";
+                      return MILESTONE_ROLES.indexOf(aPhase) - MILESTONE_ROLES.indexOf(bPhase);
+                    });
                     return (
                       // 서브행: px-4(16) + w-6(24) + w-8(32) + w-32(128) = 200px → 타이틀 컬럼 시작에 정렬
                       <div className="flex items-center flex-wrap gap-x-3 gap-y-1 pb-2.5 pr-4" style={{ paddingLeft: "200px" }}>
@@ -8692,7 +8210,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             >
                               {mi > 0 && <span className="mr-1" style={{ color: "var(--border-2)" }}>·</span>}
                               <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: dotColor }} />
-                              <span className="font-medium" style={{ color: nameColor }}>{MILESTONE_KO[r.role] ?? r.role}</span>
+                              <span className="font-medium" style={{ color: nameColor }}>{MILESTONE_KO[r.phase ?? r.role] ?? r.role}</span>
                               {r.detail && (
                                 <span className="opacity-60 max-w-[8rem] truncate" title={r.detail}>({r.detail})</span>
                               )}
@@ -8985,6 +8503,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             const fmMemo  = getCurrentMemo(selected.key);
             const fmPlan  = getPlanningVal(planning[selected.key]);
             const fmRoles = schedules[selected.key] ?? selected.roles ?? [];
+            const fmConfirmationCount = compactSchedulesForDisplay(
+              fmRoles.map(row => ({ ...row, phase: row.phase ?? inferPhase(row.role) })),
+              TODAY_MS,
+            ).current.filter(isActionableScheduleConfirmation).length;
             const fmNotes = planningNotes[selected.key] ?? [];
             const fmWorkstreamView = getTeamWorkstream(selected);
             const fmWeeklyFirst = fmWorkstreamView.lifecycle !== "planning";
@@ -9121,28 +8643,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     })}
                   </div>
                 )}
-
-                {/* ── 미확정 일정 Summary strip (3차 PR, 2026-06-02) ──
-                    Action Required 바로 아래로 승격해 PM이 "지금 확정할 일정"을
-                    Gantt 스크롤 없이 즉시 인지. chip 클릭 → 해당 Gantt placeholder row 강조. */}
-                {(fmWorkstreamView.lifecycle !== "planning" || fmRoles.some(role => !MILESTONE_ROLES.includes(role.role))) && <PlaceholderSummary
-                  roles={fmRoles}
-                  highlightRowKey={highlightedScheduleRow}
-                  onJump={(rowKey) => {
-                    setHighlightedScheduleRow(rowKey);
-                    // 1) Schedule 섹션을 화면에 띄움 → 2) tick 후 해당 row까지 추가 스크롤
-                    requestAnimationFrame(() => {
-                      const scheduleSection = focusRightColRef.current?.querySelector<HTMLElement>('[data-fm-section="schedule"]');
-                      scheduleSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-                      setTimeout(() => {
-                        const rowEl = focusRightColRef.current?.querySelector<HTMLElement>(`[data-fm-row-key="${rowKey}"]`);
-                        rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
-                      }, 280);
-                    });
-                    // auto-clear after 3.5s
-                    setTimeout(() => setHighlightedScheduleRow(null), 3500);
-                  }}
-                />}
 
                 {/* ── 2-column body ── */}
                 <div className={`ticket-board-focus-body flex flex-1 min-h-0 overflow-hidden ${fmWorkstreamView.lifecycle === "planning" ? "ticket-board-focus-body--planning" : ""}`}>
@@ -9746,21 +9246,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     >
                       <div className="mb-2 flex items-start justify-between gap-3">
                         <div>
-                          <p className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-                            세부 일정
-                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            <p className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
+                              세부 일정
+                            </p>
+                            {fmConfirmationCount > 0 ? (
+                              <span className="rounded px-1.5 py-0.5 text-[10.5px] font-medium" style={{ color: "#936520", background: "#fff5e5", border: "1px solid #e8ca98" }}>
+                                확인 필요 {fmConfirmationCount}건
+                              </span>
+                            ) : null}
+                          </div>
                           <p className="mt-0.5 text-[10.5px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
                             실행 일정을 날짜순으로 확인합니다. 과거·중복 일정은 이력으로 정리됩니다.
                           </p>
                         </div>
-                        {!editMode && fmRoles.length > 0 && (
+                        {!editMode && (
                           <button
-                            onClick={() => { setEditRows(fmRoles.map(r => ({ ...r }))); setEditMode(true); setEditError(null); }}
-                            className="shrink-0 text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
-                          >편집</button>
+                            onClick={() => startEdit()}
+                            className="shrink-0 text-[11px] transition-colors"
+                            style={{ color: "#315b91" }}
+                          >{fmRoles.length > 0 ? "편집" : "일정 입력"}</button>
                         )}
                       </div>
-                      {fmRoles.length > 0 ? (
+                      {editMode ? renderScheduleEditor() : fmRoles.length > 0 ? (
                         <FocusScheduleTimeline
                           roles={fmRoles}
                           ticketDone={fmWorkstreamView.lifecycle === "recently_completed" || fmWorkstreamView.lifecycle === "completed"}
@@ -10201,33 +9709,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 </div>
               );
             })()}
-
-            {/* ── 미확정 일정 Summary (Split View, 3차-보정 PR 2026-06-04) ──
-                Action Guidance 바로 아래에 노출 → PM이 메타·문서·Weekly까지 스크롤 없이
-                "지금 확정해야 할 일정"을 즉시 파악. Gantt(ops 탭) 내부 하단의 상세 영역은 그대로 유지. */}
-            <PlaceholderSummary
-              roles={schedules[selected.key] ?? selected.roles ?? []}
-              highlightRowKey={highlightedScheduleRow}
-              layout="card"
-              onJump={(rowKey) => {
-                setHighlightedScheduleRow(rowKey);
-                // Split View 흐름: ops 탭으로 전환 → 다음 frame에 scroll + highlight.
-                setDetailTab("ops");
-                requestAnimationFrame(() => {
-                  setTimeout(() => {
-                    const root = splitScrollRef.current;
-                    if (!root) return;
-                    const scheduleSection = root.querySelector<HTMLElement>('[data-focus-section="schedule"]');
-                    scheduleSection?.scrollIntoView({ behavior: "smooth", block: "start" });
-                    setTimeout(() => {
-                      const rowEl = root.querySelector<HTMLElement>(`[data-fm-row-key="${rowKey}"]`);
-                      rowEl?.scrollIntoView({ behavior: "smooth", block: "center" });
-                    }, 260);
-                  }, 60);
-                });
-                setTimeout(() => setHighlightedScheduleRow(null), 3500);
-              }}
-            />
 
             {/* ── Health 카드 (4차 PR): 메타에서 분리 — "위험한가?"를 우선 노출 ── */}
             {selected.healthCheck && (
@@ -11751,48 +11232,21 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <div className="pt-2" style={{ borderTop: "none" }}>
               {/* 작업별 일정 헤더 */}
               <div className="flex items-center justify-between mb-3">
-                <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>작업별 일정</p>
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold" style={{ color: "var(--text-secondary)" }}>작업별 일정</p>
+                  {selectedScheduleConfirmationCount > 0 ? (
+                    <span className="rounded px-1.5 py-0.5 text-[10.5px] font-medium" style={{ color: "#936520", background: "#fff5e5", border: "1px solid #e8ca98" }}>
+                      확인 필요 {selectedScheduleConfirmationCount}건
+                    </span>
+                  ) : null}
+                </div>
                 {!editMode ? (
                   <button
                     onClick={() => startEdit()}
-                    className="text-[12px] font-medium text-indigo-500 hover:text-indigo-400 transition-colors"
+                    className="text-[12px] font-medium transition-colors"
+                    style={{ color: "#315b91" }}
                   >편집</button>
-                ) : (
-                  <div className="flex items-center gap-2">
-                    <div className="flex rounded-lg overflow-hidden text-[13px]" style={{ border: "1px solid var(--border-2)" }}>
-                      <button
-                        onClick={() => setEditRows(prev => {
-                          const milestones = prev.filter(r => MILESTONE_ROLES.includes(r.role));
-                          const works = prev.filter(r => !MILESTONE_ROLES.includes(r.role)).sort((a, b) => {
-                            if (!a.start && !b.start) return 0;
-                            if (!a.start) return 1;
-                            if (!b.start) return -1;
-                            return a.start.localeCompare(b.start);
-                          });
-                          return [...milestones, ...works];
-                        })}
-                        className="px-2 py-1 hover:opacity-80 transition-colors" style={{ color: "var(--text-muted)" }}
-                      >오래된순</button>
-                      <button
-                        onClick={() => setEditRows(prev => {
-                          const milestones = prev.filter(r => MILESTONE_ROLES.includes(r.role));
-                          const works = prev.filter(r => !MILESTONE_ROLES.includes(r.role)).sort((a, b) => {
-                            if (!a.start && !b.start) return 0;
-                            if (!a.start) return 1;
-                            if (!b.start) return -1;
-                            return b.start.localeCompare(a.start);
-                          });
-                          return [...milestones, ...works];
-                        })}
-                        className="px-2 py-1 hover:opacity-80 transition-colors" style={{ color: "var(--text-muted)", borderLeft: "1px solid var(--border-2)" }}
-                      >최신순</button>
-                    </div>
-                    <button onClick={saveEdit}
-                      className="text-[12px] bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium">저장</button>
-                    <button onClick={() => { setEditMode(false); setEditError(null); }}
-                      className="text-[12px] px-2 py-1 hover:opacity-80" style={{ color: "var(--text-muted)" }}>취소</button>
-                  </div>
-                )}
+                ) : null}
               </div>
 
               {/* 일정 빈 상태 안내 */}
@@ -11828,232 +11282,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               })()}
 
               {/* 편집 모드 */}
-              {editMode ? (
-                <div className="space-y-2">
-                  {/* 상단 작업 추가 버튼 */}
-                  <button
-                    onClick={() => setEditRows(prev => [newRow(), ...prev])}
-                    className="w-full text-xs font-medium text-indigo-400 hover:text-indigo-300 rounded-lg py-1.5 transition-colors" style={{ background: "rgba(99,102,241,0.07)", border: "1px dashed rgba(99,102,241,0.3)" }}
-                  >+ 작업 추가</button>
-                  {editRows.map((row, i) => {
-                    // (custom 분기는 phase + resourceTeam 모델로 대체됨 — 항상 detail input 표시)
-                    void isCustomRole;
-                    const errRole   = !!editError && !row.role;
-                    const errPerson = !!editError && !row.person;
-                    const errStart  = !!editError && row.status !== "미정" && !row.start;
-                    const errEnd    = !!editError && row.status !== "미정" && !row.end;
-                    const errBorder = "border-red-400";
-                    const okBorder  = "border-gray-300";
-                    const isFocused   = editFocusKey === makeEditFocusKey(row);
-                    const isMilestone = MILESTONE_ROLES.includes(row.role);
-                    const todayForEdit = new Date().toISOString().split("T")[0];
-                    const isRowDone    = row.status === "완료";
-                    const isRowOverdue = !isRowDone && !!row.end && row.end < todayForEdit;
-                    const isRowWarning = row.status === "확인필요";
-
-                    // 행 배경/테두리 계층
-                    const rowBg = isFocused
-                      ? "#1c2440"
-                      : isRowDone
-                        ? "var(--bg-canvas)"
-                        : "var(--bg-overlay)";
-                    const rowBorderLeft = isRowOverdue
-                      ? "3px solid #f87171"
-                      : isRowWarning
-                        ? "3px solid #fb923c"
-                        : isMilestone
-                          ? "3px solid #818cf8"
-                          : "3px solid transparent";
-
-                    return (
-                      <div
-                        key={i}
-                        ref={el => { editRowRefs.current[i] = el; }}
-                        className={`rounded-lg p-2.5 space-y-1.5 transition-colors ${isFocused ? "ring-2 ring-indigo-500" : ""} ${isRowDone ? "opacity-60" : ""}`}
-                        style={{
-                          background: rowBg,
-                          borderLeft: rowBorderLeft,
-                          border: isFocused ? undefined : "1px solid var(--border-2)",
-                        }}
-                      >
-                        <div className="flex items-center gap-1.5">
-                          {/* Phase select (운영 단계 taxonomy) */}
-                          {(() => {
-                            // 현재 row의 phase 추론 — 명시값 > role에서 추론 > "기타"
-                            const currentPhase: NonNullable<RoleSchedule["phase"]> =
-                              row.phase ?? inferPhase(row.role) ?? "기타";
-                            const PHASE_OPTIONS: NonNullable<RoleSchedule["phase"]>[] =
-                              ["Kick-Off", "기획", "디자인", "개발", "QA", "Release", "Launch", "기타"];
-                            return (
-                              <select
-                                value={currentPhase}
-                                onChange={(e) => {
-                                  setEditError(null);
-                                  const nextPhase = e.target.value as NonNullable<RoleSchedule["phase"]>;
-                                  setEditRows(prev => prev.map((r, idx) => {
-                                    if (idx !== i) return r;
-                                    const resourceTeam = r.resourceTeam ?? inferResourceTeam(r.role);
-                                    const nextRole = resourceTeam || nextPhase;
-                                    return { ...r, phase: nextPhase, role: nextRole };
-                                  }));
-                                }}
-                                className={`text-xs border ${errRole ? errBorder : okBorder} rounded px-1.5 py-1 shrink-0 w-20`}
-                                style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
-                                title="운영 단계 (taxonomy)"
-                              >
-                                {PHASE_OPTIONS.map(p => <option key={p} value={p}>{p}</option>)}
-                              </select>
-                            );
-                          })()}
-                          {/* ResourceTeam free input — 자유 조직 명칭 (Core AI BE, BE-PP 등). 비워두면 phase 만 사용 */}
-                          {(() => {
-                            const currentResource = row.resourceTeam
-                              ?? (row.resourceTeam === null ? "" : inferResourceTeam(row.role) ?? "");
-                            return (
-                              <input
-                                value={currentResource ?? ""}
-                                onChange={(e) => {
-                                  setEditError(null);
-                                  const nextResource = e.target.value;
-                                  setEditRows(prev => prev.map((r, idx) => {
-                                    if (idx !== i) return r;
-                                    const phase = r.phase ?? inferPhase(r.role) ?? "기타";
-                                    const team = nextResource.trim() || null;
-                                    const nextRole = team || phase;
-                                    return { ...r, resourceTeam: team, role: nextRole };
-                                  }));
-                                }}
-                                placeholder="resource (예: Core AI BE)"
-                                className="text-xs border border-gray-300 rounded px-1.5 py-1 w-32 shrink-0"
-                                style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
-                                title="resource team — 자유 입력 (선택). 비우면 phase로만 표시"
-                              />
-                            );
-                          })()}
-                          {/* 담당자 */}
-                          <input
-                            value={row.person}
-                            onChange={(e) => { setEditError(null); updateRow(i, "person", e.target.value); }}
-                            placeholder="담당자명"
-                            className={`text-xs border ${errPerson ? errBorder : okBorder} rounded px-1.5 py-1 w-28 shrink-0`} style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
-                          />
-                          {/* 상태 — 현재 값에 따라 색상 강조 */}
-                          {(() => {
-                            const statusColor =
-                              row.status === "완료"     ? { bg: "rgba(16,185,129,0.15)",  border: "#34d399",  color: "#34d399"  } :
-                              row.status === "진행중"   ? { bg: "rgba(124,58,237,0.15)",  border: "#a78bfa",  color: "#a78bfa"  } :
-                              row.status === "예정"     ? { bg: "rgba(59,130,246,0.15)",  border: "#60a5fa",  color: "#60a5fa"  } :
-                              row.status === "확인필요" ? { bg: "rgba(251,146,60,0.15)",  border: "#fb923c",  color: "#fb923c"  } :
-                              /* 미정 */                  { bg: "rgba(75,85,99,0.15)",    border: "#6b7280",  color: "#9ca3af"  };
-                            return (
-                              <select
-                                value={row.status}
-                                onChange={(e) => updateRow(i, "status", e.target.value as RoleSchedule["status"])}
-                                className="text-xs rounded px-2 py-1 w-24 shrink-0 font-medium"
-                                style={{ background: statusColor.bg, border: `1px solid ${statusColor.border}`, color: statusColor.color }}
-                              >
-                                {STATUS_OPTIONS.map(s => <option key={s} style={{ background: "var(--bg-item)", color: "var(--text-primary)" }}>{s}</option>)}
-                              </select>
-                            );
-                          })()}
-                          {/* 삭제 — 마일스톤은 고정 행이므로 비활성화 */}
-                          {isMilestone
-                            ? <span className="w-4 shrink-0" />
-                            : <button onClick={() => { setEditError(null); setEditRows(prev => prev.filter((_, idx) => idx !== i)); }}
-                                className="hover:text-red-400 text-base leading-none shrink-0" style={{ color: "var(--text-subtle)" }}>×</button>
-                          }
-                        </div>
-                        {/* 상세 작업 (세부 task 명칭 + 담당자) */}
-                        <div className="flex items-center gap-1.5 pl-1" style={{ borderLeft: "2px solid var(--border-2)" }}>
-                          <span className="text-xs shrink-0" style={{ color: "var(--text-subtle)" }}>└</span>
-                          <input
-                            value={row.detail ?? ""}
-                            onChange={(e) => updateRow(i, "detail", e.target.value)}
-                            placeholder="상세 작업명 (선택)"
-                            className="text-xs rounded px-1.5 py-1 flex-1 min-w-0" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                          />
-                          <input
-                            value={row.detailPerson ?? ""}
-                            onChange={(e) => updateRow(i, "detailPerson", e.target.value)}
-                            placeholder="담당자 (선택)"
-                            className="text-xs rounded px-1.5 py-1 w-20 shrink-0" style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)", color: "var(--text-primary)" }}
-                          />
-                        </div>
-                        {row.status === "미정" ? (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs text-orange-400 italic">기간 산정중 — 날짜 확정 후 상태를 변경해주세요</span>
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs w-6 shrink-0" style={{ color: "var(--text-muted)" }}>시작</span>
-                            <input
-                              type="date"
-                              value={row.start}
-                              onChange={(e) => {
-                                setEditError(null);
-                                const newStart = e.target.value;
-                                setEditRows(prev => prev.map((r, idx) => {
-                                  if (idx !== i) return r;
-                                  // 종료일이 비어있거나 시작일보다 이전이면 종료일도 동기화
-                                  const newEnd = (!r.end || r.end < newStart) ? newStart : r.end;
-                                  return { ...r, start: newStart, end: newEnd };
-                                }));
-                              }}
-                              className={`text-xs border ${errStart ? errBorder : okBorder} rounded px-2 py-1.5 flex-1`} style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
-                            />
-                            <span className="text-xs shrink-0" style={{ color: "var(--text-muted)" }}>~</span>
-                            <input
-                              type="date"
-                              value={row.end}
-                              min={row.start || undefined}
-                              onChange={(e) => { setEditError(null); updateRow(i, "end", e.target.value); }}
-                              className={`text-xs border ${errEnd ? errBorder : okBorder} rounded px-2 py-1.5 flex-1`} style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}
-                            />
-                            <label className="flex items-center gap-1 text-xs shrink-0 cursor-pointer select-none hover:opacity-80" style={{ color: "var(--text-muted)" }}>
-                              <input
-                                type="checkbox"
-                                checked={!!row.start && row.end === row.start}
-                                onChange={(e) => { if (e.target.checked && row.start) updateRow(i, "end", row.start); }}
-                                className="w-3 h-3 accent-indigo-500"
-                              />
-                              동일
-                            </label>
-                            <label className="flex items-center gap-1 text-xs text-orange-400 shrink-0 whitespace-nowrap rounded-md px-2 py-0.5" style={{ background: "rgba(251,146,60,0.15)", border: "1px solid rgba(251,146,60,0.3)" }}>
-                              🏖 휴가
-                              <input
-                                type="number"
-                                min={0}
-                                max={99}
-                                value={row.vacationDays ?? ""}
-                                onChange={(e) => {
-                                  const v = e.target.value === "" ? undefined : Math.max(0, parseInt(e.target.value, 10));
-                                  setEditRows(prev => prev.map((r, idx) => idx === i ? { ...r, vacationDays: v } : r));
-                                }}
-                                placeholder="0"
-                                className="w-10 text-xs rounded px-1.5 py-0.5 text-center" style={{ background: "var(--bg-canvas)", border: "1px solid rgba(251,146,60,0.3)", color: "#fb923c" }}
-                              />
-                              일
-                            </label>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                  <button
-                    onClick={() => setEditRows(prev => [...prev, newRow()])}
-                    className="w-full text-xs font-medium text-indigo-400 hover:text-indigo-300 rounded-lg py-2 transition-colors" style={{ background: "rgba(99,102,241,0.1)", border: "1px solid rgba(99,102,241,0.3)" }}
-                  >+ 작업 추가</button>
-                  {editError && (
-                    <p className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">{editError}</p>
-                  )}
-                  <div className="flex justify-end items-center gap-2 pt-1" style={{ borderTop: "1px solid var(--border)" }}>
-                    <button onClick={saveEdit}
-                      className="text-[12px] bg-indigo-600 text-white px-2.5 py-1 rounded-lg hover:bg-indigo-700 font-medium">저장</button>
-                    <button onClick={() => { setEditMode(false); setEditError(null); }}
-                      className="text-[12px] px-2 py-1 hover:opacity-80" style={{ color: "var(--text-muted)" }}>취소</button>
-                  </div>
-                </div>
-              ) : (
+              {editMode ? renderScheduleEditor() : (
                 /* 뷰 모드: Gantt */
                 <>
                   {getRoles(selected).length === 0 && (planning[selected.key] ?? "스프린트 대기중") === "플래닝 완료" && (

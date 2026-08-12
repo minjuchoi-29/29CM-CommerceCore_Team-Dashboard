@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, useRef } from "react";
+import { useState, useMemo, useEffect } from "react";
 import Link from "next/link";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 import { Tooltip } from "@/app/components/Tooltip";
@@ -24,6 +24,16 @@ import {
   type EtrSource,
 } from "@/lib/etr-links";
 import { readSearchTarget, clearSearchTarget } from "@/lib/search-target";
+import {
+  DASHBOARD_JIRA_SYNC_REQUEST_EVENT,
+  DASHBOARD_JIRA_SYNC_STATE_EVENT,
+  DASHBOARD_LIST_CONTEXT_EVENT,
+  DASHBOARD_SEARCH_CHANGE_EVENT,
+  DASHBOARD_TICKET_INDEX_EVENT,
+  DASHBOARD_TICKETS_ADDED_EVENT,
+  type DashboardSearchChangeDetail,
+  type DashboardTicketsAddedDetail,
+} from "@/lib/dashboard-events";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -61,6 +71,15 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   const [tickets, setTickets]       = useState<Ticket[]>([]);
   const [loading, setLoading]       = useState(true);
   const [error, setError]           = useState<string | null>(null);
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+      detail: loading
+        ? { running: true, label: "ETR 불러오는 중…" }
+        : { running: false },
+    }));
+  }, [loading]);
+
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const [etrMap, setEtrMap]         = useState<Record<string, EtrInfoEntry>>({});
   const [memos, setMemos]           = useState<Record<string, Memo>>({});
@@ -79,7 +98,6 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   }, [statusFilter]);
   const [search, setSearch]         = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const searchInputRef = useRef<HTMLInputElement>(null);
 
   // Ctrl/Cmd+F 는 Global Search Overlay (app/components/GlobalSearchOverlay.tsx) 가 전역 처리.
 
@@ -94,10 +112,6 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     });
   }
 
-  // 추가 UI
-  const [addInput, setAddInput]   = useState("");
-  const [adding, setAdding]       = useState(false);
-  const [addError, setAddError]   = useState<string | null>(null);
   const [addedToast, setAddedToast] = useState<string | null>(null);
 
   // 액션 상태
@@ -186,6 +200,61 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     return () => { cancelled = true; };
   }, []);
 
+  useEffect(() => {
+    const onSearchChange = (event: Event) => {
+      const detail = (event as CustomEvent<DashboardSearchChangeDetail>).detail;
+      setSearch(detail?.applyToCurrentList ? detail.query : "");
+    };
+    const onTicketsAdded = (event: Event) => {
+      const detail = (event as CustomEvent<DashboardTicketsAddedDetail<Ticket>>).detail;
+      const added = Array.isArray(detail?.tickets) ? detail.tickets : [];
+      if (added.length === 0) return;
+      setTickets(current => {
+        const byKey = new Map(current.map(ticket => [ticket.key, ticket]));
+        for (const ticket of added) byKey.set(ticket.key, { ...ticket, isManual: true });
+        return [...byKey.values()];
+      });
+    };
+    const onSyncRequest = async () => {
+      try {
+        const etrKeys = tickets
+          .filter(ticket => (ticket.key.startsWith("ETR-") || ticket.project === "ETR") && !hiddenKeys.has(ticket.key))
+          .map(ticket => ticket.key);
+        window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+          detail: { running: true, label: `ETR 갱신 중 · ${etrKeys.length}개` },
+        }));
+        const query = etrKeys.length > 0 ? `?keys=${encodeURIComponent(etrKeys.join(","))}` : "";
+        const response = await fetch(`/api/jira-tickets${query}`, { cache: "no-store" });
+        const data = await response.json() as { tickets?: Ticket[]; error?: string };
+        if (!response.ok || !Array.isArray(data.tickets)) {
+          throw new Error(data.error ?? `Jira Sync 실패 (${response.status})`);
+        }
+        setTickets(current => {
+          if (etrKeys.length === 0) return data.tickets ?? current;
+          const byKey = new Map(current.map(ticket => [ticket.key, ticket]));
+          for (const ticket of data.tickets ?? []) byKey.set(ticket.key, ticket);
+          return [...byKey.values()];
+        });
+      } catch (syncError) {
+        setAddedToast(syncError instanceof Error ? syncError.message : "Jira Sync에 실패했습니다.");
+        window.setTimeout(() => setAddedToast(null), 4000);
+      } finally {
+        window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+          detail: { running: false },
+        }));
+      }
+    };
+
+    window.addEventListener(DASHBOARD_SEARCH_CHANGE_EVENT, onSearchChange);
+    window.addEventListener(DASHBOARD_TICKETS_ADDED_EVENT, onTicketsAdded);
+    window.addEventListener(DASHBOARD_JIRA_SYNC_REQUEST_EVENT, onSyncRequest);
+    return () => {
+      window.removeEventListener(DASHBOARD_SEARCH_CHANGE_EVENT, onSearchChange);
+      window.removeEventListener(DASHBOARD_TICKETS_ADDED_EVENT, onTicketsAdded);
+      window.removeEventListener(DASHBOARD_JIRA_SYNC_REQUEST_EVENT, onSyncRequest);
+    };
+  }, [hiddenKeys, tickets]);
+
   // ── derive ────────────────────────────────────────────────────────────
   const ticketByKey = useMemo(() => {
     const m = new Map<string, Ticket>();
@@ -200,6 +269,12 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
       .filter(t => !hiddenKeys.has(t.key)),
     [tickets, hiddenKeys],
   );
+
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(DASHBOARD_TICKET_INDEX_EVENT, {
+      detail: { tickets: tickets.filter(ticket => !hiddenKeys.has(ticket.key)) },
+    }));
+  }, [hiddenKeys, tickets]);
 
   // ETR → LinkedWork reverse map.
   //   cc-etr 수동 등록 (TM 측에서 ETR 추가) + ETR 의 jiraLinks (Jira issue link 양방향) 모두 활용.
@@ -308,6 +383,16 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     return sorted;
   }, [allEtrTickets, filter, statusFilter, statusUpdateNeededSet, search, etrReverseMap, sort, etrMap, ticketByKey]);
 
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(DASHBOARD_LIST_CONTEXT_EVENT, {
+      detail: {
+        scope: "etr",
+        label: `ETR 검토 · ${ETR_REVIEW_FILTER_LABEL[filter]}`,
+        keys: filtered.map(ticket => ticket.key),
+      },
+    }));
+  }, [filter, filtered]);
+
   const selected = selectedKey ? ticketByKey.get(selectedKey) ?? null : null;
 
   // PR-B: selected ETR detail open 시 Jira Remote Links lazy fetch.
@@ -337,47 +422,6 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   function showToast(msg: string) {
     setAddedToast(msg);
     setTimeout(() => setAddedToast(null), 4000);
-  }
-
-  async function handleAdd() {
-    const trimmed = addInput.trim().toUpperCase();
-    if (!trimmed) return;
-    if (!/^[A-Z][A-Z0-9]*-\d+$/.test(trimmed)) {
-      setAddError("형식이 올바르지 않습니다 (예: ETR-3427)");
-      return;
-    }
-    if (!trimmed.startsWith("ETR-")) {
-      setAddError("ETR 키만 입력 가능합니다. 실행 티켓은 전체 과제 현황에서 추가해주세요.");
-      return;
-    }
-    setAdding(true);
-    setAddError(null);
-    try {
-      const res = await fetch("/api/tickets", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "add", key: trimmed }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setAddError(data?.error ?? `추가 실패 (${res.status})`);
-        return;
-      }
-      // 새 ticket fetch
-      const single = await fetch(`/api/jira-tickets/single?key=${trimmed}`);
-      if (single.ok) {
-        const sd = await single.json();
-        if (sd?.ticket) {
-          setTickets(prev => [...prev.filter(t => t.key !== trimmed), { ...sd.ticket, isManual: true }]);
-        }
-      }
-      setAddInput("");
-      showToast(`${trimmed}이(가) ETR 검토 목록에 추가되었습니다.`);
-    } catch (e) {
-      setAddError(e instanceof Error ? e.message : "추가 실패");
-    } finally {
-      setAdding(false);
-    }
   }
 
   /**
@@ -540,10 +584,10 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
 
   // ─────────────────────────────────────────────────────────────────────
   if (loading) {
-    return <div className="flex items-center justify-center min-h-screen text-sm" style={{ color: "var(--text-muted)" }}>로딩 중…</div>;
+    return <div className="flex items-center justify-center min-h-[calc(100vh-3.5rem)] text-sm" style={{ color: "var(--text-muted)" }}>로딩 중…</div>;
   }
   if (error) {
-    return <div className="flex items-center justify-center min-h-screen text-sm text-red-500">에러: {error}</div>;
+    return <div className="flex items-center justify-center min-h-[calc(100vh-3.5rem)] text-sm text-red-500">에러: {error}</div>;
   }
 
   // 정렬 가능 헤더 cell — click 시 toggleSort. align="left|center" 로 텍스트 정렬 보정.
@@ -565,7 +609,7 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
   }
 
   return (
-    <div className="flex h-screen overflow-hidden" style={{ background: "var(--bg-canvas)" }}>
+    <div className="flex h-[calc(100vh-3.5rem)] overflow-hidden" style={{ background: "var(--bg-canvas)" }}>
       {/* ── 좌측: list column (독립 스크롤) ── */}
       <div className={`flex flex-col min-w-0 ${selected ? "flex-1" : "flex-1"}`}>
         {/* ── Header (sticky) ── */}
@@ -577,32 +621,7 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
                 외부 부서 요청 (Engineering Task Request) 을 검토하고 실행 티켓으로 전환합니다.
               </p>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              {/* ETR 요청 추가 */}
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-                <input
-                  type="text"
-                  placeholder="ETR-3427 등 요청 검토 티켓을 추가합니다."
-                  value={addInput}
-                  onChange={e => { setAddInput(e.target.value.toUpperCase()); setAddError(null); }}
-                  onKeyDown={e => e.key === "Enter" && handleAdd()}
-                  className="px-2.5 py-1.5 rounded-lg text-xs font-mono border transition-all"
-                  style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none", width: "260px" }}
-                />
-                <button
-                  onClick={handleAdd}
-                  disabled={adding || !addInput.trim()}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors disabled:opacity-40"
-                  style={{ background: "#7c3aed", color: "white" }}
-                >
-                  {adding ? "추가 중…" : "+ ETR 요청 추가"}
-                </button>
-              </div>
-            </div>
           </div>
-          {addError && (
-            <p className="mt-2 text-xs text-red-500">{addError}</p>
-          )}
           {addedToast && (
             <p className="mt-2 text-xs" style={{ color: "#10b981" }}>{addedToast}</p>
           )}
@@ -645,38 +664,6 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
               {availableStatuses.map(s => <option key={s} value={s}>{s}</option>)}
             </select>
           </div>
-          <div className="ml-auto relative" style={{ width: 200 }}>
-            <input
-              ref={searchInputRef}
-              type="text"
-              placeholder="검색…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === "Escape") {
-                  if (search) { setSearch(""); }
-                  else { (e.currentTarget as HTMLInputElement).blur(); }
-                }
-              }}
-              className="w-full pl-2.5 pr-7 py-1.5 rounded-lg text-xs border"
-              style={{ background: "var(--bg-item)", borderColor: "var(--border-2)", color: "var(--text-primary)", outline: "none" }}
-            />
-            {search && (
-              <button
-                type="button"
-                onClick={() => {
-                  setSearch("");
-                  searchInputRef.current?.focus();
-                }}
-                title="검색어 지우기 (Esc)"
-                aria-label="검색어 지우기"
-                className="absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold transition-colors"
-                style={{ color: "var(--text-muted)", background: "var(--border-2)" }}
-                onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-primary)"; (e.currentTarget as HTMLElement).style.background = "var(--text-subtle)"; }}
-                onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = "var(--text-muted)"; (e.currentTarget as HTMLElement).style.background = "var(--border-2)"; }}
-              >×</button>
-            )}
-          </div>
         </nav>
 
         {/* ── List (독립 스크롤) ── */}
@@ -686,24 +673,6 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
               <p className="text-sm" style={{ color: "var(--text-subtle)" }}>
                 {filter === "needsAction" ? "처리 필요한 ETR 이 없습니다 — 모두 검토되었거나 실행 티켓이 연결됨." : "결과가 없습니다."}
               </p>
-              {/* Cross-screen hint — ETR 검색창에 비-ETR ticket key (TM-/CMALL- 등) 가 입력된 경우 전체 과제 현황으로 이동 제안 */}
-              {(() => {
-                const q = search.trim();
-                if (!q) return null;
-                const isNonEtrKey = /^[A-Z][A-Z0-9]+-\d+$/i.test(q) && !/^ETR-/i.test(q);
-                if (!isNonEtrKey) return null;
-                const href = `/jira-tickets?q=${encodeURIComponent(q)}&ticket=${encodeURIComponent(q.toUpperCase())}`;
-                return (
-                  <Link
-                    href={href}
-                    className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-lg text-[13px] font-semibold border-2 transition-all hover:scale-[1.02]"
-                    style={{ background: "#6366f1", color: "#ffffff", borderColor: "#818cf8", boxShadow: "0 2px 6px rgba(99,102,241,0.40)" }}
-                  >
-                    <span>전체 과제 현황에서 <span className="font-mono">{q.toUpperCase()}</span> 보기</span>
-                    <span aria-hidden>→</span>
-                  </Link>
-                );
-              })()}
             </div>
           ) : (
             <div className="rounded-xl overflow-hidden" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
