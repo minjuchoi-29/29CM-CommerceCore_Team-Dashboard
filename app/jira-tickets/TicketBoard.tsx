@@ -44,7 +44,13 @@ import {
   partitionRedundantLegacyMilestones,
 } from "@/lib/schedule-display";
 import { selectOpenWeeklyNotesForDisplay } from "@/lib/weekly-note-display";
-import { postWeeklySyncBatchWithRetry, type WeeklySyncFailure, type WeeklySyncPayload } from "@/lib/weekly-sync-client";
+import {
+  postWeeklySyncBatchWithRetry,
+  prepareWeeklySync,
+  type JiraWeeklySourceResponse,
+  type WeeklySyncFailure,
+  type WeeklySyncPayload,
+} from "@/lib/weekly-sync-client";
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import {
@@ -1951,6 +1957,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => { weeklySyncMetaRef.current = weeklySyncMeta; }, [weeklySyncMeta]);
   // 우측 상세 패널 Weekly 원문 expand/collapse 상태 (ticket별)
   const [weeklyExpanded, setWeeklyExpanded] = useState<Record<string, boolean>>({});
+  type TicketWeeklyRefresh = {
+    phase: "running" | "success" | "unchanged" | "no_marker" | "error";
+    message: string;
+  };
+  const [ticketWeeklyRefresh, setTicketWeeklyRefresh] = useState<Record<string, TicketWeeklyRefresh>>({});
   // PR B3 (2026-06-17) — "최근 Sync 결과" trace card 의 ticket 별 expand 상태.
   //   item-level detail / source preview 양쪽을 별도 토글로 분리해 사용자 부담 ↓
   const [syncTraceExpanded,   setSyncTraceExpanded]   = useState<Record<string, boolean>>({});
@@ -2921,6 +2932,105 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
   }, []);
 
+  async function reloadWeeklyState() {
+    const response = await fetch("/api/kv?keys=cc-weekly-notes,cc-update-candidates,cc-schedules,cc-weekly-source-text,cc-weekly-sync-meta", {
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Weekly 화면 갱신 실패 (${response.status})`);
+    const data = await response.json() as Record<string, unknown>;
+    const nextNotes = data["cc-weekly-notes"];
+    const nextCandidates = data["cc-update-candidates"];
+    const nextSchedules = data["cc-schedules"];
+    const nextSourceTexts = data["cc-weekly-source-text"];
+    const nextSyncMeta = data["cc-weekly-sync-meta"];
+
+    if (nextNotes && typeof nextNotes === "object" && !Array.isArray(nextNotes))
+      setWeeklyNotes(nextNotes as Record<string, WeeklyNote[]>);
+    if (Array.isArray(nextCandidates)) setUpdateCandidates(nextCandidates as UpdateCandidate[]);
+    if (nextSchedules && typeof nextSchedules === "object" && !Array.isArray(nextSchedules))
+      setSchedules(nextSchedules as Record<string, RoleSchedule[]>);
+    if (nextSourceTexts && typeof nextSourceTexts === "object" && !Array.isArray(nextSourceTexts))
+      setWeeklySourceTexts(nextSourceTexts as Record<string, WeeklySourceText>);
+    if (nextSyncMeta && typeof nextSyncMeta === "object" && !Array.isArray(nextSyncMeta))
+      setWeeklySyncMeta(nextSyncMeta as Record<string, WeeklySyncMeta>);
+  }
+
+  /** 전체 Jira Sync와 별개로 선택한 티켓의 Weekly source와 일정만 다시 읽는다. */
+  async function refreshTicketWeekly(ticketKey: string) {
+    if (ticketWeeklyRefresh[ticketKey]?.phase === "running") return;
+    const startedAt = performance.now();
+    setTicketWeeklyRefresh(previous => ({
+      ...previous,
+      [ticketKey]: { phase: "running", message: "Jira에서 Weekly 공유사항을 확인하고 있습니다." },
+    }));
+
+    try {
+      const sourceResponse = await fetch(`/api/jira-weekly-source?key=${encodeURIComponent(ticketKey)}`, {
+        cache: "no-store",
+      });
+      const source = await sourceResponse.json().catch(() => ({})) as JiraWeeklySourceResponse;
+      const sourceCollectionMs = Math.max(0, Math.round(performance.now() - startedAt));
+
+      if (!sourceResponse.ok) {
+        await postWeeklySyncBatchWithRetry(fetch, {
+          items: [],
+          attempts: [{ ticketKey, reason: "src_error" }],
+          sourceTexts: {},
+          timings: { sourceCollectionMs, targetCount: 1, skippedUnchanged: 0 },
+        }).catch(() => undefined);
+        throw new Error(source.error ?? `Weekly 원문 조회 실패 (${sourceResponse.status})`);
+      }
+
+      const prepared = prepareWeeklySync(ticketKey, source);
+      setTicketWeeklyRefresh(previous => ({
+        ...previous,
+        [ticketKey]: {
+          phase: "running",
+          message: prepared ? "Weekly 내용을 일정과 요약에 반영하고 있습니다." : "Weekly 공유사항 인식 결과를 저장하고 있습니다.",
+        },
+      }));
+
+      const syncResult = await postWeeklySyncBatchWithRetry(fetch, {
+        items: prepared?.items ?? [],
+        attempts: [{ ticketKey, reason: prepared ? undefined : "no_marker" }],
+        sourceTexts: prepared ? { [ticketKey]: prepared.sourceText } : {},
+        timings: { sourceCollectionMs, targetCount: 1, skippedUnchanged: 0 },
+      });
+      if (!syncResult.ok) throw new Error(syncResult.failure.error);
+
+      const ticketFailure = syncResult.data.failures.find(failure => failure.ticketKey === ticketKey);
+      if (ticketFailure) throw new Error(ticketFailure.error);
+      await reloadWeeklyState();
+
+      if (!prepared) {
+        setTicketWeeklyRefresh(previous => ({
+          ...previous,
+          [ticketKey]: {
+            phase: "no_marker",
+            message: "새 Weekly 공유사항을 찾지 못했습니다. 기존 내용은 유지했습니다.",
+          },
+        }));
+        return;
+      }
+
+      const processedNewSource = syncResult.data.results.some(result => result.sourceSkipped !== true);
+      setTicketWeeklyRefresh(previous => ({
+        ...previous,
+        [ticketKey]: processedNewSource
+          ? { phase: "success", message: "최신 Weekly 공유사항을 반영했습니다." }
+          : { phase: "unchanged", message: "이미 최신 Weekly 공유사항입니다." },
+      }));
+    } catch (error) {
+      setTicketWeeklyRefresh(previous => ({
+        ...previous,
+        [ticketKey]: {
+          phase: "error",
+          message: error instanceof Error ? error.message : "Weekly 갱신에 실패했습니다.",
+        },
+      }));
+    }
+  }
+
   // 이전 일정 승인 modal 호환용. 신규 UI에서는 일정 승인 진입점을 노출하지 않는다.
   const resolveCandidate = useCallback(async (candidateId: string, action: "apply" | "dismiss") => {
     setCandidatesInFlight(prev => new Set(prev).add(candidateId));
@@ -3095,7 +3205,71 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   function renderWeeklySummary(ticketKey: string) {
     const src = weeklySourceTexts[ticketKey];
     const notes = weeklyNotes[ticketKey] ?? [];
-    if (!src && notes.length === 0) return null;
+    const refreshState = ticketWeeklyRefresh[ticketKey];
+    const refreshing = refreshState?.phase === "running";
+    const refreshButton = (
+      <button
+        type="button"
+        onClick={() => void refreshTicketWeekly(ticketKey)}
+        disabled={refreshing}
+        aria-label={`${ticketKey} Weekly 공유사항 갱신`}
+        title="이 티켓의 Weekly 공유사항과 자동 일정을 Jira에서 다시 가져옵니다."
+        className="ml-auto inline-flex h-7 items-center gap-1.5 rounded-md px-2.5 text-[11px] font-semibold transition-colors disabled:cursor-wait disabled:opacity-60"
+        style={{ background: "#eaf1fa", border: "1px solid #bdd0e8", color: "#315b91" }}
+      >
+        <svg
+          aria-hidden="true"
+          className={refreshing ? "animate-spin" : ""}
+          width="12"
+          height="12"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+        >
+          <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5" />
+          <path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5" />
+        </svg>
+        {refreshing ? "갱신 중…" : "Weekly 갱신"}
+      </button>
+    );
+    const refreshFeedback = refreshState ? (
+      <p
+        role={refreshState.phase === "error" ? "alert" : "status"}
+        className="mb-2 text-[11px]"
+        style={{
+          color: refreshState.phase === "error"
+            ? "#ef4444"
+            : refreshState.phase === "no_marker"
+              ? "#d97706"
+              : refreshState.phase === "success"
+                ? "#059669"
+                : "var(--text-muted)",
+        }}
+      >
+        {refreshState.message}
+      </p>
+    ) : null;
+
+    if (!src && notes.length === 0) {
+      return (
+        <div className="mb-4 overflow-hidden rounded-lg" style={{ border: "1px solid var(--border-2)" }}>
+          <div className="flex items-center gap-2 px-3 py-2" style={{ borderBottom: "1px solid var(--border-2)", background: "var(--bg-overlay)" }}>
+            <span className="text-[11px] font-semibold" style={{ color: "var(--text-secondary)" }}>최근 Weekly 요약</span>
+            <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
+              기록 없음
+            </span>
+            {refreshButton}
+          </div>
+          <div className="px-3 py-2.5">
+            {refreshFeedback}
+            <p className="text-[11.5px]" style={{ color: "var(--text-muted)" }}>
+              저장된 Weekly 공유사항이 없습니다. 이 티켓만 다시 확인할 수 있습니다.
+            </p>
+          </div>
+        </div>
+      );
+    }
 
     // 1순위: 원문 그대로
     if (src && src.text) {
@@ -3123,8 +3297,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <span className="text-[10px] px-1.5 py-0.5 rounded" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)", border: "1px solid var(--border-2)" }}>
               {sourceLabel}
             </span>
+            {refreshButton}
           </div>
           <div className="px-3 py-2.5">
+            {refreshFeedback}
             {/*
               Hierarchy fidelity 보장 (2026-05-26):
               - whiteSpace: pre-wrap → leading space + 줄바꿈 그대로 보존
@@ -3200,8 +3376,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           >
             legacy
           </span>
+          {refreshButton}
         </div>
         <div className="px-3 py-2 space-y-1.5">
+          {refreshFeedback}
           {renderCategory("진행", "var(--text-muted)", progress)}
           {renderCategory("리스크", "#ef4444", risks)}
           {renderCategory("다음 액션", "#fbbf24", actions)}

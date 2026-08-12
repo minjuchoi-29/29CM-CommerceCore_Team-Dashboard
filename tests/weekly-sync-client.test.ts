@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { postWeeklySyncBatchWithRetry, postWeeklySyncWithRetry } from "../lib/weekly-sync-client";
+import { postWeeklySyncBatchWithRetry, postWeeklySyncWithRetry, prepareWeeklySync } from "../lib/weekly-sync-client";
 
 const payload = { ticketKey: "TM-2922", weeklyText: "31주차", sourceId: "schedule-v3:test" };
 
@@ -105,4 +105,41 @@ test("batch sync도 Redis lock 503만 재시도", async () => {
 
   assert.equal(result.ok, true);
   assert.equal(calls, 2);
+});
+
+test("개별 Weekly 갱신은 API가 제공한 replay source를 같은 티켓 batch로 변환", () => {
+  const prepared = prepareWeeklySync("TM-2215", {
+    foundMarker: true,
+    text: "33주차 Weekly 공유사항\n- 개발중",
+    source: "customfield",
+    policyReason: "customfield-first",
+    sourceUpdatedAt: "2026-08-12T01:00:00.000Z",
+    parseSummary: { sourceWeek: "33주차", schedulesCount: 1 },
+    syncSources: [
+      {
+        sourceId: "comment:32:v1",
+        text: "32주차 Weekly 공유사항\n- 개발 착수",
+        source: "comment",
+        sourceWeek: "32주차",
+        sourceUpdatedAt: "2026-08-05T01:00:00.000Z",
+      },
+      {
+        sourceId: "customfield:33:v1",
+        text: "33주차 Weekly 공유사항\n- 개발중",
+        source: "customfield",
+        sourceWeek: "33주차",
+        sourceUpdatedAt: "2026-08-12T01:00:00.000Z",
+      },
+    ],
+  }, "2026-08-12T02:00:00.000Z");
+
+  assert.ok(prepared);
+  assert.deepEqual(prepared.items.map(item => item.sourceId), ["comment:32:v1", "customfield:33:v1"]);
+  assert.equal(prepared.items.every(item => item.ticketKey === "TM-2215"), true);
+  assert.equal(prepared.sourceText.sourceWeek, "33주차");
+  assert.equal(prepared.sourceText.savedAt, "2026-08-12T02:00:00.000Z");
+});
+
+test("Weekly marker가 없으면 기존 내용을 지울 payload를 만들지 않음", () => {
+  assert.equal(prepareWeeklySync("TM-2215", { foundMarker: false, text: "일반 본문" }), null);
 });

@@ -1,8 +1,73 @@
+import type {
+  WeeklyDetectedSource,
+  WeeklyReplaySource,
+  WeeklySourceText,
+} from "@/lib/weekly-types";
+
 export type WeeklySyncPayload = {
   ticketKey: string;
   weeklyText: string;
   sourceId: string;
 };
+
+export type JiraWeeklySourceResponse = {
+  foundMarker?: boolean;
+  text?: string;
+  source?: string;
+  policyReason?: string;
+  sourceUpdatedAt?: string;
+  parseSummary?: {
+    sourceWeek?: string;
+    schedulesCount?: number;
+  };
+  sources?: WeeklyDetectedSource[];
+  syncSources?: WeeklyReplaySource[];
+  error?: string;
+};
+
+export type PreparedWeeklySync = {
+  items: WeeklySyncPayload[];
+  sourceText: WeeklySourceText;
+};
+
+/** 전체·개별 Weekly Sync가 같은 source replay 정책을 사용하도록 payload를 정규화한다. */
+export function prepareWeeklySync(
+  ticketKey: string,
+  source: JiraWeeklySourceResponse,
+  savedAt = new Date().toISOString(),
+): PreparedWeeklySync | null {
+  if (!source.foundMarker || !source.text) return null;
+
+  const replaySources: WeeklyReplaySource[] = Array.isArray(source.syncSources) && source.syncSources.length > 0
+    ? source.syncSources
+    : [{
+        sourceId: `${source.source ?? "unknown"}:${source.sourceUpdatedAt ?? ""}`,
+        text: source.text,
+        source: source.source === "customfield" || source.source === "description" || source.source === "comment"
+          ? source.source
+          : "comment",
+        sourceWeek: source.parseSummary?.sourceWeek ?? "",
+        sourceUpdatedAt: source.sourceUpdatedAt ?? "",
+      }];
+
+  return {
+    items: replaySources.map(replaySource => ({
+      ticketKey,
+      weeklyText: replaySource.text,
+      sourceId: replaySource.sourceId,
+    })),
+    sourceText: {
+      ticketKey,
+      text: source.text,
+      source: source.source ?? "",
+      policyReason: source.policyReason ?? "",
+      sourceWeek: source.parseSummary?.sourceWeek ?? "",
+      sourceUpdatedAt: source.sourceUpdatedAt ?? "",
+      savedAt,
+      detectedSources: Array.isArray(source.sources) ? source.sources : undefined,
+    },
+  };
+}
 
 export type WeeklySyncBatchPayload = {
   items: WeeklySyncPayload[];
