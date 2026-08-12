@@ -74,6 +74,18 @@ export default function SidebarNav({ user, logoutAction }: Props) {
     window.dispatchEvent(new CustomEvent("home-navigate"));
   }
 
+  function handleBrandRefresh(event: React.MouseEvent<HTMLAnchorElement>) {
+    // 새 탭 열기 같은 브라우저 기본 동작은 유지한다.
+    if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+
+    event.preventDefault();
+    if (window.location.pathname === "/" && !window.location.search && !window.location.hash) {
+      window.location.reload();
+      return;
+    }
+    window.location.assign("/");
+  }
+
   function toggleMenu(menu: Exclude<OpenMenu, null>) {
     setOpenMenu(current => current === menu ? null : menu);
   }
@@ -101,11 +113,18 @@ export default function SidebarNav({ user, logoutAction }: Props) {
       >
         <Link
           href="/"
-          onClick={handleHomeNavigate}
-          aria-label="전체 과제 현황으로 이동"
-          className="flex shrink-0 items-center gap-2.5 rounded-lg pr-3"
+          onClick={handleBrandRefresh}
+          aria-label="대시보드를 새로고침하고 전체 과제 현황으로 이동"
+          title="대시보드 새로고침"
+          className="group flex shrink-0 items-center gap-2.5 rounded-lg pr-3 outline-none focus-visible:ring-2 focus-visible:ring-[#78d6c6]"
         >
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg text-[11px] font-bold text-white" style={{ background: "#173f49" }}>29</span>
+          <span
+            className="relative flex h-8 w-8 items-center justify-center overflow-hidden rounded-lg text-[11px] font-extrabold tracking-[-0.04em] text-white transition-transform group-hover:scale-[1.03]"
+            style={{ background: "#173f49" }}
+          >
+            29
+            <span className="absolute right-[5px] top-[5px] h-1 w-1 rounded-full" style={{ background: "#78d6c6" }} />
+          </span>
           <span className="hidden leading-tight sm:block">
             <strong className="block text-[13px]" style={{ color: "var(--text-primary)" }}>Commerce Core</strong>
             <span className="block text-[10px]" style={{ color: "var(--text-subtle)" }}>Team Dashboard</span>
