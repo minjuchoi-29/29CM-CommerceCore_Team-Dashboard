@@ -56,8 +56,15 @@ export default function SidebarNav({ user, logoutAction }: Props) {
     const closeOnOutside = (event: PointerEvent) => {
       if (!headerRef.current?.contains(event.target as Node)) setOpenMenu(null);
     };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenMenu(null);
+    };
     window.addEventListener("pointerdown", closeOnOutside);
-    return () => window.removeEventListener("pointerdown", closeOnOutside);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnOutside);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
   }, [openMenu]);
 
   const isActive = (href: string) => href === "/" ? pathname === "/" : pathname.startsWith(href);
@@ -107,39 +114,43 @@ export default function SidebarNav({ user, logoutAction }: Props) {
 
         <span className="hidden h-5 w-px shrink-0 sm:block" style={{ background: "var(--border)" }} />
 
-        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto" aria-label="주요 메뉴">
-          {NAV_ITEMS.map(item => (
-            <Link
-              key={item.href}
-              href={item.href}
-              onClick={() => {
-                if (item.href === "/") handleHomeNavigate();
-                setOpenMenu(null);
-              }}
-              aria-current={isActive(item.href) ? "page" : undefined}
-              className="shrink-0 rounded-md px-3 py-2 text-[12px] font-semibold transition-colors"
-              style={navStyle(isActive(item.href))}
-            >
-              {item.label}
-            </Link>
-          ))}
+        <nav className="flex min-w-0 flex-1 items-center gap-1 overflow-visible" aria-label="주요 메뉴">
+          {/* 화면 링크만 가로 스크롤한다. 드롭다운은 이 영역 밖에 두어 세로로 잘리지 않게 한다. */}
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {NAV_ITEMS.map(item => (
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={() => {
+                  if (item.href === "/") handleHomeNavigate();
+                  setOpenMenu(null);
+                }}
+                aria-current={isActive(item.href) ? "page" : undefined}
+                className="shrink-0 rounded-md px-3 py-2 text-[12px] font-semibold transition-colors"
+                style={navStyle(isActive(item.href))}
+              >
+                {item.label}
+              </Link>
+            ))}
 
-          <Link
-            href="/owner-dashboard"
-            onClick={() => setOpenMenu(null)}
-            aria-current={isActive("/owner-dashboard") ? "page" : undefined}
-            className="flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-[12px] font-semibold transition-colors"
-            style={navStyle(isActive("/owner-dashboard"))}
-          >
-            담당자
-            <span className="rounded px-1 py-0.5 text-[8px] font-bold" style={{ background: "#f0f3f6", color: "#657589" }}>BETA</span>
-          </Link>
+            <Link
+              href="/owner-dashboard"
+              onClick={() => setOpenMenu(null)}
+              aria-current={isActive("/owner-dashboard") ? "page" : undefined}
+              className="flex shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-[12px] font-semibold transition-colors"
+              style={navStyle(isActive("/owner-dashboard"))}
+            >
+              담당자
+              <span className="rounded px-1 py-0.5 text-[8px] font-bold" style={{ background: "#f0f3f6", color: "#657589" }}>BETA</span>
+            </Link>
+          </div>
 
           {canSeeAdmin && (
             <div className="relative shrink-0">
               <button
                 type="button"
                 onClick={() => toggleMenu("pm")}
+                aria-haspopup="menu"
                 aria-expanded={openMenu === "pm"}
                 className="flex items-center gap-1.5 rounded-md px-3 py-2 text-[12px] font-semibold"
                 style={navStyle(isPmActive || openMenu === "pm")}
@@ -147,11 +158,12 @@ export default function SidebarNav({ user, logoutAction }: Props) {
                 PM 운영 <span className="text-[9px]">▾</span>
               </button>
               {openMenu === "pm" && (
-                <div className="absolute left-0 top-[calc(100%+8px)] w-48 overflow-hidden rounded-xl p-1.5" style={dropdownStyle}>
+                <div role="menu" aria-label="PM 운영" className="absolute left-0 top-[calc(100%+8px)] z-[230] w-48 overflow-hidden rounded-xl p-1.5" style={dropdownStyle}>
                   {PM_ITEMS.map(item => (
                     <Link
                       key={item.href}
                       href={item.href}
+                      role="menuitem"
                       onClick={() => setOpenMenu(null)}
                       className="block rounded-lg px-3 py-2.5 text-[12px] font-medium"
                       style={{ color: isActive(item.href) ? "#173f49" : "var(--text-secondary)", background: isActive(item.href) ? "#e8f1f2" : "transparent" }}
@@ -168,6 +180,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
             <button
               type="button"
               onClick={() => toggleMenu("tools")}
+              aria-haspopup="menu"
               aria-expanded={openMenu === "tools"}
               className="flex items-center gap-1.5 rounded-md px-3 py-2 text-[12px] font-semibold"
               style={navStyle(openMenu === "tools" || isActive("/weekly-guide"))}
@@ -175,12 +188,12 @@ export default function SidebarNav({ user, logoutAction }: Props) {
               도구 <span className="text-[9px]">▾</span>
             </button>
             {openMenu === "tools" && (
-              <div className="absolute left-0 top-[calc(100%+8px)] w-52 overflow-hidden rounded-xl p-1.5" style={dropdownStyle}>
-                <button type="button" onClick={() => { setOpenMenu(null); setGuideOpen(true); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>사용 가이드</button>
-                <Link href="/weekly-guide" onClick={() => setOpenMenu(null)} className="block rounded-lg px-3 py-2.5 text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>위클리 작성 가이드</Link>
-                <button type="button" onClick={() => { setOpenMenu(null); setQuickLinksOpen(true); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>퀵 링크</button>
+              <div role="menu" aria-label="도구" className="absolute left-0 top-[calc(100%+8px)] z-[230] w-52 overflow-hidden rounded-xl p-1.5" style={dropdownStyle}>
+                <button role="menuitem" type="button" onClick={() => { setOpenMenu(null); setGuideOpen(true); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>사용 가이드</button>
+                <Link role="menuitem" href="/weekly-guide" onClick={() => setOpenMenu(null)} className="block rounded-lg px-3 py-2.5 text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>위클리 작성 가이드</Link>
+                <button role="menuitem" type="button" onClick={() => { setOpenMenu(null); setQuickLinksOpen(true); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>퀵 링크</button>
                 <div className="my-1" style={{ borderTop: "1px solid var(--border)" }} />
-                <button type="button" onClick={() => { toggle(); setOpenMenu(null); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>
+                <button role="menuitem" type="button" onClick={() => { toggle(); setOpenMenu(null); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>
                   {theme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환"}
                 </button>
                 <div className="px-3 py-2 text-[10px]" style={{ color: "var(--text-subtle)" }}>캘린더 · 준비 중</div>

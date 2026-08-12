@@ -46,13 +46,6 @@ type Ticket = {
   storyPoints?: number;
 };
 
-const TARGET_LABELS = new Set(["29CM", "29Connect"]);
-
-function extractTarget(summary: string): string | null {
-  const m = summary.match(/^\[([^\]]+)\]/);
-  return m && TARGET_LABELS.has(m[1]) ? m[1] : null;
-}
-
 function extractDomain(summary: string): string {
   const s = summary.replace(/^\[(29CM|29Connect)\]\s*/, "");
   const m = s.match(/^\[([^\]]+)\]/);
@@ -103,11 +96,6 @@ const CURRENT_MONTH = `${TODAY.getFullYear()}-${String(TODAY.getMonth() + 1).pad
 function monthLabel(ym: string): string {
   const [y, m] = ym.split("-");
   return `${y}년 ${Number(m)}월`;
-}
-
-function shortMonthLabel(ym: string): string {
-  const [y, m] = ym.split("-");
-  return y !== TODAY.getFullYear().toString() ? `${y}.${m}` : `${Number(m)}월`;
 }
 
 function formatDate(d: string): string {
@@ -180,7 +168,10 @@ export default function MonthlyProgressPage() {
     setRefreshing(false);
   }, []);
 
-  useEffect(() => { loadTickets(); }, [loadTickets]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void loadTickets(); }, 0);
+    return () => window.clearTimeout(timer);
+  }, [loadTickets]);
 
   // 다른 탭에서 cc-custom-tickets / cc-tickets-v1 / cc-hidden-keys 가 바뀌면 즉시 반영
   useEffect(() => {
@@ -203,6 +194,17 @@ export default function MonthlyProgressPage() {
     }
     return [...set].filter(m => m >= "2025-01" && m <= "2027-12").sort();
   }, [tickets]);
+
+  const monthGroups = useMemo(() => {
+    const groups = new Map<string, string[]>();
+    for (const month of months) {
+      const year = month.slice(0, 4);
+      const yearMonths = groups.get(year) ?? [];
+      yearMonths.push(month);
+      groups.set(year, yearMonths);
+    }
+    return [...groups.entries()];
+  }, [months]);
 
   const domainGroups = useMemo(() => {
     const active = tickets.filter(t =>
@@ -299,33 +301,52 @@ export default function MonthlyProgressPage() {
           </div>
         </div>
 
-        {/* Month pills */}
-        <div className="flex gap-1 overflow-x-auto pb-0.5 -mx-1 px-1">
-          {months.map(m => {
-            const sel = m === selectedMonth;
-            const past = m < CURRENT_MONTH;
-            const current = m === CURRENT_MONTH;
-            return (
-              <button
-                key={m}
-                onClick={() => { setSelectedMonth(m); setCollapsedDomains(new Set()); }}
-                className="px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition-all relative"
-                style={sel ? {
-                  background: current ? "#2563eb" : past ? "var(--text-muted)" : "#0d9488",
-                  color: "#fff",
-                  boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
-                } : {
-                  background: current ? "#eff6ff" : "var(--bg-overlay)",
-                  color: current ? "#2563eb" : "#6b7280",
-                }}
+        {/* 연도별 월 선택 — 연도는 그룹당 한 번만 표시한다. */}
+        <div className="flex items-center gap-4 overflow-x-auto pb-0.5 -mx-1 px-1">
+          {monthGroups.map(([year, yearMonths], index) => (
+            <div
+              key={year}
+              role="group"
+              aria-label={`${year}년 월 선택`}
+              className={`flex shrink-0 items-center gap-1 ${index > 0 ? "border-l pl-4" : ""}`}
+              style={index > 0 ? { borderColor: "var(--border)" } : undefined}
+            >
+              <span
+                className="mr-1 rounded-md px-2 py-1 text-[11px] font-bold tabular-nums"
+                style={{ background: "var(--bg-item)", color: "var(--text-secondary)", border: "1px solid var(--border)" }}
               >
-                {shortMonthLabel(m)}
-                {current && !sel && (
-                  <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-blue-500 border border-white" />
-                )}
-              </button>
-            );
-          })}
+                {year}년
+              </span>
+              {yearMonths.map(m => {
+                const sel = m === selectedMonth;
+                const past = m < CURRENT_MONTH;
+                const current = m === CURRENT_MONTH;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => { setSelectedMonth(m); setCollapsedDomains(new Set()); }}
+                    aria-pressed={sel}
+                    aria-label={monthLabel(m)}
+                    className="px-2.5 py-1 rounded-full text-[11px] font-medium whitespace-nowrap transition-all relative"
+                    style={sel ? {
+                      background: current ? "#2563eb" : past ? "var(--text-muted)" : "#0d9488",
+                      color: "#fff",
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.15)",
+                    } : {
+                      background: current ? "#eff6ff" : "var(--bg-overlay)",
+                      color: current ? "#2563eb" : "#6b7280",
+                    }}
+                  >
+                    {Number(m.slice(5, 7))}월
+                    {current && !sel && (
+                      <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-blue-500 border border-white" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </div>
       </div>
 
