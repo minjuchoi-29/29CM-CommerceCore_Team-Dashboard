@@ -4662,7 +4662,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   //   탭 전환          → pushState  (뒤로가기: 이전 탭 복원)
   //   티켓 상세 열기   → pushState  (뒤로가기: 패널 닫힘)
   //   티켓 간 전환     → replaceState (뒤로가기: 패널 닫힘, 중간 티켓 스택 미생성)
-  //   패널 닫기(X/토글)→ history.back() (pushState 역방향 소비)
+  //   목록으로 돌아가기 → 현재 history entry에서 ticket query 제거
   //   펼치기/접기 토글 → replaceState (현재 항목 갱신, 별도 스택 미생성)
   //   페이지 최초 진입 → replaceState (히스토리 오염 없음)
   // expanded 를 state에 포함: ticket=null 복원 시 항상 false, 티켓 열림 복원 시 저장값 사용
@@ -5919,9 +5919,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const target = e.target as HTMLElement;
     // 인터랙티브 요소 또는 티켓 행 위 클릭은 무시
     if (target.closest('button, input, select, textarea, a, [data-ticket-key], [data-interactive], [role="dialog"]')) return;
-    // Focus Mode 배경 클릭 → Split View로만 전환 (history.back() 금지)
+    // Focus Mode 배경 클릭 → Split View로만 전환
     // 이유: Focus Mode에서 background click 시 의도치 않게 owner_dashboard로 이동하는 것을 방지.
-    //      Split View에서 배경 클릭은 패널 닫기(history.back()) 유지.
+    //      Split View에서 배경 클릭은 이전 페이지로 이동하지 않고 목록 상태로 복귀.
     if (isDetailExpanded) {
       setIsDetailExpanded(false);
       window.history.replaceState({ ...(window.history.state ?? {}), expanded: false }, "");
@@ -5934,7 +5934,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       return; // Split View 전환만 — 패널은 열린 채 유지
     }
-    window.history.back();
+    returnToTicketList();
   }
 
   function returnToTicketList() {
@@ -5970,8 +5970,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const isSame = selected?.key === t.key;
 
     if (isSame) {
-      // 같은 티켓 재클릭 = 닫기 → 히스토리 되감기
-      window.history.back();
+      // 같은 티켓 재클릭 = 현재 필터와 스크롤을 보존한 목록 상태로 복귀.
+      // 직접 URL로 진입했을 때 history.back()이 about:blank로 이동하는 문제를 방지한다.
+      returnToTicketList();
       return;
     }
 
@@ -8343,10 +8344,31 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     )}
                   </div>
                 </div>
-                {/* 우측 액션 버튼 — 순서: 집중 보기 > Jira > Copy > Close */}
+                {/* 우측 액션 버튼 — 순서: 화면 이동 > 보조 도구 */}
                 <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                  {/* 빠른 미리보기 종료 — 가장 먼저 인지되는 명시적 목록 복귀 */}
+                  {!isDetailExpanded && (
+                    <button
+                      type="button"
+                      onClick={returnToTicketList}
+                      aria-label="빠른 미리보기를 닫고 전체 목록으로 돌아가기"
+                      title="빠른 미리보기를 닫고 전체 목록으로 돌아가기"
+                      className="flex items-center gap-1.5 h-8 rounded-md px-3 text-[12px] font-semibold transition-colors"
+                      style={{
+                        background: "var(--bg-surface)",
+                        border: "1px solid var(--border-2)",
+                        color: "var(--text-secondary)",
+                      }}
+                    >
+                      <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11" fill="none">
+                        <path d="M7 2L3 5.5 7 9" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/>
+                      </svg>
+                      목록으로
+                    </button>
+                  )}
                   {/* 집중 보기 토글 — Primary CTA */}
                   <button
+                    type="button"
                     onClick={() => {
                       if (isDetailExpanded) {
                         returnToTicketList();
@@ -8358,8 +8380,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       workspaceNavRef.current.prevScrollY = window.scrollY;
                       workspaceNavRef.current.prevPtab    = planningTab;
                     }}
+                    aria-label={isDetailExpanded ? "집중 보기를 닫고 전체 목록으로 돌아가기" : "집중 보기 열기"}
                     title={isDetailExpanded ? "전체 목록으로 돌아가기" : "집중 보기 — 목록을 최소화하고 이 티켓에 집중"}
-                    className="flex items-center gap-1.5 px-2.5 h-7 rounded-md text-[11px] font-semibold transition-all"
+                    className="flex items-center gap-1.5 px-3 h-8 rounded-md text-[12px] font-semibold transition-all"
                     style={{
                       background: isDetailExpanded ? "#dce8f5" : "#eaf1fa",
                       border: `1px solid ${isDetailExpanded
@@ -8431,13 +8454,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   <div className="group">
                     <TicketCopyButton ticketKey={selected.key} summary={selected.summary} size="xs" />
                   </div>
-                  {/* 닫기 — source=owner_dashboard면 "대시보드로 돌아가기" 툴팁 */}
-                  <button
-                    onClick={() => window.history.back()}
-                    className="flex items-center justify-center w-6 h-6 rounded text-base leading-none transition-colors hover:opacity-100 opacity-50"
-                    style={{ color: "var(--text-muted)" }}
-                    title={workspaceNavRef.current.fromOwnerDashboard ? "대시보드로 돌아가기" : "닫기"}
-                  >×</button>
                 </div>
               </div>
             );
