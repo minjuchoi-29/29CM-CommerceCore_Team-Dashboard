@@ -8346,11 +8346,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                       {selected.summary}
                     </p>
                   </div>
-                  {/* 2행: status + type + assignee + project + ETA + 검토 badges */}
+                  {/* 2행: 현재 상태 — 빠른 미리보기에서 가장 먼저 판단할 정보 */}
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className={`px-1.5 py-0.5 rounded-full text-[11px] font-medium shrink-0 ${STATUS_COLOR[selected.status] ?? "bg-gray-100 text-gray-500"}`}>
                       {selected.status}
                     </span>
+                    {selected.healthCheck && <HealthBadge value={selected.healthCheck} />}
                     <span className={`px-1.5 py-0.5 rounded-full text-[11px] font-medium shrink-0 ${TYPE_COLOR[selected.type] ?? "bg-gray-100 text-gray-500"}`}>
                       {selected.type}
                     </span>
@@ -8380,6 +8381,54 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     {showHeaderPlanningBadge && (
                       <span className="shrink-0">
                         <PlanningBadge state={headerPlanningSummary} size="xs" />
+                      </span>
+                    )}
+                  </div>
+                  {/* 3행: 하단 메타 카드와 중복되지 않는 운영 정보. 우선순위는 기존처럼 즉시 편집 가능. */}
+                  <div
+                    className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px]"
+                    style={{ color: "var(--text-secondary)" }}
+                  >
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                      <span style={{ color: "var(--text-muted)" }}>시작</span>
+                      <strong className="font-medium" style={{ color: "var(--text-primary)" }}>
+                        {selected.startDate ? formatDateWithDay(selected.startDate) : "미정"}
+                      </strong>
+                    </span>
+                    {selected.requestPriority && (
+                      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                        <span style={{ color: "var(--text-muted)" }}>Jira 우선순위</span>
+                        <strong className="font-semibold" style={{ color: "var(--text-primary)" }}>
+                          {selected.requestPriority}
+                        </strong>
+                      </span>
+                    )}
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                      <span style={{ color: "var(--text-muted)" }}>Plan</span>
+                      <PriorityInput
+                        value={priorities[selected.key] ?? ""}
+                        onChange={v => setPlanningPriority(selected.key, v)}
+                        active={!!activePriorities[selected.key]}
+                        dupCount={priorityDuplicateCount[priorities[selected.key] ?? ""] ?? 0}
+                        contextLabel="Plan"
+                      />
+                    </span>
+                    <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                      <span style={{ color: "var(--text-muted)" }}>Exec</span>
+                      <PriorityInput
+                        value={getExecPriority(priorities, executionPriorities, selected.key) ?? ""}
+                        onChange={v => setExecutionPriority(selected.key, v)}
+                        active={!!activeExecutionPriorities[selected.key] || !!activePriorities[selected.key]}
+                        dupCount={executionPriorityDuplicateCount[getExecPriority(priorities, executionPriorities, selected.key) ?? ""] ?? 0}
+                        contextLabel="Exec"
+                      />
+                    </span>
+                    {selected.storyPoints != null && (
+                      <span className="inline-flex items-center gap-1 whitespace-nowrap">
+                        <span style={{ color: "var(--text-muted)" }}>Story</span>
+                        <strong className="font-semibold" style={{ color: "var(--text-primary)" }}>
+                          {selected.storyPoints}
+                        </strong>
                       </span>
                     )}
                   </div>
@@ -9752,93 +9801,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               );
             })()}
 
-            {/* ── Health 카드 (4차 PR): 메타에서 분리 — "위험한가?"를 우선 노출 ── */}
-            {selected.healthCheck && (
-              <div
-                className="rounded-lg px-3 py-2.5 mb-3 flex items-center gap-3"
-                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
-              >
-                <p className="text-[11px] font-semibold uppercase tracking-wide shrink-0" style={{ color: "var(--text-muted)" }}>
-                  Health
-                </p>
-                <HealthBadge value={selected.healthCheck} />
-              </div>
-            )}
-
-            {/* ── 핵심 메타 정보 ── */}
-            <div className="rounded-lg px-3 py-3 mb-3" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-3">
-                {/* 담당자 */}
-                <div>
-                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>담당자</p>
-                  <p className="text-sm font-medium leading-snug" style={{ color: "var(--text-primary)" }}>{selected.assignee || "-"}</p>
-                </div>
-                {/* ETA */}
-                <div>
-                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>ETA</p>
-                  {(() => {
-                    const todayStr2 = new Date().toISOString().split("T")[0];
-                    const hasEta = selected.eta && selected.eta !== "-";
-                    const overdue = hasEta && selected.eta! < todayStr2 && ["planning", "active"].includes(getTicketViewLifecycle(selected));
-                    return (
-                      <p className="text-sm font-semibold leading-snug" style={{ color: overdue ? "#f87171" : "var(--text-primary)" }}>
-                        {hasEta ? formatDateWithDay(selected.eta!) : "미정"}
-                        {overdue && <span className="ml-1 text-[11px] font-normal" style={{ color: "#f87171", opacity: 0.8 }}>경과</span>}
-                      </p>
-                    );
-                  })()}
-                </div>
-                {/* 프로젝트 */}
-                <div>
-                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>프로젝트</p>
-                  <p className="text-sm font-medium leading-snug" style={{ color: "var(--text-primary)" }}>{selected.project || "-"}</p>
-                </div>
-                {/* 시작일 */}
-                <div>
-                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>시작일</p>
-                  <p className="text-sm font-medium leading-snug" style={{ color: "var(--text-primary)" }}>
-                    {selected.startDate ? formatDateWithDay(selected.startDate) : "미정"}
-                  </p>
-                </div>
-                {/* 요청 우선순위 — Jira native (read-only). PR #33 의 planning/execution 과 별개. */}
-                {selected.requestPriority && (
-                  <div>
-                    <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>요청 우선순위 (Jira)</p>
-                    <p className="text-sm font-medium leading-snug" style={{ color: "var(--text-primary)" }}>{selected.requestPriority}</p>
-                  </div>
-                )}
-                {/* PR #33: Planning Priority — Dashboard user-managed */}
-                <div>
-                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>Planning Priority</p>
-                  <PriorityInput
-                    value={priorities[selected.key] ?? ""}
-                    onChange={v => setPlanningPriority(selected.key, v)}
-                    active={!!activePriorities[selected.key]}
-                    dupCount={priorityDuplicateCount[priorities[selected.key] ?? ""] ?? 0}
-                    contextLabel="Plan"
-                  />
-                </div>
-                {/* PR #33: Execution Priority — Dashboard user-managed (fallback: planning) */}
-                <div>
-                  <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>Execution Priority</p>
-                  <PriorityInput
-                    value={getExecPriority(priorities, executionPriorities, selected.key) ?? ""}
-                    onChange={v => setExecutionPriority(selected.key, v)}
-                    active={!!activeExecutionPriorities[selected.key] || !!activePriorities[selected.key]}
-                    dupCount={executionPriorityDuplicateCount[getExecPriority(priorities, executionPriorities, selected.key) ?? ""] ?? 0}
-                    contextLabel="Exec"
-                  />
-                </div>
-                {/* Story Points */}
-                {selected.storyPoints != null && (
-                  <div>
-                    <p className="text-[12px] mb-0.5" style={{ color: "var(--text-muted)" }}>Story Points</p>
-                    <p className="text-sm font-semibold leading-snug" style={{ color: "var(--text-primary)" }}>{selected.storyPoints}</p>
-                  </div>
-                )}
-              </div>
-              {/* Health Check는 메타 카드에서 분리되어 미확정 일정 Summary 직후에 별도 카드로 노출됨 (4차 PR). */}
-            </div>
+            {/* Health와 핵심 메타는 빠른 미리보기 상단에 통합해 중복 카드와 스크롤을 줄인다. */}
 
             {/* 보조 정보(Main Subject/요청부문/상위 항목/2-Pager/PRD)는 4차 PR에서 ▼ 참조 정보 그룹으로 이동. */}
 
