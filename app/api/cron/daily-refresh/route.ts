@@ -6,6 +6,13 @@ import { buildTicketSnapshot, snapshotLabel, MAX_SNAPSHOTS } from "@/lib/transit
 import { JIRA_BATCH_FIELDS_STR } from "@/lib/jira-fields";
 import { syncAllJiraFilters } from "@/lib/filter-sync";
 import { TICKET_KEYS } from "@/app/jira-tickets/tickets-data";
+import {
+  addSyncRunStage,
+  completeSyncRun,
+  createSyncRun,
+  saveSyncRun,
+  startSyncRun,
+} from "@/lib/sync-runs";
 
 export const dynamic = "force-dynamic";
 
@@ -50,9 +57,27 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  const syncRun = createSyncRun("daily-refresh", "cron");
+  try {
+    await startSyncRun(syncRun);
+  } catch (error) {
+    console.warn("[daily-refresh] 실행 기록 시작 실패", error);
+  }
+
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
   if (!email || !token) {
+    addSyncRunStage(syncRun, {
+      key: "environment",
+      label: "환경 설정 확인",
+      status: "failed",
+      durationMs: 0,
+      error: "JIRA 환경변수 누락",
+    });
+    completeSyncRun(syncRun, "failed", { error: "JIRA 환경변수 누락" });
+    await saveSyncRun(syncRun).catch(error => {
+      console.warn("[daily-refresh] 환경 오류 기록 저장 실패", error);
+    });
     return NextResponse.json({ error: "JIRA 환경변수 누락" }, { status: 500 });
   }
 
@@ -66,11 +91,14 @@ export async function GET(request: Request) {
   let snapshotSaved = false;
   let filterSyncResult: Awaited<ReturnType<typeof syncAllJiraFilters>> | null = null;
   const errors: string[] = [];
+  let customStageError: string | undefined;
+  let filterStageError: string | undefined;
 
   // ══════════════════════════════════════════════════════════════════════════
   // 단계 1: cc-custom-keys 기반 커스텀 티켓 갱신 (legacy)
   // SAFE-MERGE: fetch 실패 티켓은 기존 KV 데이터를 그대로 보존
   // ══════════════════════════════════════════════════════════════════════════
+  const customStageStartedAt = Date.now();
   try {
     const customKeys = await redis.get<string[]>("cc-custom-keys");
 
@@ -172,7 +200,9 @@ export async function GET(request: Request) {
         }
       } catch (snapErr) {
         console.warn("[daily-refresh] Transition snapshot 저장 실패:", snapErr);
-        errors.push(`snapshot: ${snapErr instanceof Error ? snapErr.message : String(snapErr)}`);
+        const snapshotError = snapErr instanceof Error ? snapErr.message : String(snapErr);
+        customStageError = `snapshot: ${snapshotError}`;
+        errors.push(customStageError);
       }
 
       customResult = {
@@ -189,8 +219,23 @@ export async function GET(request: Request) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[daily-refresh] 단계 1(custom-keys) 실패:", msg);
+    customStageError = msg;
     errors.push(`custom-keys: ${msg}`);
   }
+  addSyncRunStage(syncRun, {
+    key: "custom-tickets",
+    label: "수동 등록 티켓과 스냅샷 갱신",
+    status: customStageError ? "failed" : customResult.total === 0 ? "skipped" : "success",
+    durationMs: Date.now() - customStageStartedAt,
+    counts: {
+      total: customResult.total,
+      refreshed: customResult.refreshed,
+      preserved: customResult.preserved,
+      lost: customResult.lost,
+      snapshots: snapshotSaved ? 1 : 0,
+    },
+    error: customStageError,
+  });
 
   // ══════════════════════════════════════════════════════════════════════════
   // 단계 3: Jira Filter 일괄 sync
@@ -201,6 +246,7 @@ export async function GET(request: Request) {
   //   - 개별 필터 실패는 lastSyncError 기록 후 계속 진행
   //   - 필터에서 빠진 티켓 자동 삭제 없음 (cc-filter-tickets 키만 교체)
   // ══════════════════════════════════════════════════════════════════════════
+  const filterStageStartedAt = Date.now();
   try {
     const manualKeySet = new Set<string>(TICKET_KEYS);
     filterSyncResult = await syncAllJiraFilters(manualKeySet);
@@ -216,8 +262,43 @@ export async function GET(request: Request) {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error("[daily-refresh] 단계 3(filter sync) 실패:", msg);
+    filterStageError = msg;
     errors.push(`filter-sync: ${msg}`);
   }
+
+  addSyncRunStage(syncRun, {
+    key: "jira-filters",
+    label: "Jira 데이터 소스 갱신",
+    status: filterStageError || (filterSyncResult?.failedFilters ?? 0) > 0
+      ? "failed"
+      : (filterSyncResult?.skippedFilters ?? 0) > 0
+        ? "skipped"
+        : "success",
+    durationMs: Date.now() - filterStageStartedAt,
+    counts: {
+      syncedFilters: filterSyncResult?.syncedFilters ?? 0,
+      failedFilters: filterSyncResult?.failedFilters ?? 0,
+      newTickets: filterSyncResult?.totalNewTickets ?? 0,
+    },
+    error: filterStageError,
+  });
+
+  const failedFilterCount = filterSyncResult?.failedFilters ?? 0;
+  const runStatus = errors.length > 0 || failedFilterCount > 0
+    ? (customResult.refreshed > 0 || (filterSyncResult?.syncedFilters ?? 0) > 0 ? "partial" : "failed")
+    : "success";
+  completeSyncRun(syncRun, runStatus, {
+    counts: {
+      refreshedTickets: customResult.refreshed,
+      syncedFilters: filterSyncResult?.syncedFilters ?? 0,
+      failedFilters: failedFilterCount,
+      newTickets: filterSyncResult?.totalNewTickets ?? 0,
+    },
+    error: errors.length > 0 ? errors.join(" | ") : undefined,
+  });
+  await saveSyncRun(syncRun).catch(error => {
+    console.warn("[daily-refresh] 완료 기록 저장 실패", error);
+  });
 
   // ── 최종 응답 ─────────────────────────────────────────────────────────────
   return NextResponse.json({
@@ -244,5 +325,6 @@ export async function GET(request: Request) {
       : null,
     errors: errors.length > 0 ? errors : undefined,
     refreshedAt,
+    syncRunId: syncRun.id,
   });
 }

@@ -5,9 +5,16 @@ import { mergeWeeklySync, getRowAllKeys } from "@/lib/weekly-merge";
 import { RedisLockTimeoutError, withRedisLock } from "@/lib/redis-lock";
 import { reconcileUpdateCandidates } from "@/lib/weekly-candidates";
 import type {
-  ParsedWeekly, WeeklyNote, UpdateCandidate, WeeklySyncMeta,
+  ParsedWeekly, WeeklyNote, UpdateCandidate, WeeklySourceText, WeeklySyncMeta,
 } from "@/lib/weekly-types";
 import type { ExtendedSchedule } from "@/lib/weekly-merge";
+import {
+  addSyncRunStage,
+  completeSyncRun,
+  createSyncRun,
+  saveSyncRun,
+  startSyncRun,
+} from "@/lib/sync-runs";
 
 export const dynamic = "force-dynamic";
 const WEEKLY_SYNC_LOCK_KEY = "lock:cc-weekly-sync";
@@ -128,6 +135,251 @@ async function persistWeeklySync(ticketKey: string, parsed: ParsedWeekly, source
   });
 }
 
+type WeeklyBatchItem = {
+  ticketKey: string;
+  weeklyText: string;
+  sourceId: string;
+};
+
+type WeeklyBatchAttempt = {
+  ticketKey: string;
+  reason?: "no_marker" | "src_error";
+};
+
+type WeeklyBatchRequest = {
+  items: WeeklyBatchItem[];
+  attempts?: WeeklyBatchAttempt[];
+  sourceTexts?: Record<string, WeeklySourceText>;
+  timings?: {
+    metadataMs?: number;
+    sourceCollectionMs?: number;
+    targetCount?: number;
+    skippedUnchanged?: number;
+  };
+};
+
+async function persistWeeklySyncBatch(body: WeeklyBatchRequest) {
+  const mergeStartedAt = Date.now();
+  const syncRun = createSyncRun("jira", "dashboard", {
+    targets: String(body.timings?.targetCount ?? 0),
+    changed: String(new Set(body.items.map(item => item.ticketKey)).size),
+  });
+  try {
+    await startSyncRun(syncRun);
+  } catch (error) {
+    console.warn("[weekly-sync batch] 실행 기록 시작 실패", error);
+  }
+
+  if (body.timings?.metadataMs != null) {
+    addSyncRunStage(syncRun, {
+      key: "jira-metadata",
+      label: "Jira 기본 정보 갱신",
+      status: "success",
+      durationMs: body.timings.metadataMs,
+      counts: {
+        targets: body.timings.targetCount ?? 0,
+        skippedUnchanged: body.timings.skippedUnchanged ?? 0,
+      },
+    });
+  }
+  if (body.timings?.sourceCollectionMs != null) {
+    const sourceErrors = (body.attempts ?? []).filter(attempt => attempt.reason === "src_error").length;
+    addSyncRunStage(syncRun, {
+      key: "weekly-source",
+      label: "최신 Weekly 원문 확인",
+      status: sourceErrors > 0 ? "failed" : "success",
+      durationMs: body.timings.sourceCollectionMs,
+      counts: {
+        changedTickets: new Set(body.items.map(item => item.ticketKey)).size,
+        sourceErrors,
+      },
+    });
+  }
+
+  try {
+    const result = await withRedisLock(redis, WEEKLY_SYNC_LOCK_KEY, async () => {
+      const [rawSchedules, rawNotes, rawCandidates, rawMeta, rawSourceTexts] = await Promise.all([
+        redis.get<Record<string, unknown[]>>("cc-schedules"),
+        redis.get<Record<string, WeeklyNote[]>>("cc-weekly-notes"),
+        redis.get<UpdateCandidate[]>("cc-update-candidates"),
+        redis.get<Record<string, WeeklySyncMeta>>("cc-weekly-sync-meta"),
+        redis.get<Record<string, WeeklySourceText>>("cc-weekly-source-text"),
+      ]);
+      const allSchedules = rawSchedules ?? {};
+      const allNotes = rawNotes ?? {};
+      let allCandidates = rawCandidates ?? [];
+      const allMeta = rawMeta ?? {};
+      const allSourceTexts = rawSourceTexts ?? {};
+      const results: Array<Record<string, unknown>> = [];
+      const failures: Array<{ ticketKey: string; sourceId: string; error: string }> = [];
+      const failedTicketKeys = new Set<string>();
+      const successfulTicketKeys = new Set<string>();
+
+      for (const item of body.items) {
+        if (failedTicketKeys.has(item.ticketKey)) continue;
+        try {
+          const parsed = parseWeekly(item.weeklyText, item.ticketKey);
+          const previousMeta = allMeta[item.ticketKey];
+          const existingSchedules = (allSchedules[item.ticketKey] ?? []) as ExtendedSchedule[];
+          const existingNotes = allNotes[item.ticketKey] ?? [];
+
+          if (previousMeta?.appliedSourceIds?.includes(item.sourceId)) {
+            successfulTicketKeys.add(item.ticketKey);
+            results.push({
+              ticketKey: item.ticketKey,
+              sourceId: item.sourceId,
+              ok: true,
+              sourceSkipped: true,
+              isIdempotent: true,
+              schedulesUpdated: existingSchedules.length,
+              updateCandidates: 0,
+            });
+            continue;
+          }
+
+          const merged = mergeWeeklySync(item.ticketKey, parsed, existingSchedules, existingNotes);
+          allSchedules[item.ticketKey] = merged.updatedSchedules;
+          allNotes[item.ticketKey] = merged.newNotes;
+          allCandidates = reconcileUpdateCandidates(
+            allCandidates,
+            merged.updateCandidates,
+            item.ticketKey,
+            parsed.sourceWeek,
+            new Date().toISOString(),
+          );
+
+          const trace = merged.mergeTrace ?? [];
+          const lastTraceSummary = {
+            appended: trace.filter(t => t.outcome === "appended").length,
+            updated: trace.filter(t => t.outcome === "updated").length,
+            candidates: trace.filter(t => t.outcome === "candidates_only").length,
+            idempotent: trace.filter(t => t.outcome === "idempotent").length,
+            manualGuard: trace.filter(t => t.outcome === "manual_guard").length,
+          };
+          allMeta[item.ticketKey] = {
+            ticketKey: item.ticketKey,
+            lastSyncAt: new Date().toISOString(),
+            lastSourceWeek: parsed.sourceWeek,
+            lastTraceSummary,
+            lastTraceItems: trace.map(t => ({
+              outcome: t.outcome,
+              itemText: t.itemRawText,
+              phase: t.phase,
+              startDate: t.startDate,
+              endDate: t.endDate,
+            })),
+            appliedSourceIds: [...(previousMeta?.appliedSourceIds ?? []), item.sourceId].slice(-100),
+          };
+          successfulTicketKeys.add(item.ticketKey);
+          results.push({
+            ticketKey: item.ticketKey,
+            sourceId: item.sourceId,
+            ok: true,
+            sourceWeek: parsed.sourceWeek,
+            schedulesUpdated: merged.updatedSchedules.length,
+            notesTotal: merged.newNotes.length,
+            updateCandidates: merged.updateCandidates.length,
+            staleCandidates: merged.staleCandidates,
+            isIdempotent: merged.isIdempotent,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          failedTicketKeys.add(item.ticketKey);
+          successfulTicketKeys.delete(item.ticketKey);
+          failures.push({ ticketKey: item.ticketKey, sourceId: item.sourceId, error: message });
+        }
+      }
+
+      const attemptAt = new Date().toISOString();
+      const attemptedKeys = new Set([
+        ...(body.attempts ?? []).map(attempt => attempt.ticketKey),
+        ...body.items.map(item => item.ticketKey),
+      ]);
+      const reasonByKey = new Map((body.attempts ?? []).map(attempt => [attempt.ticketKey, attempt.reason]));
+      for (const ticketKey of attemptedKeys) {
+        const existing = allMeta[ticketKey] ?? {
+          ticketKey,
+          lastSyncAt: "",
+          lastSourceWeek: "",
+        };
+        const reason = failedTicketKeys.has(ticketKey) ? "sync_error" : reasonByKey.get(ticketKey);
+        allMeta[ticketKey] = {
+          ...existing,
+          lastAttemptAt: attemptAt,
+          lastSkipReason: reason,
+        };
+      }
+
+      Object.assign(allSourceTexts, body.sourceTexts ?? {});
+      const hasWrites = body.items.length > 0 || attemptedKeys.size > 0 || Object.keys(body.sourceTexts ?? {}).length > 0;
+      if (hasWrites) {
+        await Promise.all([
+          redis.set("cc-schedules", allSchedules),
+          redis.set("cc-weekly-notes", allNotes),
+          redis.set("cc-update-candidates", allCandidates),
+          redis.set("cc-weekly-sync-meta", allMeta),
+          redis.set("cc-weekly-source-text", allSourceTexts),
+        ]);
+      }
+
+      return {
+        ok: failures.length === 0,
+        results,
+        failures,
+        summary: {
+          sources: body.items.length,
+          attemptedTickets: attemptedKeys.size,
+          appliedTickets: successfulTicketKeys.size,
+          failedTickets: failedTicketKeys.size,
+          schedulesUpdated: results.reduce((sum, item) => sum + Number(item.schedulesUpdated ?? 0), 0),
+          updateCandidates: results.reduce((sum, item) => sum + Number(item.updateCandidates ?? 0), 0),
+        },
+      };
+    }, {
+      ttlMs: 30_000,
+      waitTimeoutMs: 30_000,
+      retryMs: 100,
+    });
+
+    const mergeDurationMs = Date.now() - mergeStartedAt;
+    addSyncRunStage(syncRun, {
+      key: "weekly-merge",
+      label: "Weekly 일정 일괄 병합",
+      status: result.failures.length > 0 ? "failed" : "success",
+      durationMs: mergeDurationMs,
+      counts: result.summary,
+      error: result.failures.length > 0 ? `${result.failures.length}개 티켓 처리 실패` : undefined,
+    });
+    const sourceErrors = (body.attempts ?? []).filter(attempt => attempt.reason === "src_error").length;
+    const status = result.failures.length > 0 || sourceErrors > 0 ? "partial" : "success";
+    completeSyncRun(syncRun, status, {
+      counts: {
+        ...result.summary,
+        skippedUnchanged: body.timings?.skippedUnchanged ?? 0,
+        sourceErrors,
+      },
+    });
+    await saveSyncRun(syncRun).catch(error => {
+      console.warn("[weekly-sync batch] 완료 기록 저장 실패", error);
+    });
+    return { ...result, syncRunId: syncRun.id };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    addSyncRunStage(syncRun, {
+      key: "weekly-merge",
+      label: "Weekly 일정 일괄 병합",
+      status: "failed",
+      durationMs: Date.now() - mergeStartedAt,
+      error: message,
+    });
+    completeSyncRun(syncRun, "failed", { error: message });
+    await saveSyncRun(syncRun).catch(recordError => {
+      console.warn("[weekly-sync batch] 실패 기록 저장 실패", recordError);
+    });
+    throw error;
+  }
+}
+
 // ─── POST: weekly sync ─────────────────────────────────────────
 // Body: { ticketKey: string, weeklyText: string, force?: boolean }
 export async function POST(request: Request) {
@@ -139,7 +391,27 @@ export async function POST(request: Request) {
       weeklyText: string;
       force?: boolean;
       sourceId?: string;
+      items?: WeeklyBatchItem[];
+      attempts?: WeeklyBatchAttempt[];
+      sourceTexts?: Record<string, WeeklySourceText>;
+      timings?: WeeklyBatchRequest["timings"];
     };
+    if (Array.isArray(body.items)) {
+      if (body.items.length > 500) {
+        return NextResponse.json({ error: "한 번에 처리할 수 있는 Weekly source는 최대 500개입니다." }, { status: 400 });
+      }
+      const invalidItem = body.items.find(item => !item.ticketKey || !item.weeklyText || !item.sourceId);
+      if (invalidItem) {
+        return NextResponse.json({ error: "items의 ticketKey, weeklyText, sourceId는 필수입니다." }, { status: 400 });
+      }
+      const result = await persistWeeklySyncBatch({
+        items: body.items,
+        attempts: body.attempts,
+        sourceTexts: body.sourceTexts,
+        timings: body.timings,
+      });
+      return NextResponse.json(result);
+    }
     ({ ticketKey, sourceId } = body);
     const { weeklyText } = body;
     if (!ticketKey || !weeklyText) {

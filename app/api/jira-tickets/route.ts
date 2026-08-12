@@ -5,10 +5,19 @@ import { redis } from "@/lib/redis";
 import { mergeTicketKeyLists, buildSourceFiltersMap } from "@/lib/ticket-sources";
 import type { FilterTicketsStore, JiraFiltersStore } from "@/lib/filter-types";
 import { JIRA_BATCH_FIELDS_STR } from "@/lib/jira-fields";
+import {
+  discoverEtrLinkedTicketKeys,
+  linkedTicketSourceLabel,
+  mergeLinkedTicketRegistry,
+  type LinkedTicketRegistry,
+} from "@/lib/linked-ticket-discovery";
+import { withRedisLock } from "@/lib/redis-lock";
 
 export const dynamic = "force-dynamic";
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
+const LINKED_TICKET_REGISTRY_KEY = "cc-linked-ticket-registry";
+const LINKED_TICKET_REGISTRY_LOCK_KEY = "lock:cc-linked-ticket-registry";
 
 /** Phase 4: Jira issuelinks 배열에서 우리가 필요한 정보만 추출 */
 type JiraLinkParsed = {
@@ -219,17 +228,20 @@ export async function GET(request: NextRequest) {
   let filterTickets: FilterTicketsStore = {};
   let filtersStore: JiraFiltersStore = {};
   let customKeysRaw: string[] = [];
+  let linkedTicketRegistry: LinkedTicketRegistry = {};
   try {
-    const [ft, fs, ck] = await Promise.all([
+    const [ft, fs, ck, lr] = await Promise.all([
       redis.get<FilterTicketsStore>("cc-filter-tickets"),
       redis.get<JiraFiltersStore>("cc-jira-filters"),
       redis.get<unknown>("cc-custom-keys"),
+      redis.get<LinkedTicketRegistry>(LINKED_TICKET_REGISTRY_KEY),
     ]);
     filterTickets = ft ?? {};
     filtersStore = fs ?? {};
     // cc-custom-keys는 배열 또는 JSON 문자열로 저장될 수 있음
     if (Array.isArray(ck)) customKeysRaw = ck as string[];
     else if (typeof ck === "string") { try { customKeysRaw = JSON.parse(ck); } catch {} }
+    linkedTicketRegistry = lr ?? {};
   } catch (e) {
     console.error("[jira-tickets GET] KV 로드 실패, TICKET_KEYS만 사용:", e);
   }
@@ -242,8 +254,9 @@ export async function GET(request: NextRequest) {
   // manualKeySet 업데이트 (cc-custom-keys 포함)
   for (const k of additionalKeys) manualKeySet.add(k);
 
-  // TICKET_KEYS + cc-custom-keys + 필터 전용 키 병합 (key 기준 dedupe)
-  const { allKeys } = mergeTicketKeyLists(manualKeys, filterTickets);
+  // 수동 + 필터 + ETR 연결로 자동 발견한 키 병합. 연결 키는 수동 티켓으로 표시하지 않는다.
+  const managedSeedKeys = [...manualKeys, ...Object.keys(linkedTicketRegistry)];
+  const { allKeys } = mergeTicketKeyLists(managedSeedKeys, filterTickets);
   // 어떤 티켓이 어떤 필터에 속하는지 맵 빌드
   const sourceFiltersMap = buildSourceFiltersMap(filterTickets, filtersStore);
 
@@ -270,16 +283,52 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ error: `요청 실패: ${message}` }, { status: 504 });
   }
 
+  // Jira 이슈 링크 중 ETR↔실행 티켓 관계만 한 단계 확장한다.
+  // 일반 티켓끼리의 관계는 대시보드 관리 범위를 넓히지 않는다.
+  const linkedDiscovery = discoverEtrLinkedTicketKeys(tickets, new Set(allKeys));
+  if (linkedDiscovery.keys.length > 0) {
+    try {
+      const linkedChunks = chunkArray(linkedDiscovery.keys, CHUNK_SIZE);
+      const linkedResults = await Promise.all(
+        linkedChunks.map(chunk => fetchChunk(chunk, headers, FIELDS)),
+      );
+      tickets = [...tickets, ...linkedResults.flat()];
+    } catch (error) {
+      // 원래 요청 티켓은 계속 반환하고, 다음 sync에서 registry 기반으로 재시도한다.
+      console.warn("[jira-tickets GET] ETR 연결 티켓 확장 조회 실패:", error);
+    }
+  }
+
+  if (Object.keys(linkedDiscovery.linkedFromByKey).length > 0) {
+    try {
+      linkedTicketRegistry = await withRedisLock(redis, LINKED_TICKET_REGISTRY_LOCK_KEY, async () => {
+        const current = (await redis.get<LinkedTicketRegistry>(LINKED_TICKET_REGISTRY_KEY)) ?? {};
+        const merged = mergeLinkedTicketRegistry(
+          current,
+          linkedDiscovery.linkedFromByKey,
+          new Date().toISOString(),
+        );
+        await redis.set(LINKED_TICKET_REGISTRY_KEY, merged);
+        return merged;
+      });
+    } catch (error) {
+      console.warn("[jira-tickets GET] ETR 연결 registry 저장 실패:", error);
+    }
+  }
+
   // sourceFilters 부착 (필터에 속한 티켓만 — 수동 전용은 undefined 유지)
   for (const t of tickets) {
     const sf = sourceFiltersMap[t.key];
-    if (sf && sf.length > 0) (t as Ticket).sourceFilters = sf;
+    const linkedLabel = linkedTicketSourceLabel(linkedTicketRegistry[t.key]);
+    const sourceLabels = [...(sf ?? []), ...(linkedLabel ? [linkedLabel] : [])];
+    if (sourceLabels.length > 0) (t as Ticket).sourceFilters = [...new Set(sourceLabels)];
     if (manualKeySet.has(t.key)) (t as Ticket).isManual = true;
   }
 
   // ── 정렬: 전체/부분 조회 모두 요청된 관리 순서 유지 ──
   const byKey = Object.fromEntries(tickets.map((t) => [t.key, t]));
-  const sorted = requestedKeys.map((k) => {
+  const responseOrderKeys = [...new Set([...requestedKeys, ...linkedDiscovery.keys])];
+  const sorted = responseOrderKeys.map((k) => {
     if (byKey[k]) return byKey[k];
     // JIRA에서 못 가져온 키: TICKET_OVERRIDES fallback
     const ov = TICKET_OVERRIDES[k];
@@ -305,7 +354,8 @@ export async function GET(request: NextRequest) {
     fetchedAt: new Date().toISOString(),
     customKeys: additionalKeys,
     partial: requestedParam !== null,
-    managedCount: allKeys.length,
+    managedCount: new Set([...allKeys, ...linkedDiscovery.keys]).size,
     refreshedCount: deduped.length,
+    linkedDiscoveredCount: linkedDiscovery.keys.length,
   });
 }

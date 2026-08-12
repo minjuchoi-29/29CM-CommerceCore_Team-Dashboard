@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { postWeeklySyncWithRetry } from "../lib/weekly-sync-client";
+import { postWeeklySyncBatchWithRetry, postWeeklySyncWithRetry } from "../lib/weekly-sync-client";
 
 const payload = { ticketKey: "TM-2922", weeklyText: "31주차", sourceId: "schedule-v3:test" };
 
@@ -48,4 +48,61 @@ test("재시도 불가능한 500은 즉시 실패", async () => {
 
   assert.equal(result.ok, false);
   assert.equal(calls, 1);
+});
+
+test("batch sync는 여러 source를 한 요청으로 전송", async () => {
+  const requestBodies: Record<string, unknown>[] = [];
+  const result = await postWeeklySyncBatchWithRetry(async (_input, init) => {
+    requestBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+    return Response.json({
+      ok: true,
+      results: [],
+      failures: [],
+      summary: {
+        sources: 2,
+        attemptedTickets: 1,
+        appliedTickets: 1,
+        failedTickets: 0,
+        schedulesUpdated: 2,
+        updateCandidates: 0,
+      },
+    });
+  }, {
+    items: [payload, { ...payload, sourceId: "schedule-v3:test-2" }],
+    attempts: [{ ticketKey: payload.ticketKey }],
+    sourceTexts: {},
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(Array.isArray(requestBodies[0]?.items), true);
+  assert.equal((requestBodies[0]?.items as unknown[]).length, 2);
+});
+
+test("batch sync도 Redis lock 503만 재시도", async () => {
+  let calls = 0;
+  const result = await postWeeklySyncBatchWithRetry(async () => {
+    calls += 1;
+    return calls === 1
+      ? Response.json({ code: "redis_lock_timeout", error: "locked" }, { status: 503 })
+      : Response.json({
+          ok: true,
+          results: [],
+          failures: [],
+          summary: {
+            sources: 0,
+            attemptedTickets: 0,
+            appliedTickets: 0,
+            failedTickets: 0,
+            schedulesUpdated: 0,
+            updateCandidates: 0,
+          },
+        });
+  }, {
+    items: [],
+    attempts: [],
+    sourceTexts: {},
+  }, { baseDelayMs: 0, wait: async () => undefined });
+
+  assert.equal(result.ok, true);
+  assert.equal(calls, 2);
 });

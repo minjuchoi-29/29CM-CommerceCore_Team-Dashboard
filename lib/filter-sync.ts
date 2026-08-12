@@ -19,11 +19,21 @@ import type {
   TicketSourceEntry,
   TicketSourcesStore,
 } from "@/lib/filter-types";
+import {
+  buildEffectiveFilterJql,
+  inferJiraFilterKind,
+  inferJiraFilterTargetArea,
+  isJiraFilterEnabled,
+} from "@/lib/filter-policy";
+import { withRedisLock } from "@/lib/redis-lock";
 
 const JIRA_BASE = "https://musinsa-oneteam.atlassian.net";
 const PAGE_SIZE = 100;
 /** 한 필터당 페이지네이션 상한 (100 × 200 = 20,000 이슈) */
 const MAX_PAGES = 200;
+const FILTER_SYNC_LOCK_KEY = "lock:cc-jira-filter-sync";
+const FILTER_FETCH_CONCURRENCY = 4;
+const FILTER_FETCH_TIMEOUT_MS = 15_000;
 
 function jiraAuthHeader(): string {
   const email = process.env.JIRA_EMAIL ?? "";
@@ -35,7 +45,10 @@ function jiraAuthHeader(): string {
  * Jira Filter ID로 전체 이슈 키를 페이지네이션 조회.
  * 개별 필터용 — single-filter manual sync에서도 이 함수를 사용한다.
  */
-export async function fetchFilterIssueKeys(jiraFilterId: string): Promise<string[]> {
+export async function fetchFilterIssueKeys(
+  jiraFilterId: string,
+  jql = `filter = ${jiraFilterId}`,
+): Promise<string[]> {
   const keys: string[] = [];
   let startAt = 0;
   let total = Infinity;
@@ -44,14 +57,23 @@ export async function fetchFilterIssueKeys(jiraFilterId: string): Promise<string
   while (startAt < total && page < MAX_PAGES) {
     const url =
       `${JIRA_BASE}/rest/api/3/search/jql` +
-      `?jql=${encodeURIComponent(`filter = ${jiraFilterId}`)}` +
+      `?jql=${encodeURIComponent(jql)}` +
       `&fields=key` +
       `&maxResults=${PAGE_SIZE}` +
       `&startAt=${startAt}`;
 
-    const res = await fetch(url, {
-      headers: { Authorization: jiraAuthHeader(), Accept: "application/json" },
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), FILTER_FETCH_TIMEOUT_MS);
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        headers: { Authorization: jiraAuthHeader(), Accept: "application/json" },
+        signal: controller.signal,
+        cache: "no-store",
+      });
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!res.ok) {
       throw new Error(`Jira search 오류 (${res.status}): ${await res.text()}`);
@@ -81,8 +103,10 @@ export interface SingleFilterSyncResult {
   ok: boolean;
   /** sync된 총 티켓 수 (실패 시 0) */
   ticketCount: number;
+  ticketKeys: string[];
   /** TICKET_KEYS와 중복되는 티켓 수 (참고용) */
   overlapCount: number;
+  durationMs: number;
   error?: string;
 }
 
@@ -94,6 +118,145 @@ export interface SyncAllResult {
   failedFilters: number;
   skippedFilters: number; // 등록된 필터 없음 등
   totalNewTickets: number; // 신규 source entry 추가 수
+}
+
+type FilterFetchOutcome = {
+  filter: JiraFilter;
+  attemptedAt: string;
+  durationMs: number;
+  ticketKeys?: string[];
+  error?: string;
+};
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await worker(items[index]);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
+async function fetchFilterOutcome(filter: JiraFilter): Promise<FilterFetchOutcome> {
+  const startedAt = Date.now();
+  const attemptedAt = new Date().toISOString();
+  try {
+    const ticketKeys = await fetchFilterIssueKeys(
+      filter.jiraFilterId,
+      buildEffectiveFilterJql(filter),
+    );
+    return { filter, attemptedAt, durationMs: Date.now() - startedAt, ticketKeys };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[filter-sync] filterId=${filter.id} (${filter.label ?? filter.name}) 실패:`, message);
+    return { filter, attemptedAt, durationMs: Date.now() - startedAt, error: message };
+  }
+}
+
+async function persistFilterOutcomes(
+  outcomes: FilterFetchOutcome[],
+  manualKeySet: Set<string>,
+): Promise<{ results: SingleFilterSyncResult[]; totalNewTickets: number }> {
+  return withRedisLock(redis, FILTER_SYNC_LOCK_KEY, async () => {
+    const [filtersStore, filterTickets, ticketSources] = await Promise.all([
+      redis.get<JiraFiltersStore>("cc-jira-filters"),
+      redis.get<FilterTicketsStore>("cc-filter-tickets"),
+      redis.get<TicketSourcesStore>("cc-ticket-sources"),
+    ]);
+    const liveFilters = filtersStore ?? {};
+    const liveFilterTickets = filterTickets ?? {};
+    const liveTicketSources = ticketSources ?? {};
+    const results: SingleFilterSyncResult[] = [];
+    let totalNewTickets = 0;
+
+    for (const outcome of outcomes) {
+      const filter = liveFilters[outcome.filter.id];
+      if (!filter) continue; // 조회 중 삭제된 소스는 되살리지 않는다.
+      const filterName = filter.label ?? filter.name;
+      if (!outcome.ticketKeys) {
+        liveFilters[filter.id] = {
+          ...filter,
+          lastAttemptAt: outcome.attemptedAt,
+          lastSyncDurationMs: outcome.durationMs,
+          lastSyncError: outcome.error ?? "알 수 없는 오류",
+        };
+        results.push({
+          filterId: filter.id,
+          filterName,
+          ok: false,
+          ticketCount: 0,
+          ticketKeys: [],
+          overlapCount: 0,
+          durationMs: outcome.durationMs,
+          error: outcome.error ?? "알 수 없는 오류",
+        });
+        continue;
+      }
+
+      liveFilterTickets[filter.id] = outcome.ticketKeys;
+      for (const key of outcome.ticketKeys) {
+        const existing = liveTicketSources[key] ?? [];
+        if (existing.some(entry => entry.filterId === filter.id)) continue;
+        const entry: TicketSourceEntry = {
+          filterId: filter.id,
+          filterLabel: filterName,
+          addedAt: outcome.attemptedAt,
+        };
+        liveTicketSources[key] = [...existing, entry];
+        totalNewTickets++;
+      }
+
+      const overlapCount = outcome.ticketKeys.filter(key => manualKeySet.has(key)).length;
+      liveFilters[filter.id] = {
+        ...filter,
+        kind: inferJiraFilterKind(filter),
+        targetArea: inferJiraFilterTargetArea(filter),
+        enabled: filter.enabled !== false,
+        prevSyncCount: filter.lastSyncCount,
+        lastSyncAt: outcome.attemptedAt,
+        lastSuccessAt: outcome.attemptedAt,
+        lastAttemptAt: outcome.attemptedAt,
+        lastSyncDurationMs: outcome.durationMs,
+        lastSyncCount: outcome.ticketKeys.length,
+        lastSyncError: null,
+      };
+      results.push({
+        filterId: filter.id,
+        filterName,
+        ok: true,
+        ticketCount: outcome.ticketKeys.length,
+        ticketKeys: outcome.ticketKeys,
+        overlapCount,
+        durationMs: outcome.durationMs,
+      });
+    }
+
+    await Promise.all([
+      redis.set("cc-filter-tickets", liveFilterTickets),
+      redis.set("cc-ticket-sources", liveTicketSources),
+      redis.set("cc-jira-filters", liveFilters),
+    ]);
+    return { results, totalNewTickets };
+  }, { ttlMs: 15_000, waitTimeoutMs: 15_000, retryMs: 75 });
+}
+
+export async function syncJiraFilter(
+  filterId: string,
+  manualKeySet: Set<string>,
+): Promise<SingleFilterSyncResult | null> {
+  const filtersStore = (await redis.get<JiraFiltersStore>("cc-jira-filters")) ?? {};
+  const filter = filtersStore[filterId];
+  if (!filter) return null;
+  const persisted = await persistFilterOutcomes([await fetchFilterOutcome(filter)], manualKeySet);
+  return persisted.results[0] ?? null;
 }
 
 /**
@@ -109,9 +272,10 @@ export async function syncAllJiraFilters(
   // 등록된 필터 없으면 즉시 반환
   const filtersStore =
     (await redis.get<JiraFiltersStore>("cc-jira-filters")) ?? {};
-  const filterIds = Object.keys(filtersStore);
+  const allFilters = Object.values(filtersStore);
+  const filters = allFilters.filter(isJiraFilterEnabled);
 
-  if (filterIds.length === 0) {
+  if (allFilters.length === 0) {
     return {
       results: [],
       syncedFilters: 0,
@@ -121,93 +285,25 @@ export async function syncAllJiraFilters(
     };
   }
 
-  // KV 1회 read
-  const filterTickets =
-    (await redis.get<FilterTicketsStore>("cc-filter-tickets")) ?? {};
-  const ticketSources =
-    (await redis.get<TicketSourcesStore>("cc-ticket-sources")) ?? {};
-
-  const now = new Date().toISOString();
-  const results: SingleFilterSyncResult[] = [];
-  let totalNewTickets = 0;
-
-  for (const filterId of filterIds) {
-    const filter: JiraFilter = filtersStore[filterId];
-    const filterName = filter.label ?? filter.name;
-
-    try {
-      const ticketKeys = await fetchFilterIssueKeys(filter.jiraFilterId);
-
-      // cc-filter-tickets: 해당 filterId 교체 (제거된 티켓 자동삭제 금지 — 키 목록만 최신화)
-      filterTickets[filterId] = ticketKeys;
-
-      // cc-ticket-sources: append-only, filterId 기준 중복 dedupe
-      for (const key of ticketKeys) {
-        const existing = ticketSources[key] ?? [];
-        const alreadyLinked = existing.some((e) => e.filterId === filterId);
-        if (!alreadyLinked) {
-          const entry: TicketSourceEntry = {
-            filterId,
-            filterLabel: filterName,
-            addedAt: now,
-          };
-          ticketSources[key] = [...existing, entry];
-          totalNewTickets++;
-        }
-      }
-
-      const overlapCount = ticketKeys.filter((k) => manualKeySet.has(k)).length;
-
-      // 필터 레코드: prevSyncCount 보존 → 새 값 기록
-      filtersStore[filterId] = {
-        ...filter,
-        prevSyncCount: filter.lastSyncCount,
-        lastSyncAt: now,
-        lastSyncCount: ticketKeys.length,
-        lastSyncError: null,
-      };
-
-      results.push({
-        filterId,
-        filterName,
-        ok: true,
-        ticketCount: ticketKeys.length,
-        overlapCount,
-      });
-    } catch (e) {
-      const errMsg = e instanceof Error ? e.message : String(e);
-      console.error(`[filter-sync] filterId=${filterId} (${filterName}) 실패:`, errMsg);
-
-      // 실패한 필터: 에러 기록, 기존 cc-filter-tickets 데이터 보존 (덮어쓰기 금지)
-      filtersStore[filterId] = {
-        ...filter,
-        lastSyncAt: now,
-        lastSyncError: errMsg,
-      };
-
-      results.push({
-        filterId,
-        filterName,
-        ok: false,
-        ticketCount: 0,
-        overlapCount: 0,
-        error: errMsg,
-      });
-    }
+  if (filters.length === 0) {
+    return {
+      results: [],
+      syncedFilters: 0,
+      failedFilters: 0,
+      skippedFilters: allFilters.length,
+      totalNewTickets: 0,
+    };
   }
 
-  // KV 3개 일괄 write
-  await Promise.all([
-    redis.set("cc-filter-tickets", filterTickets),
-    redis.set("cc-ticket-sources", ticketSources),
-    redis.set("cc-jira-filters", filtersStore),
-  ]);
+  // Jira 조회는 서로 독립이므로 제한된 병렬 처리 후, KV는 lock 안에서 한 번만 저장한다.
+  const outcomes = await mapWithConcurrency(filters, FILTER_FETCH_CONCURRENCY, fetchFilterOutcome);
+  const { results, totalNewTickets } = await persistFilterOutcomes(outcomes, manualKeySet);
 
   return {
     results,
     syncedFilters: results.filter((r) => r.ok).length,
     failedFilters: results.filter((r) => !r.ok).length,
-    skippedFilters: 0,
+    skippedFilters: allFilters.length - filters.length,
     totalNewTickets,
   };
 }

@@ -9,15 +9,16 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/auth";
 import { adminApiGuard } from "@/lib/auth/admin";
 import { redis } from "@/lib/redis";
-import type {
-  FilterSyncResult,
-  FilterTicketsStore,
-  JiraFiltersStore,
-  TicketSourceEntry,
-  TicketSourcesStore,
-} from "@/lib/filter-types";
+import type { JiraFiltersStore } from "@/lib/filter-types";
 import { TICKET_KEYS } from "@/app/jira-tickets/tickets-data";
-import { fetchFilterIssueKeys } from "@/lib/filter-sync";
+import { syncJiraFilter } from "@/lib/filter-sync";
+import {
+  addSyncRunStage,
+  completeSyncRun,
+  createSyncRun,
+  saveSyncRun,
+  startSyncRun,
+} from "@/lib/sync-runs";
 
 export const dynamic = "force-dynamic";
 
@@ -39,69 +40,43 @@ export async function POST(
   }
 
   const filterLabel = filter.label ?? filter.name;
-  const now = new Date().toISOString();
-
-  let ticketKeys: string[];
-  try {
-    ticketKeys = await fetchFilterIssueKeys(filter.jiraFilterId);
-  } catch (e) {
-    const errMsg = e instanceof Error ? e.message : String(e);
-    console.error(`[jira-filters sync] filterId=${id}`, errMsg);
-
-    // 오류 상태를 필터 레코드에 기록
-    store[id] = { ...filter, lastSyncAt: now, lastSyncError: errMsg };
-    await redis.set("cc-jira-filters", store);
-
-    const result: FilterSyncResult = {
-      filterId: id,
-      ok: false,
-      ticketKeys: [],
-      overlapCount: 0,
-      error: errMsg,
-    };
-    return NextResponse.json(result, { status: 502 });
-  }
-
-  // cc-filter-tickets 업데이트
-  const filterTickets = (await redis.get<FilterTicketsStore>("cc-filter-tickets")) ?? {};
-  filterTickets[id] = ticketKeys;
-  await redis.set("cc-filter-tickets", filterTickets);
-
-  // cc-ticket-sources 업데이트 (append-only, 중복 dedupe)
-  const ticketSources = (await redis.get<TicketSourcesStore>("cc-ticket-sources")) ?? {};
-  for (const key of ticketKeys) {
-    const existing = ticketSources[key] ?? [];
-    const alreadyLinked = existing.some((e) => e.filterId === id);
-    if (!alreadyLinked) {
-      const entry: TicketSourceEntry = {
-        filterId: id,
-        filterLabel,
-        addedAt: now,
-      };
-      ticketSources[key] = [...existing, entry];
-    }
-  }
-  await redis.set("cc-ticket-sources", ticketSources);
-
-  // TICKET_KEYS(수동 등록 티켓)과 중복 수 계산 (참고용)
-  const staticSet = new Set(TICKET_KEYS);
-  const overlapCount = ticketKeys.filter((k) => staticSet.has(k)).length;
-
-  // 필터 레코드 sync 결과 업데이트
-  store[id] = {
-    ...filter,
-    prevSyncCount: filter.lastSyncCount,
-    lastSyncAt: now,
-    lastSyncCount: ticketKeys.length,
-    lastSyncError: null,
-  };
-  await redis.set("cc-jira-filters", store);
-
-  const result: FilterSyncResult = {
+  const syncRun = createSyncRun("filter", "manual", {
     filterId: id,
-    ok: true,
-    ticketKeys,
-    overlapCount,
-  };
-  return NextResponse.json(result);
+    jiraFilterId: filter.jiraFilterId,
+    filterName: filterLabel,
+  });
+  try {
+    await startSyncRun(syncRun);
+  } catch (error) {
+    // 실행 기록 실패가 실제 필터 동기화를 막으면 안 된다.
+    console.warn("[jira-filters sync] 실행 기록 시작 실패", error);
+  }
+
+  const result = await syncJiraFilter(id, new Set(TICKET_KEYS));
+  if (!result) {
+    return NextResponse.json({ error: "필터를 찾을 수 없습니다." }, { status: 404 });
+  }
+  addSyncRunStage(syncRun, {
+    key: "filter-sync",
+    label: "Jira Filter 티켓 조회",
+    status: result.ok ? "success" : "failed",
+    durationMs: result.durationMs,
+    counts: { tickets: result.ticketCount, overlap: result.overlapCount },
+    error: result.error,
+  });
+  completeSyncRun(syncRun, result.ok ? "success" : "failed", {
+    counts: { tickets: result.ticketCount, overlap: result.overlapCount },
+    error: result.error,
+  });
+  await saveSyncRun(syncRun).catch(error => {
+    console.warn("[jira-filters sync] 완료 기록 저장 실패", error);
+  });
+  return NextResponse.json({
+    filterId: result.filterId,
+    ok: result.ok,
+    ticketKeys: result.ticketKeys,
+    overlapCount: result.overlapCount,
+    durationMs: result.durationMs,
+    error: result.error,
+  }, { status: result.ok ? 200 : 502 });
 }

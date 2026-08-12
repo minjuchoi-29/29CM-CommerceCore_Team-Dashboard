@@ -217,9 +217,27 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
     };
     const onSyncRequest = async () => {
       try {
-        const etrKeys = tickets
+        window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+          detail: { running: true, stage: "jira", label: "ETR 데이터 소스 확인 중…" },
+        }));
+        let discoveredEtrKeys: string[] = [];
+        try {
+          const sourceResponse = await fetch("/api/jira-filters/sync", { method: "POST", cache: "no-store" });
+          const sourceData = await sourceResponse.json() as { results?: Array<{ ticketKeys?: string[] }> };
+          if (sourceResponse.ok) {
+            discoveredEtrKeys = (sourceData.results ?? [])
+              .flatMap(result => result.ticketKeys ?? [])
+              .filter(key => key.startsWith("ETR-"));
+          }
+        } catch (sourceError) {
+          console.warn("[ETR Sync] 데이터 소스 확인 실패, 기존 멤버십 사용:", sourceError);
+        }
+        const etrKeys = [...new Set([
+          ...tickets
           .filter(ticket => (ticket.key.startsWith("ETR-") || ticket.project === "ETR") && !hiddenKeys.has(ticket.key))
-          .map(ticket => ticket.key);
+          .map(ticket => ticket.key),
+          ...discoveredEtrKeys.filter(key => !hiddenKeys.has(key)),
+        ])];
         window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
           detail: { running: true, label: `ETR 갱신 중 · ${etrKeys.length}개` },
         }));

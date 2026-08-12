@@ -44,7 +44,7 @@ import {
   partitionRedundantLegacyMilestones,
 } from "@/lib/schedule-display";
 import { selectOpenWeeklyNotesForDisplay } from "@/lib/weekly-note-display";
-import { postWeeklySyncWithRetry, type WeeklySyncFailure } from "@/lib/weekly-sync-client";
+import { postWeeklySyncBatchWithRetry, type WeeklySyncFailure, type WeeklySyncPayload } from "@/lib/weekly-sync-client";
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import {
@@ -54,11 +54,14 @@ import {
   resolveTeamIdentity,
 } from "@/lib/team-workstreams";
 import { getWeeklyUpdateDisplay } from "@/lib/weekly-update-display";
+import { WEEKLY_SYNC_PARSER_VERSION } from "@/lib/weekly-source";
 import {
   buildPlanningRefreshKeys,
+  buildCurrentWeeklyAttemptedKeys,
   buildTicketRefreshPlan,
   findMissingSharedTicketKeys,
   mergeRefreshedTickets,
+  selectChangedWeeklyTargets,
 } from "@/lib/ticket-sync";
 import {
   PREPLANNING_STATUSES,
@@ -1944,6 +1947,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [weeklySyncMeta,   setWeeklySyncMeta]   = useState<Record<string, WeeklySyncMeta>>({});
   // Phase B: ticket별 Weekly 원문 (customfield_10625 / description section / comment 중 선택된 본문)
   const [weeklySourceTexts, setWeeklySourceTexts] = useState<Record<string, WeeklySourceText>>({});
+  const weeklySyncMetaRef = useRef<Record<string, WeeklySyncMeta>>({});
+  useEffect(() => { weeklySyncMetaRef.current = weeklySyncMeta; }, [weeklySyncMeta]);
   // 우측 상세 패널 Weekly 원문 expand/collapse 상태 (ticket별)
   const [weeklyExpanded, setWeeklyExpanded] = useState<Record<string, boolean>>({});
   // PR B3 (2026-06-17) — "최근 Sync 결과" trace card 의 ticket 별 expand 상태.
@@ -2319,12 +2324,32 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   // Jira Sync: 미완료·최근 완료·신규 공용 티켓만 JIRA 재조회 → localStorage 병합
   const forceRefresh = useCallback(async () => {
+    const metadataStartedAt = performance.now();
     window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
       detail: { running: true, label: "Jira Sync 중…" },
     }));
     setFetching(true);
     setFetchError(null);
     try {
+      let sourceManagedKeys: string[] = [];
+      try {
+        window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+          detail: { running: true, stage: "jira", label: "데이터 소스 확인 중…" },
+        }));
+        const sourceResponse = await apiFetch("/api/jira-filters/sync", { method: "POST", cache: "no-store" });
+        const sourceData = await sourceResponse.json() as {
+          results?: Array<{ ticketKeys?: string[] }>;
+          error?: string;
+        };
+        if (sourceResponse.ok) {
+          sourceManagedKeys = [...new Set((sourceData.results ?? []).flatMap(result => result.ticketKeys ?? []))];
+        } else {
+          console.warn("[JiraSync] 데이터 소스 갱신 실패, 기존 멤버십 사용:", sourceData.error);
+        }
+      } catch (sourceError) {
+        console.warn("[JiraSync] 데이터 소스 확인 실패, 기존 멤버십 사용:", sourceError);
+      }
+
       const hiddenSync = hiddenKeysRef.current;
       let cachedTickets = ticketsRef.current;
       let lastFullFetchedAt: Date | null = null;
@@ -2336,7 +2361,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }
       } catch {}
 
-      const sharedKeys = await fetchSharedCustomKeys();
+      const sharedKeys = [...new Set([
+        ...await fetchSharedCustomKeys(),
+        ...sourceManagedKeys,
+      ])];
       sharedCustomKeysRef.current = sharedKeys;
       const refreshPlan = buildTicketRefreshPlan(cachedTickets, sharedKeys, hiddenSync, new Date());
       window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
@@ -2401,6 +2429,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         })
         .catch(() => {});
 
+      const metadataDurationMs = Math.max(0, Math.round(performance.now() - metadataStartedAt));
+
       // ─── Weekly Sync orchestration (Phase 2) ──────────────────
       // fire-and-forget: Jira Sync UI는 즉시 끝나고, weekly 흐름은 background에서 진행.
       // 실행 단계 ticket + 실제 완료 후 14일 이내 ticket 대상.
@@ -2415,13 +2445,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           hiddenForSync,
           new Date(),
         );
-        const { targets, skippedHidden, recentlyCompletedCount } = targetSelection;
-        if (targets.length === 0) {
+        const { targets: allTargets, skippedHidden, recentlyCompletedCount } = targetSelection;
+        if (allTargets.length === 0) {
           if (skippedHidden > 0) {
             console.log(`[WeeklySync] all targets hidden, skipped=${skippedHidden}`);
           }
           return;
         }
+        const changedSelection = selectChangedWeeklyTargets(
+          allTargets,
+          cachedTickets,
+          data.tickets,
+          buildCurrentWeeklyAttemptedKeys(weeklySyncMetaRef.current, WEEKLY_SYNC_PARSER_VERSION),
+        );
+        const targets = changedSelection.targets;
 
         // 진행 상태는 전역 Jira Sync control에 표시한다. hidden 등 정보는 console로 남긴다.
         if (skippedHidden > 0) {
@@ -2432,6 +2469,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             `[WeeklySync] 최근 완료 ${recentlyCompletedCount}건 포함 ` +
             `(완료 후 ${COMPLETED_WEEKLY_TRACKING_DAYS}일 추적)`,
           );
+        }
+        if (changedSelection.skippedUnchanged > 0) {
+          console.log(`[WeeklySync] Jira updated 변경 없음 ${changedSelection.skippedUnchanged}건 생략`);
         }
 
         // PR-Sync-Visibility: run-level 진행 상태 초기화 (상단 배지 source)
@@ -2452,7 +2492,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         // Per-ticket skip 사유 추적 — orchestration 끝에 KV 에 일괄 write.
         //   key = ticketKey, value = skip reason (성공한 ticket 은 entry 없음).
         const skipReasons = new Map<string, "no_marker" | "src_error" | "sync_error">();
-        const successKeys = new Set<string>();
 
         let parsedTotal = 0;
         let updatedTotal = 0;
@@ -2466,13 +2505,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         // Phase B: ticket별 Weekly 원문 수집 (KV cc-weekly-source-text에 누적 저장)
         const collectedSources: Record<string, WeeklySourceText> = {};
         const nowIso = new Date().toISOString();
-
-        let syncWriteTail: Promise<void> = Promise.resolve();
-        const enqueueSyncWrite = <T,>(operation: () => Promise<T>): Promise<T> => {
-          const current = syncWriteTail.then(operation, operation);
-          syncWriteTail = current.then(() => undefined, () => undefined);
-          return current;
-        };
+        const batchItems: WeeklySyncPayload[] = [];
+        const sourceCollectionStartedAt = performance.now();
 
         const chunkSize = 5;
         for (let i = 0; i < targets.length; i += chunkSize) {
@@ -2530,46 +2564,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     sourceWeek: src.parseSummary?.sourceWeek ?? "",
                     sourceUpdatedAt: src.sourceUpdatedAt ?? "",
                   }];
-              let result: Record<string, unknown> = {};
-              let syncFailed = false;
               for (const replaySource of replaySources) {
-                const syncResult = await enqueueSyncWrite(() => postWeeklySyncWithRetry(fetch, {
+                batchItems.push({
                   ticketKey: t.key,
                   weeklyText: replaySource.text,
                   sourceId: replaySource.sourceId,
-                }));
-                if (!syncResult.ok) {
-                  syncFailed = true;
-                  setWeeklySyncRun(prev => prev ? {
-                    ...prev,
-                    failures: [...prev.failures, syncResult.failure],
-                  } : prev);
-                  console.error("[WeeklySync] schedule sync failed", syncResult.failure);
-                  break;
-                }
-                result = syncResult.data;
-              }
-              if (syncFailed) {
-                errorTotal++;
-                skipReasons.set(t.key, "sync_error");
-                setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, skippedSyncError: prev.skippedSyncError + 1 } : prev);
-                return;
+                });
               }
 
               const parsedCnt = src.parseSummary?.schedulesCount ?? 0;
               parsedTotal      += parsedCnt;
-              updatedTotal     += Number(result.schedulesUpdated  ?? 0);
-              candidatesTotal  += Number(result.updateCandidates  ?? 0);
-              appliedTotal     += Number(result.appliedUpdates    ?? 0);
-
-              successKeys.add(t.key);
-              setWeeklySyncRun(prev => prev ? { ...prev, processed: prev.processed + 1, applied: prev.applied + 1 } : prev);
 
               console.log(
                 `[WeeklySync] ${t.key} src=${src.source} ` +
-                `parsed=${parsedCnt} updated=${Number(result.schedulesUpdated ?? 0)} ` +
-                `candidates=${Number(result.updateCandidates ?? 0)} ` +
-                (result.isIdempotent ? "(idempotent)" : ""),
+                `parsed=${parsedCnt} sources=${replaySources.length} collected`,
               );
             } catch (e) {
               errorTotal++;
@@ -2580,23 +2588,65 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           }));
         }
 
-        // 원문 수집 결과를 cc-weekly-source-text KV에 합쳐 저장 (read-modify-write 1회)
-        if (Object.keys(collectedSources).length > 0) {
-          try {
-            const existRes = await fetch("/api/kv?keys=cc-weekly-source-text");
-            const existData = await existRes.json();
-            const existing = (existData["cc-weekly-source-text"] && typeof existData["cc-weekly-source-text"] === "object" && !Array.isArray(existData["cc-weekly-source-text"]))
-              ? existData["cc-weekly-source-text"] as Record<string, WeeklySourceText>
-              : {};
-            const merged: Record<string, WeeklySourceText> = { ...existing, ...collectedSources };
-            await fetch("/api/kv", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ key: "cc-weekly-source-text", value: merged }),
-            });
-          } catch (e) {
-            console.warn("[WeeklySync] cc-weekly-source-text save failed:", e);
+        const sourceCollectionDurationMs = Math.max(
+          0,
+          Math.round(performance.now() - sourceCollectionStartedAt),
+        );
+        const batchResult = await postWeeklySyncBatchWithRetry(fetch, {
+          items: batchItems,
+          attempts: targets.map(ticket => ({
+            ticketKey: ticket.key,
+            reason: skipReasons.get(ticket.key) === "no_marker"
+              ? "no_marker" as const
+              : skipReasons.get(ticket.key) === "src_error"
+                ? "src_error" as const
+                : undefined,
+          })),
+          sourceTexts: collectedSources,
+          timings: {
+            metadataMs: metadataDurationMs,
+            sourceCollectionMs: sourceCollectionDurationMs,
+            targetCount: allTargets.length,
+            skippedUnchanged: changedSelection.skippedUnchanged,
+          },
+        });
+
+        if (!batchResult.ok) {
+          const sourceReadyKeys = new Set(batchItems.map(item => item.ticketKey));
+          for (const key of sourceReadyKeys) {
+            errorTotal++;
+            skipReasons.set(key, "sync_error");
           }
+          setWeeklySyncRun(prev => prev ? {
+            ...prev,
+            processed: targets.length,
+            skippedSyncError: sourceReadyKeys.size,
+            failures: [...prev.failures, batchResult.failure],
+          } : prev);
+          console.error("[WeeklySync] batch sync failed", batchResult.failure);
+        } else {
+          const failedKeys = new Set(batchResult.data.failures.map(failure => failure.ticketKey));
+          for (const failure of batchResult.data.failures) {
+            skipReasons.set(failure.ticketKey, "sync_error");
+            errorTotal++;
+          }
+          updatedTotal = batchResult.data.summary.schedulesUpdated;
+          candidatesTotal = batchResult.data.summary.updateCandidates;
+          appliedTotal = batchResult.data.summary.appliedTickets;
+          const failures: WeeklySyncFailure[] = batchResult.data.failures.map(failure => ({
+            ticketKey: failure.ticketKey,
+            sourceId: failure.sourceId,
+            status: 500,
+            error: failure.error,
+            attempts: batchResult.attempts,
+          }));
+          setWeeklySyncRun(prev => prev ? {
+            ...prev,
+            processed: targets.length,
+            applied: batchResult.data.summary.appliedTickets,
+            skippedSyncError: failedKeys.size,
+            failures: [...prev.failures, ...failures],
+          } : prev);
         }
 
         console.log(
@@ -2605,46 +2655,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           `updated=${updatedTotal} applied=${appliedTotal} ` +
           `candidates=${candidatesTotal} skippedHidden=${skippedHidden} ` +
           `commentSourceCount=${commentSourceCount} ` +
-          `skippedNoMarker=${skippedNoMarker} errors=${errorTotal}`,
+          `skippedNoMarker=${skippedNoMarker} unchanged=${changedSelection.skippedUnchanged} ` +
+          `errors=${errorTotal}`,
         );
-
-        // PR-Sync-Visibility: per-ticket lastAttemptAt + lastSkipReason 일괄 write.
-        //   - lastSyncAt 은 /api/weekly-sync 가 이미 성공 ticket 에 대해 갱신 → 절대 안 건드림.
-        //   - skip 된 ticket 의 lastSyncAt 은 과거 시점 그대로 보존 (route 에서 작성 안 됨).
-        //   - 새로 추가: lastAttemptAt = 현재 시각, lastSkipReason = sync 실패/skip 사유 (성공 시 undefined).
-        //   - DONE_FOR_WEEKLY / hidden 으로 targets 에서 제외된 ticket 은 본 write 대상 아님 (entry 무변경).
-        const attemptIso = new Date().toISOString();
-        try {
-          const metaRes = await fetch("/api/kv?keys=cc-weekly-sync-meta");
-          const metaData = await metaRes.json();
-          const currentMeta = (metaData["cc-weekly-sync-meta"] && typeof metaData["cc-weekly-sync-meta"] === "object" && !Array.isArray(metaData["cc-weekly-sync-meta"]))
-            ? metaData["cc-weekly-sync-meta"] as Record<string, WeeklySyncMeta>
-            : {};
-          let dirty = false;
-          for (const t of targets) {
-            const existing: WeeklySyncMeta = currentMeta[t.key] ?? {
-              ticketKey: t.key,
-              lastSyncAt: "",
-              lastSourceWeek: "",
-            };
-            if (successKeys.has(t.key)) {
-              currentMeta[t.key] = { ...existing, lastAttemptAt: attemptIso, lastSkipReason: undefined };
-              dirty = true;
-            } else if (skipReasons.has(t.key)) {
-              currentMeta[t.key] = { ...existing, lastAttemptAt: attemptIso, lastSkipReason: skipReasons.get(t.key) };
-              dirty = true;
-            }
-          }
-          if (dirty) {
-            await fetch("/api/kv", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ key: "cc-weekly-sync-meta", value: currentMeta }),
-            });
-          }
-        } catch (e) {
-          console.warn("[WeeklySync] cc-weekly-sync-meta attempt-write failed:", e);
-        }
 
         // PR-Sync-Visibility: run-level 완료 상태 + 상단 배지 자동 펼침 (오류 있을 때만)
         const finishedIso = new Date().toISOString();

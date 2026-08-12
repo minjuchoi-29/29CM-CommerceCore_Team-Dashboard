@@ -7,6 +7,12 @@ import type {
   FilterTicketsStore,
   TicketSourcesStore,
 } from "@/lib/filter-types";
+import {
+  getDataSourceHealth,
+  getFilterLastSuccessAt,
+  type SyncRunRecord,
+} from "@/lib/sync-run-types";
+import { inferJiraFilterKind, inferJiraFilterTargetArea } from "@/lib/filter-policy";
 
 // ── 운영 지표 계산 ─────────────────────────────────────────────────────────────
 
@@ -69,35 +75,31 @@ function relativeTime(iso: string | null): string {
   return `${Math.floor(hrs / 24)}일 전`;
 }
 
+function formatDuration(durationMs: number | null | undefined): string {
+  if (durationMs == null) return "—";
+  if (durationMs < 1_000) return `${durationMs}ms`;
+  const seconds = Math.round(durationMs / 100) / 10;
+  if (seconds < 60) return `${seconds}초`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}분 ${Math.round(seconds % 60)}초`;
+}
+
 // ── 하위 컴포넌트: 상태 배지 ──────────────────────────────────────────────────
 
 function SyncStatusBadge({ filter }: { filter: JiraFilter }) {
-  if (filter.lastSyncError) {
-    return (
-      <span
-        className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-        style={{ background: "rgba(239,68,68,0.12)", color: "#f87171" }}
-      >
-        오류
-      </span>
-    );
-  }
-  if (filter.lastSyncAt) {
-    return (
-      <span
-        className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-        style={{ background: "rgba(52,211,153,0.12)", color: "#34d399" }}
-      >
-        동기화됨
-      </span>
-    );
-  }
+  const health = getDataSourceHealth(filter);
+  const colorByStatus = {
+    current: { background: "rgba(52,211,153,0.12)", color: "#059669" },
+    stale: { background: "rgba(245,158,11,0.12)", color: "#d97706" },
+    error: { background: "rgba(239,68,68,0.12)", color: "#dc2626" },
+    pending: { background: "rgba(148,163,184,0.1)", color: "var(--text-subtle)" },
+  }[health.status];
   return (
     <span
       className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-      style={{ background: "rgba(148,163,184,0.1)", color: "var(--text-subtle)" }}
+      style={colorByStatus}
     >
-      대기
+      {health.label}
     </span>
   );
 }
@@ -120,6 +122,14 @@ function FilterCard({
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showRemoved, setShowRemoved] = useState(false);
   const displayName = filter.label ?? filter.name;
+  const sourceKind = inferJiraFilterKind(filter);
+  const targetArea = inferJiraFilterTargetArea(filter);
+  const kindLabel = {
+    assignee: "담당자 F/U",
+    etr: "ETR 요청",
+    initiative: "전체 과제",
+    general: "일반 소스",
+  }[sourceKind];
 
   return (
     <div
@@ -152,6 +162,12 @@ function FilterCard({
               </span>
             )}
             <SyncStatusBadge filter={filter} />
+            <span
+              className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+              style={{ background: "var(--bg-item)", color: "var(--text-muted)" }}
+            >
+              {kindLabel} · {targetArea === "etr" ? "ETR 검토" : targetArea === "tickets" ? "전체 과제" : "자동 분류"}
+            </span>
           </div>
           <div className="flex items-center gap-2 mt-0.5">
             <a
@@ -335,17 +351,28 @@ function FilterCard({
       >
         {filter.jql}
       </div>
+      {sourceKind === "assignee" && !filter.syncJql && (
+        <div
+          className="rounded-lg px-3 py-2 text-[11px]"
+          style={{ background: "rgba(14,116,144,0.07)", color: "#0e7490", border: "1px solid rgba(14,116,144,0.15)" }}
+        >
+          대시보드 수집 정책 · 생성일 제한 없이 미완료 전체와 최근 14일 내 완료 티켓을 추적합니다.
+        </div>
+      )}
 
       {/* 동기화 메타 */}
       <div className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-subtle)" }}>
         <span>
-          마지막 동기화: <span style={{ color: "var(--text-muted)" }}>{relativeTime(filter.lastSyncAt)}</span>
+          마지막 성공: <span style={{ color: "var(--text-muted)" }}>{relativeTime(getFilterLastSuccessAt(filter))}</span>
         </span>
-        {filter.lastSyncCount != null && (
-          <span>
-            티켓 <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{filter.lastSyncCount.toLocaleString()}</span>개
-          </span>
-        )}
+        <span className="flex items-center gap-3">
+          {filter.lastSyncDurationMs != null && <span>소요 {formatDuration(filter.lastSyncDurationMs)}</span>}
+          {filter.lastSyncCount != null && (
+            <span>
+              티켓 <span className="font-semibold" style={{ color: "var(--text-primary)" }}>{filter.lastSyncCount.toLocaleString()}</span>개
+            </span>
+          )}
+        </span>
       </div>
 
       {/* 오류 메시지 */}
@@ -363,7 +390,7 @@ function FilterCard({
 
 // ── 하위 컴포넌트: 필터 추가 폼 ──────────────────────────────────────────────
 
-function AddFilterForm({ onAdded }: { onAdded: () => void }) {
+function AddFilterForm({ onAdded }: { onAdded: (initialSyncOk: boolean) => void }) {
   const [input, setInput] = useState("");
   const [label, setLabel] = useState("");
   const [preview, setPreview] = useState<FilterPreview | null>(null);
@@ -419,7 +446,7 @@ function AddFilterForm({ onAdded }: { onAdded: () => void }) {
         setInput("");
         setLabel("");
         setPreview(null);
-        onAdded();
+        onAdded(data.initialSync?.ok === true);
       }
     } catch {
       setSubmitError("네트워크 오류");
@@ -552,6 +579,7 @@ export default function DataSourcesPage() {
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
   const [ticketSources, setTicketSources] = useState<TicketSourcesStore>({});
   const [statsLoaded, setStatsLoaded] = useState(false);
+  const [syncRuns, setSyncRuns] = useState<SyncRunRecord[]>([]);
 
   function showToast(msg: string, type: "success" | "error" = "success") {
     setToast({ msg, type });
@@ -592,10 +620,22 @@ export default function DataSourcesPage() {
     }
   }, []);
 
+  const loadSyncRuns = useCallback(async () => {
+    try {
+      const res = await fetch("/api/sync-runs?limit=10");
+      if (!res.ok) return;
+      const data = await res.json() as { runs?: SyncRunRecord[] };
+      setSyncRuns(Array.isArray(data.runs) ? data.runs : []);
+    } catch {
+      // 실행 기록이 없어도 기존 데이터 소스 관리는 가능하다.
+    }
+  }, []);
+
   useEffect(() => {
     loadFilters();
     loadStats();
-  }, [loadFilters, loadStats]);
+    loadSyncRuns();
+  }, [loadFilters, loadStats, loadSyncRuns]);
 
   async function handleSync(id: string) {
     setSyncingId(id);
@@ -606,7 +646,7 @@ export default function DataSourcesPage() {
         showToast(data.error ?? "동기화 실패", "error");
       } else {
         showToast(`동기화 완료 — 티켓 ${(data.ticketKeys as string[]).length.toLocaleString()}개`);
-        await Promise.all([loadFilters(), loadStats()]);
+        await Promise.all([loadFilters(), loadStats(), loadSyncRuns()]);
       }
     } catch {
       showToast("네트워크 오류", "error");
@@ -614,6 +654,30 @@ export default function DataSourcesPage() {
       setSyncingId(null);
     }
   }
+
+  const latestDailyRun = syncRuns.find(run => run.kind === "daily-refresh");
+  const sourceHealthCounts = filters.reduce(
+    (counts, filter) => {
+      counts[getDataSourceHealth(filter).status]++;
+      return counts;
+    },
+    { current: 0, stale: 0, error: 0, pending: 0 },
+  );
+  const latestRunStuck = latestDailyRun?.status === "running"
+    && Date.now() - new Date(latestDailyRun.startedAt).getTime() > 15 * 60_000;
+  const automaticStatus = latestRunStuck
+    ? { label: "중단 가능성", healthy: false }
+    : sourceHealthCounts.error > 0
+      ? { label: "오류", healthy: false }
+      : sourceHealthCounts.stale > 0
+        ? { label: "갱신 지연", healthy: false }
+        : latestDailyRun?.status === "running"
+          ? { label: "실행 중", healthy: true }
+          : latestDailyRun?.status === "success"
+            ? { label: "정상", healthy: true }
+            : latestDailyRun
+              ? { label: "확인 필요", healthy: false }
+              : { label: "기록 대기", healthy: sourceHealthCounts.current > 0 };
 
   async function handleDelete(id: string) {
     try {
@@ -690,6 +754,39 @@ export default function DataSourcesPage() {
           </button>
         </div>
 
+        <div
+          className="rounded-xl px-4 py-3 mb-5 flex items-center justify-between gap-4"
+          style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
+        >
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+                자동 갱신 상태
+              </span>
+              <span
+                className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                style={{
+                  background: automaticStatus.healthy ? "rgba(52,211,153,0.12)" : "rgba(245,158,11,0.12)",
+                  color: automaticStatus.healthy ? "#059669" : "#d97706",
+                }}
+              >
+                {automaticStatus.label}
+              </span>
+            </div>
+            <p className="text-xs" style={{ color: "var(--text-muted)" }}>
+              {latestDailyRun
+                ? `최근 자동 실행 ${relativeTime(latestDailyRun.startedAt)} · ${formatDuration(latestDailyRun.durationMs)}`
+                : "다음 자동 실행부터 단계별 시간과 오류를 기록합니다."}
+            </p>
+          </div>
+          <div className="flex items-center gap-3 shrink-0 text-xs" style={{ color: "var(--text-muted)" }}>
+            <span>최신 <strong style={{ color: "#059669" }}>{sourceHealthCounts.current}</strong></span>
+            <span>지연 <strong style={{ color: "#d97706" }}>{sourceHealthCounts.stale}</strong></span>
+            <span>오류 <strong style={{ color: "#dc2626" }}>{sourceHealthCounts.error}</strong></span>
+            {sourceHealthCounts.pending > 0 && <span>대기 <strong>{sourceHealthCounts.pending}</strong></span>}
+          </div>
+        </div>
+
         {/* 필터 추가 폼 */}
         {showAddForm && (
           <div
@@ -703,10 +800,13 @@ export default function DataSourcesPage() {
               Jira Filter 등록
             </h2>
             <AddFilterForm
-              onAdded={() => {
+              onAdded={(initialSyncOk) => {
                 setShowAddForm(false);
-                loadFilters();
-                showToast("필터가 등록되었습니다. 동기화 버튼을 눌러 티켓을 가져오세요.");
+                Promise.all([loadFilters(), loadStats(), loadSyncRuns()]);
+                showToast(initialSyncOk
+                  ? "필터 등록과 첫 티켓 동기화를 완료했습니다."
+                  : "필터는 등록됐지만 첫 동기화에 실패했습니다. 상태를 확인해주세요.",
+                initialSyncOk ? "success" : "error");
               }}
             />
           </div>

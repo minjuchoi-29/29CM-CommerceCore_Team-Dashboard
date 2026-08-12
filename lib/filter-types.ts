@@ -13,6 +13,8 @@
 
 /** 내부 관리 ID (Math.random + Date.now 기반 8자리) */
 export type FilterId = string;
+export type JiraFilterKind = "assignee" | "etr" | "initiative" | "general";
+export type JiraFilterTargetArea = "tickets" | "etr" | "auto";
 
 /** Jira Filter 등록 레코드 */
 export interface JiraFilter {
@@ -26,10 +28,26 @@ export interface JiraFilter {
   jql: string;
   /** 사용자 지정 레이블 (없으면 Jira name 사용) */
   label?: string;
+  /** 데이터 소스 목적. 기존 레코드는 이름/JQL에서 안전하게 추론한다. */
+  kind?: JiraFilterKind;
+  /** 대시보드 노출 영역 */
+  targetArea?: JiraFilterTargetArea;
+  /** 자동 동기화 사용 여부. 미설정 기존 레코드는 true. */
+  enabled?: boolean;
+  /** 대시보드가 Jira 저장 필터 대신 사용할 수집 JQL */
+  syncJql?: string;
+  /** 자동 갱신 기준 주기 */
+  refreshCadenceHours?: number;
   /** 등록 시각 (ISO 8601) */
   createdAt: string;
   /** 마지막 sync 시각 (ISO 8601, sync 전이면 null) */
   lastSyncAt: string | null;
+  /** 마지막 성공 시각. 기존 lastSyncAt과 병행해 하위 호환을 유지한다. */
+  lastSuccessAt?: string | null;
+  /** 마지막 시도 시각. 실패 시에도 갱신된다. */
+  lastAttemptAt?: string | null;
+  /** 마지막 시도에 걸린 시간 */
+  lastSyncDurationMs?: number | null;
   /** 마지막 sync로 가져온 티켓 수 */
   lastSyncCount: number | null;
   /** 마지막 sync 오류 메시지 (성공이면 null) */
@@ -73,6 +91,7 @@ export interface FilterSyncResult {
   overlapCount: number;
   /** 오류 메시지 (ok=false일 때) */
   error?: string;
+  durationMs?: number;
 }
 
 // ── API 요청/응답 ─────────────────────────────────────────────────────────────

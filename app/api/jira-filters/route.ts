@@ -14,6 +14,9 @@ import type {
   JiraFilter,
   JiraFiltersStore,
 } from "@/lib/filter-types";
+import { inferJiraFilterKind, inferJiraFilterTargetArea } from "@/lib/filter-policy";
+import { syncJiraFilter } from "@/lib/filter-sync";
+import { TICKET_KEYS } from "@/app/jira-tickets/tickets-data";
 
 export const dynamic = "force-dynamic";
 
@@ -159,14 +162,30 @@ export async function POST(req: NextRequest) {
     name: filterMeta.name,
     jql: filterMeta.jql,
     label: label?.trim() || undefined,
+    kind: undefined,
+    enabled: true,
+    refreshCadenceHours: 24,
     createdAt: new Date().toISOString(),
     lastSyncAt: null,
+    lastSuccessAt: null,
+    lastAttemptAt: null,
+    lastSyncDurationMs: null,
     lastSyncCount: null,
     lastSyncError: null,
   };
+  newFilter.kind = inferJiraFilterKind(newFilter);
+  newFilter.targetArea = inferJiraFilterTargetArea(newFilter);
 
   store[newFilter.id] = newFilter;
   await redis.set("cc-jira-filters", store);
 
-  return NextResponse.json({ filter: newFilter }, { status: 201 });
+  // 등록 즉시 최초 동기화해 별도 메뉴 이동이나 추가 버튼 클릭을 요구하지 않는다.
+  let initialSync: Awaited<ReturnType<typeof syncJiraFilter>> | { ok: false; error: string } | null = null;
+  try {
+    initialSync = await syncJiraFilter(newFilter.id, new Set(TICKET_KEYS));
+  } catch (error) {
+    initialSync = { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+
+  return NextResponse.json({ filter: newFilter, initialSync }, { status: 201 });
 }

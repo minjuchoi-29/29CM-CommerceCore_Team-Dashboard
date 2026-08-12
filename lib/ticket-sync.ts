@@ -10,6 +10,60 @@ export type TicketRefreshPlan = {
   missingCustomCount: number;
 };
 
+export type WeeklyRefreshSelection<T> = {
+  targets: T[];
+  skippedUnchanged: number;
+};
+
+export function buildCurrentWeeklyAttemptedKeys(
+  metaByKey: Record<string, {
+    ticketKey: string;
+    lastSkipReason?: "no_marker" | "src_error" | "sync_error";
+    appliedSourceIds?: string[];
+  }>,
+  parserVersion: string,
+): Set<string> {
+  const prefix = `${parserVersion}:`;
+  return new Set(Object.values(metaByKey)
+    .filter(meta => meta.lastSkipReason === "no_marker"
+      || meta.appliedSourceIds?.some(sourceId => sourceId.startsWith(prefix)))
+    .map(meta => meta.ticketKey));
+}
+
+/**
+ * Jira metadata refresh 결과에서 실제로 변경된 Weekly 대상만 고른다.
+ * updatedAt을 비교할 수 없거나 이전 sync 기록이 없는 티켓은 안전하게 포함한다.
+ */
+export function selectChangedWeeklyTargets<
+  T extends { key: string; updatedAt?: string },
+>(
+  targets: T[],
+  previousTickets: Array<{ key: string; updatedAt?: string }>,
+  refreshedTickets: Array<{ key: string; updatedAt?: string }>,
+  previouslyAttemptedKeys: Set<string>,
+): WeeklyRefreshSelection<T> {
+  const previousByKey = new Map(previousTickets.map(ticket => [ticket.key, ticket]));
+  const refreshedByKey = new Map(refreshedTickets.map(ticket => [ticket.key, ticket]));
+  const changed: T[] = [];
+  let skippedUnchanged = 0;
+
+  for (const target of targets) {
+    const previous = previousByKey.get(target.key);
+    const refreshed = refreshedByKey.get(target.key);
+    const neverAttempted = !previouslyAttemptedKeys.has(target.key);
+    const cannotCompare = !previous?.updatedAt || !refreshed?.updatedAt;
+    const updated = previous?.updatedAt !== refreshed?.updatedAt;
+
+    if (neverAttempted || !previous || cannotCompare || updated) {
+      changed.push(target);
+    } else {
+      skippedUnchanged++;
+    }
+  }
+
+  return { targets: changed, skippedUnchanged };
+}
+
 /**
  * Jira Sync에서 오래된 완료 티켓 전체를 다시 읽지 않도록 조회 대상을 줄인다.
  * 실행 단계/최근 완료 티켓은 기존 Weekly 추적 정책과 동일하게 선택하고,
