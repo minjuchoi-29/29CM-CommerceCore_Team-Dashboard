@@ -83,3 +83,25 @@ test("팀 입력은 공식 표현을 제안하면서 자유 입력 필드를 유
   assert.match(markup, /list="schedule-team-suggestions"/);
   assert.match(markup, /value="협업 팀"/);
 });
+
+test("일정 편집 필드를 명확한 라벨과 저장 액션으로 구분한다", () => {
+  const markup = renderEditor([{
+    role: "FE - Commerce",
+    resourceTeam: "FE - Commerce",
+    person: "담당자",
+    start: "2026-08-10",
+    end: "2026-08-14",
+    status: "진행중",
+    phase: "개발",
+    source: "manual",
+    manualLocked: true,
+    detail: "장바구니 UI 개발",
+  }]);
+
+  for (const label of ["단계", "팀", "상태", "작업명", "담당자", "시작일", "종료일"]) {
+    assert.match(markup, new RegExp(`>${label}<`));
+  }
+  assert.match(markup, /일정 1개/);
+  assert.match(markup, /변경사항 저장/);
+  assert.match(markup, /자동 덮어쓰기 방지/);
+});

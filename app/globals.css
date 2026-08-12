@@ -95,6 +95,169 @@ html {
   overflow-wrap: anywhere;
 }
 
+/*
+ * 티켓 회의 화면 typography.
+ * 빠른 미리보기와 집중보기에는 날짜·상태·출처처럼 실제 판단에 쓰는 정보가 많아
+ * 9~10px micro text를 사용하지 않는다. 기존 정보 위계는 크기 단계로 유지하되,
+ * 본문/보조 정보의 최소 가독 크기를 각각 13px/11px로 보정한다.
+ */
+.ticket-board-detail-panel--readable [class~="text-[8px]"],
+.ticket-board-detail-panel--readable [class~="text-[9px]"],
+.ticket-board-detail-panel--readable [class~="text-[9.5px]"] {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ticket-board-detail-panel--readable [class~="text-[10px]"],
+.ticket-board-detail-panel--readable [class~="text-[10.5px]"] {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ticket-board-detail-panel--readable [class~="text-[11px]"],
+.ticket-board-detail-panel--readable [class~="text-[11.5px]"],
+.ticket-board-detail-panel--readable .text-xs,
+.ticket-board-detail-panel--readable [class~="text-[12px]"] {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.ticket-board-detail-panel--readable [class~="text-[12.5px]"],
+.ticket-board-detail-panel--readable [class~="text-[13px]"] {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.ticket-board-detail-panel--readable [class~="text-[14px]"] {
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.ticket-board-detail-panel--readable [class~="text-[15px]"] {
+  font-size: 16px;
+  line-height: 1.45;
+}
+
+/* 빠른 미리보기 좌측 목록은 폭을 지키면서 보조 정보만 한 단계 확대한다. */
+.ticket-board-list-panel--quick-preview [class~="text-[10px]"],
+.ticket-board-list-panel--quick-preview [class~="text-[10.5px]"],
+.ticket-board-list-panel--quick-preview [class~="text-[11px]"],
+.ticket-board-list-panel--quick-preview [class~="text-[11.5px]"] {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.ticket-board-list-panel--quick-preview .text-xs,
+.ticket-board-list-panel--quick-preview [class~="text-[12px]"] {
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* 집중보기의 220px 탐색 레일은 정보 밀도를 유지하되 10px 미만을 없앤다. */
+.ticket-board-list-panel--focus-mode [class~="text-[9px]"],
+.ticket-board-list-panel--focus-mode [class~="text-[9.5px]"],
+.ticket-board-list-panel--focus-mode [class~="text-[10px]"],
+.ticket-board-list-panel--focus-mode [class~="text-[10.5px]"] {
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.ticket-board-list-panel--focus-mode [class~="text-[11px]"],
+.ticket-board-list-panel--focus-mode [class~="text-[11.5px]"],
+.ticket-board-list-panel--focus-mode .text-xs,
+.ticket-board-list-panel--focus-mode [class~="text-[12px]"] {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* 집중보기 일정 편집은 읽기용 좌우 분할을 벗어나 입력에 필요한 폭을 모두 사용한다. */
+.ticket-board-focus-body--editing .ticket-board-focus-right {
+  width: 100% !important;
+  border-top: 0 !important;
+}
+
+.ticket-board-schedule-edit-workspace {
+  box-shadow: 0 10px 30px rgba(34, 51, 71, 0.08);
+}
+
+.schedule-editor {
+  container-type: inline-size;
+}
+
+.schedule-editor__toolbar {
+  box-shadow: 0 6px 14px rgba(34, 51, 71, 0.06);
+}
+
+.schedule-editor__primary-grid,
+.schedule-editor__secondary-grid {
+  display: grid;
+  gap: 10px;
+  align-items: end;
+}
+
+.schedule-editor__primary-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.schedule-editor__secondary-grid {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+}
+
+.schedule-editor__field {
+  display: flex;
+  min-width: 0;
+  grid-column: span 2;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.schedule-editor__field > span {
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.schedule-editor__field--team,
+.schedule-editor__field--person {
+  grid-column: span 3;
+}
+
+.schedule-editor__field--detail {
+  grid-column: span 5;
+}
+
+.schedule-editor__same-day {
+  grid-column: span 3;
+  min-height: 34px;
+}
+
+@container (max-width: 760px) {
+  .schedule-editor__primary-grid,
+  .schedule-editor__secondary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .schedule-editor__field,
+  .schedule-editor__field--team,
+  .schedule-editor__field--person {
+    grid-column: span 1;
+  }
+
+  .schedule-editor__field--detail,
+  .schedule-editor__same-day {
+    grid-column: 1 / -1;
+  }
+}
+
+/* 라이트 모드에서 작은 보조 텍스트가 배경에 묻히지 않도록 대비도 함께 보정한다. */
+[data-theme="light"] .ticket-board-detail-panel--readable,
+[data-theme="light"] .ticket-board-list-panel--quick-preview,
+[data-theme="light"] .ticket-board-list-panel--focus-mode {
+  --text-muted: #52677b;
+  --text-subtle: #75869a;
+}
+
 @media (max-width: 900px) {
   .ticket-board-list-panel--detail-open {
     display: none;

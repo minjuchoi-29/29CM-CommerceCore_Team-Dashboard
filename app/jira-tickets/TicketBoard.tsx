@@ -1721,6 +1721,7 @@ function MultiSelectDropdown({
   onToggle,
   onClear,
   accentColor = "#7c3aed",
+  compact = false,
 }: {
   label: string;
   items: string[];
@@ -1728,6 +1729,7 @@ function MultiSelectDropdown({
   onToggle: (v: string) => void;
   onClear: () => void;
   accentColor?: string;
+  compact?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1750,7 +1752,7 @@ function MultiSelectDropdown({
           color: count > 0 ? accentColor : "var(--text-muted)",
         }}
       >
-        {label}{count > 0 ? `: ${[...selected].join(", ")}` : ": 전체"}
+        {label}{count > 0 ? compact ? ` ${count}` : `: ${[...selected].join(", ")}` : ": 전체"}
         <span className="ml-0.5 text-[9px]">▾</span>
       </button>
       {open && (
@@ -1994,10 +1996,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [wikiEditInput, setWikiEditInput] = useState("");
   const [wikiEditTitleInput, setWikiEditTitleInput] = useState("");
   const [sheetSyncMsg, setSheetSyncMsg] = useState<string | null>(null);
-  // Phase 2: Weekly Sync orchestration 진행 상황 토스트
-  const [weeklySyncMsg, setWeeklySyncMsg] = useState<string | null>(null);
   // PR-Sync-Visibility (2026-06-18): Weekly Sync background 진행 상태.
-  //   transient — 페이지 새로고침 시 초기화. 상단 배지 / 상세 카드 표시 용.
+  //   transient — 페이지 새로고침 시 초기화. 전역 Jira Sync control 표시 용.
   //   per-ticket lastSkipReason 은 cc-weekly-sync-meta KV 로 별도 persist.
   type WeeklySyncRun = {
     phase: "idle" | "running" | "done";
@@ -2013,6 +2013,31 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   };
   const [weeklySyncRun, setWeeklySyncRun] = useState<WeeklySyncRun | null>(null);
   const [weeklySyncRunOpen, setWeeklySyncRunOpen] = useState(false);
+  useEffect(() => {
+    if (!weeklySyncRun) return;
+    const skipped = weeklySyncRun.skippedNoMarker + weeklySyncRun.skippedSrcError + weeklySyncRun.skippedSyncError;
+    const errors = weeklySyncRun.skippedSrcError + weeklySyncRun.skippedSyncError;
+    window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
+      detail: weeklySyncRun.phase === "running"
+        ? {
+            running: true,
+            stage: "weekly",
+            label: `Weekly ${weeklySyncRun.processed}/${weeklySyncRun.targets}`,
+            processed: weeklySyncRun.processed,
+            total: weeklySyncRun.targets,
+          }
+        : {
+            running: false,
+            stage: "done",
+            label: "동기화 완료",
+            processed: weeklySyncRun.processed,
+            total: weeklySyncRun.targets,
+            applied: weeklySyncRun.applied,
+            skipped,
+            errors,
+          },
+    }));
+  }, [weeklySyncRun]);
   // Weekly의 액션/리스크 메모 확인 패널
   const [candidatePanelOpen, setCandidatePanelOpen] = useState(false);
   const [candidatesInFlight, setCandidatesInFlight] = useState<Set<string>>(new Set());
@@ -2086,11 +2111,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     window.addEventListener("mouseup", onUp);
   }, [sidebarWidth]);
 
-  // 빠른 미리보기는 상세 확인이 목적이므로 기본 폭을 더 넓게 배분한다.
-  // 1280px 기준 목록 약 40%, 미리보기 약 60%이며 필요하면 드래그로 조절한다.
+  // 빠른 미리보기는 목록 순회와 상세 확인을 함께 쓰므로 한쪽이 과도하게 좁아지지 않게 배분한다.
+  // 1280px 기준 목록 약 45%, 미리보기 약 55%이며 필요하면 드래그로 조절한다.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const targetWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(window.innerWidth * 0.60)));
+    const targetWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(window.innerWidth * 0.55)));
     setSidebarWidth(targetWidth);
   // 의도: 마운트 1회만 — viewport 동적 변화는 사용자가 드래그로 재조정.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2398,8 +2423,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           return;
         }
 
-        // 진행 중 토스트도 사용자용 단순 메시지. hidden 등 정보는 console로.
-        setWeeklySyncMsg("Weekly Sync 중…");
+        // 진행 상태는 전역 Jira Sync control에 표시한다. hidden 등 정보는 console로 남긴다.
         if (skippedHidden > 0) {
           console.log(`[WeeklySync] start — targets=${targets.length} (hidden ${skippedHidden} 제외)`);
         }
@@ -2575,12 +2599,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           }
         }
 
-        // 사용자 토스트는 운영 액션만 — debug count는 console로만.
-        const msg = errorTotal > 0
-          ? `Weekly Sync 일부 실패 (${errorTotal}건)`
-          : `Weekly Sync 완료 · 일정 자동 최신화`;
-        setWeeklySyncMsg(msg);
-        setTimeout(() => setWeeklySyncMsg(null), 8_000);
         console.log(
           `[WeeklySync] DONE total ${targets.length} | ` +
           `found=${foundMarkerTotal} parsed=${parsedTotal} ` +
@@ -6086,10 +6104,12 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     );
   }
 
+  const isQuickPreview = selected !== null && !isDetailExpanded;
+
   return (
     <div className="flex min-h-[calc(100vh-7rem)]" style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}>
       {/* ── 리스트 패널 ── */}
-      <div onClick={handleBackgroundClick} className={`ticket-board-list-panel ${selected ? "ticket-board-list-panel--detail-open" : ""} ${isDetailExpanded ? "shrink-0 overflow-hidden" : "flex-1 min-w-0"} ${isDetailExpanded ? "px-0 pt-0 pb-0" : "px-3 py-8"} overflow-hidden`} style={{ background: "var(--bg-canvas)", ...(isDetailExpanded ? { width: "220px", borderRight: "1px solid var(--border-2)" } : {}) }}>
+      <div onClick={handleBackgroundClick} className={`ticket-board-list-panel ${selected ? "ticket-board-list-panel--detail-open" : ""} ${isQuickPreview ? "ticket-board-list-panel--quick-preview" : ""} ${isDetailExpanded ? "ticket-board-list-panel--focus-mode shrink-0 overflow-hidden" : "flex-1 min-w-0"} ${isDetailExpanded ? "px-0 pt-0 pb-0" : "px-3 py-8"} overflow-hidden`} style={{ background: "var(--bg-canvas)", ...(isDetailExpanded ? { width: "220px", borderRight: "1px solid var(--border-2)" } : {}) }}>
         {isDetailExpanded && (
           <div className="flex items-center justify-between px-3 py-2.5 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
             <div className="flex items-center gap-1.5">
@@ -6113,12 +6133,16 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             </button>
           </div>
         )}
-        <div className={`mb-5 flex items-start justify-between ${isDetailExpanded ? "hidden" : ""}`}>
-          <div>
-            <h2 className="text-lg font-bold" style={{ color: "var(--text-primary)" }}>전체 과제 현황</h2>
-            <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>Sub Group: 29CM-P Commerce Core</p>
+        <div className={`mb-4 flex justify-between gap-3 ${isQuickPreview ? "items-center" : "items-start"} ${isDetailExpanded ? "hidden" : ""}`}>
+          <div className="min-w-0">
+            <h2 className="text-lg font-bold whitespace-nowrap" style={{ color: "var(--text-primary)" }}>
+              {isQuickPreview ? "과제 목록" : "전체 과제 현황"}
+            </h2>
+            {!isQuickPreview && (
+              <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>Sub Group: 29CM-P Commerce Core</p>
+            )}
           </div>
-          <div className="flex items-center gap-3 mt-1">
+          <div className={`flex items-center shrink-0 ${isQuickPreview ? "gap-2" : "gap-3 mt-1"}`}>
             {priorityError && (
               <span className="text-xs text-red-400">
                 {priorityError === "no_token" ? "시트 권한 없음 — 재로그인 필요" : `시트 오류(${priorityError})`}
@@ -6127,12 +6151,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {sheetSyncMsg && (
               <span className="text-xs text-green-600 font-medium">{sheetSyncMsg}</span>
             )}
-            {weeklySyncMsg && (
-              <span className="text-xs text-indigo-500 font-medium">{weeklySyncMsg}</span>
-            )}
             {syncedAt && (
               <span className="text-xs text-gray-400" title="Jira 메타데이터 (티켓 본문/상태/링크) 가 동기화된 시각. Weekly Sync 와는 분리되어 있습니다.">
-                Jira 메타:{" "}
+                {isQuickPreview ? "Jira " : "Jira 메타: "}
                 <span className="text-gray-600 font-medium">
                   {(() => {
                     const now = new Date();
@@ -6148,7 +6169,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             {/* PR-Sync-Visibility: Weekly Sync background 진행 상태 (transient).
                 running 동안 counter 실시간 갱신, done 후에는 적용/스킵/오류 요약. */}
             {weeklySyncRun && (
-              <div className="text-xs flex items-center gap-1.5">
+              <div className="hidden" aria-hidden="true">
                 {weeklySyncRun.phase === "running" && (
                   <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded font-medium"
                     style={{ background: "rgba(129,140,248,0.10)", color: "#818cf8", border: "1px solid rgba(129,140,248,0.30)" }}
@@ -7025,7 +7046,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 과제 상태 탭 */}
-        <div className={`flex gap-1.5 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
+        <div className={`grid gap-1.5 mb-4 ${isQuickPreview ? "grid-cols-2" : "grid-cols-4"} ${isDetailExpanded ? "hidden" : ""}`}>
           {([
             { key: "전체",           label: "전체",           desc: "모든 과제 (ETR 제외)" },
             { key: "진행 중",        label: "진행 중",        desc: "Jira 실행 단계 과제" },
@@ -7038,7 +7059,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 key={key}
                 onClick={() => changeTab(key)}
                 title={desc}
-                className="flex-1 py-2.5 px-3 rounded-xl text-sm font-semibold transition-all"
+                className="py-2.5 px-3 rounded-xl text-sm font-semibold transition-all whitespace-nowrap"
                 style={{
                   background: active
                     ? key === "전체" ? "var(--border)"
@@ -7526,8 +7547,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         {/* 요약 카드 */}
         {planningTab === "플래닝 대기·검토" ? (
           /* 플래닝 대기·검토 탭 전용 — 팀별 플래닝 상태 분포 */
-          <div className={`mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
-            <div className="grid gap-2.5" style={{ gridTemplateColumns: `repeat(${planningTeamCounts.length}, minmax(0, 1fr))` }}>
+          <div className={`mb-4 ${isDetailExpanded ? "hidden" : ""}`}>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>팀별 플래닝 상태</p>
+              <p className="text-[10px]" style={{ color: "var(--text-subtle)" }}>필요 팀 기준</p>
+            </div>
+            <div
+              className={`grid ${isQuickPreview ? "grid-cols-2 gap-2" : "gap-2.5"}`}
+              style={isQuickPreview ? undefined : { gridTemplateColumns: `repeat(${planningTeamCounts.length}, minmax(0, 1fr))` }}
+            >
               {planningTeamCounts.map(({ label, color, bucket }) => {
                 const isCardActive = planningKpiFilter?.team === label;
                 const isTeamOnly   = isCardActive && !planningKpiFilter?.status;
@@ -7546,11 +7574,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     onClick={toggleTeamOnly}
                     onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleTeamOnly(); } }}
                     title={isTeamOnly ? `${label} 팀 전체 (해제)` : `${label} 팀 전체 필터`}
-                    className="rounded-xl border-2 px-4 py-3 transition-colors cursor-pointer"
+                    className={`rounded-xl border-2 transition-colors cursor-pointer ${isQuickPreview ? "px-3 py-2.5" : "px-4 py-3"}`}
                     style={{
                       background: isCardActive ? "var(--bg-item)" : "var(--bg-overlay)",
                       borderColor: isCardActive ? color : "var(--border)",
-                      minHeight: 86,
+                      minHeight: isQuickPreview ? 78 : 86,
                       boxSizing: "border-box",
                     }}
                   >
@@ -7612,8 +7640,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           </div>
         ) : (
           /* 기타 탭 — JIRA 상태 기준 7개 카드 */
-          <div className={`grid grid-cols-7 gap-2 mb-5 ${isDetailExpanded ? "hidden" : ""}`}>
-            {([
+          <div className={`mb-4 ${isDetailExpanded ? "hidden" : ""}`}>
+            <div className="flex items-center justify-between gap-3 mb-2">
+              <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Jira 단계</p>
+              <p className="text-[10px] whitespace-nowrap" style={{ color: "var(--text-subtle)" }}>{planningTab} 기준 · {totalAll}개</p>
+            </div>
+            <div className={`grid ${isQuickPreview ? "grid-cols-4 gap-1.5" : "grid-cols-7 gap-2"}`}>
+              {([
               { label: "전체",   filterKey: "전체",   count: totalAll,        numColor: "var(--text-primary)", desc: "등록된 전체 티켓",            accentColor: undefined },
               { label: "준비중", filterKey: "준비중", count: totalReady,      numColor: "#fbbf24", desc: "준비중",                          accentColor: "#fbbf24" },
               { label: "기획",   filterKey: "기획",   count: totalPlan,       numColor: "#f97316", desc: "기획중 · 기획완료",               accentColor: "#f97316" },
@@ -7628,20 +7661,27 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   key={s.label}
                   onClick={() => setStatusTab(active ? "전체" : s.filterKey)}
                   title={s.desc}
-                  className="rounded-xl border px-3 py-3 text-left transition-all cursor-pointer"
+                  className={`rounded-xl border transition-all cursor-pointer ${isQuickPreview ? "px-2.5 py-2 flex items-center justify-between gap-2" : "px-3 py-3 text-left"}`}
                   style={{
                     background: active ? "var(--bg-item)" : "var(--bg-overlay)",
-                    borderColor: active && s.accentColor ? s.accentColor + "80" : active ? "#7c3aed" : "var(--border)",
+                    borderColor: active && s.accentColor ? s.accentColor + "80" : active ? "#315b91" : "var(--border)",
                   }}
                 >
-                  <div className="flex items-center justify-between mb-1">
-                    <p className="text-xs" style={{ color: "var(--text-muted)" }}>{s.label}</p>
-                    <p className="text-[10px]" style={{ color: "var(--text-subtle)" }}>{planningTab} 기준</p>
-                  </div>
-                  <p className="text-2xl font-bold" style={{ color: s.numColor }}>{s.count}</p>
+                  {isQuickPreview ? (
+                    <>
+                      <span className="text-xs whitespace-nowrap" style={{ color: "var(--text-muted)" }}>{s.label}</span>
+                      <span className="text-base font-bold leading-none" style={{ color: s.numColor }}>{s.count}</span>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-xs mb-1" style={{ color: "var(--text-muted)" }}>{s.label}</p>
+                      <p className="text-2xl font-bold" style={{ color: s.numColor }}>{s.count}</p>
+                    </>
+                  )}
                 </button>
               );
             })}
+            </div>
           </div>
         )}
 
@@ -7665,22 +7705,22 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         )}
 
         {/* 필터 바 */}
-        <div className={`flex items-center gap-1.5 mb-4 flex-wrap ${isDetailExpanded ? "hidden" : ""}`}>
+        <div className={`flex items-start gap-2 mb-4 flex-wrap ${isDetailExpanded ? "hidden" : ""}`}>
 
           {/* 필터 그룹 */}
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+          <div className={`flex items-center flex-wrap gap-1.5 px-2 py-1 rounded-lg min-w-0 ${isQuickPreview ? "w-full" : ""}`} style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
             <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>필터</span>
-            <MultiSelectDropdown label="분기" items={ALL_QUARTERS} selected={quarters} onToggle={v => setQuarters(p => toggle(p, v))} onClear={() => setQuarters(new Set())} />
-            <MultiSelectDropdown label="레벨" items={ALL_LEVELS} selected={levels} onToggle={v => setLevels(p => toggle(p, v))} onClear={() => setLevels(new Set())} />
-            <MultiSelectDropdown label="프로젝트" items={ALL_PROJECTS} selected={projects} onToggle={v => setProjects(p => toggle(p, v))} onClear={() => setProjects(new Set())} />
-            <MultiSelectDropdown label="상태" items={ALL_STATUSES} selected={statuses} onToggle={v => setStatuses(p => toggle(p, v))} onClear={() => setStatuses(new Set())} />
-            <MultiSelectDropdown label="담당자" items={allAssignees} selected={assigneeFilter} onToggle={v => setAssigneeFilter(p => toggle(p, v))} onClear={() => setAssigneeFilter(new Set())} />
-            <MultiSelectDropdown label="도메인" items={allDomains} selected={domainFilter} onToggle={v => setDomainFilter(p => toggle(p, v))} onClear={() => setDomainFilter(new Set())} />
-            <MultiSelectDropdown label="대상" items={allTargets} selected={targetFilter} onToggle={v => setTargetFilter(p => toggle(p, v))} onClear={() => setTargetFilter(new Set())} />
+            <MultiSelectDropdown compact={isQuickPreview} label="분기" items={ALL_QUARTERS} selected={quarters} onToggle={v => setQuarters(p => toggle(p, v))} onClear={() => setQuarters(new Set())} />
+            <MultiSelectDropdown compact={isQuickPreview} label="레벨" items={ALL_LEVELS} selected={levels} onToggle={v => setLevels(p => toggle(p, v))} onClear={() => setLevels(new Set())} />
+            <MultiSelectDropdown compact={isQuickPreview} label="프로젝트" items={ALL_PROJECTS} selected={projects} onToggle={v => setProjects(p => toggle(p, v))} onClear={() => setProjects(new Set())} />
+            <MultiSelectDropdown compact={isQuickPreview} label="상태" items={ALL_STATUSES} selected={statuses} onToggle={v => setStatuses(p => toggle(p, v))} onClear={() => setStatuses(new Set())} />
+            <MultiSelectDropdown compact={isQuickPreview} label="담당자" items={allAssignees} selected={assigneeFilter} onToggle={v => setAssigneeFilter(p => toggle(p, v))} onClear={() => setAssigneeFilter(new Set())} />
+            <MultiSelectDropdown compact={isQuickPreview} label="도메인" items={allDomains} selected={domainFilter} onToggle={v => setDomainFilter(p => toggle(p, v))} onClear={() => setDomainFilter(new Set())} />
+            <MultiSelectDropdown compact={isQuickPreview} label="대상" items={allTargets} selected={targetFilter} onToggle={v => setTargetFilter(p => toggle(p, v))} onClear={() => setTargetFilter(new Set())} />
           </div>
 
           {/* 정렬 그룹 */}
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg" style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
+          <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg ${isQuickPreview ? "w-full justify-between" : ""}`} style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}>
             <span className="text-[10px] font-semibold mr-0.5 shrink-0" style={{ color: "var(--text-subtle)" }}>정렬</span>
             <div className="relative" style={{ display: "inline-block" }}>
               <select
@@ -8251,7 +8291,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       {/* ── 우측 상세 패널 ── */}
       {selected && (
         <div
-          className={`ticket-board-detail-panel shrink-0 sticky top-[7rem] h-[calc(100vh-7rem)] flex flex-col ${isDetailExpanded ? "flex-1" : ""}`}
+          className={`ticket-board-detail-panel ticket-board-detail-panel--readable shrink-0 sticky top-[7rem] h-[calc(100vh-7rem)] flex flex-col ${isDetailExpanded ? "flex-1" : ""}`}
           style={{ borderLeft: "1px solid var(--border-2)", background: "var(--bg-overlay)", ...(isDetailExpanded ? {} : { width: sidebarWidth }) }}
         >
           {/* 드래그 핸들 (집중 보기 모드에서는 숨김) */}
@@ -8532,15 +8572,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             const fmWeeklyFirst = fmWorkstreamView.lifecycle !== "planning";
             const fmTicketNotes = ticketNotes[selected.key];
 
-            // 주요 메타 항목
-            const META_ROWS: { label: string; value: string | undefined | null }[] = [
-              { label: "상태",   value: selected.status },
-              { label: "ETA",    value: selected.eta && selected.eta !== "-" ? selected.eta : undefined },
-              { label: "유형",   value: selected.type },
-              { label: "담당자", value: selected.assignee ?? undefined },
-              { label: "프로젝트", value: selected.project ?? undefined },
-            ];
-
             const LEVEL_STYLE = {
               critical: { dot: "#ef4444", color: "#f87171", bg: "rgba(239,68,68,0.09)",   border: "rgba(248,113,113,0.5)" },
               warning:  { dot: "#f59e0b", color: "#fbbf24", bg: "rgba(245,158,11,0.08)",  border: "rgba(251,191,36,0.38)" },
@@ -8569,7 +8600,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             return (
               <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
                 {/* ── Owner Dashboard 진입 Context 배너 ── */}
-                {fmCtx && (
+                {!editMode && fmCtx && (
                   <div
                     className="shrink-0 flex items-center justify-between gap-2 px-4 py-2"
                     style={{ borderBottom: "1px solid var(--border)", background: fmCtx.bg, color: fmCtx.color }}
@@ -8607,7 +8638,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 )}
 
                 {/* ── Action Resolve Toast ── */}
-                {resolveToast && (
+                {!editMode && resolveToast && (
                   <div
                     className="shrink-0 flex items-center gap-2 px-4 py-1.5 text-[12px] font-semibold"
                     style={{
@@ -8626,7 +8657,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 )}
 
                 {/* ── 현재 필요한 액션 스트립 ── */}
-                {fmActions.length > 0 && (
+                {!editMode && fmActions.length > 0 && (
                   <div
                     className="shrink-0 flex items-center gap-1.5 px-4 py-2 flex-wrap"
                     style={{ borderBottom: "1px solid var(--border)", background: "var(--bg-canvas)" }}
@@ -8665,33 +8696,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 )}
 
                 {/* ── 2-column body ── */}
-                <div className={`ticket-board-focus-body flex flex-1 min-h-0 overflow-hidden ${fmWorkstreamView.lifecycle === "planning" ? "ticket-board-focus-body--planning" : ""}`}>
+                <div className={`ticket-board-focus-body flex flex-1 min-h-0 overflow-hidden ${fmWorkstreamView.lifecycle === "planning" ? "ticket-board-focus-body--planning" : ""} ${editMode ? "ticket-board-focus-body--editing" : ""}`}>
 
                   {/* ── LEFT: Context 컬럼 ── */}
                   <div
                     ref={focusLeftColRef}
-                    className="ticket-board-focus-left overflow-y-auto flex flex-col gap-4 p-4"
+                    className={`ticket-board-focus-left overflow-y-auto flex flex-col gap-4 p-4 ${editMode ? "hidden" : ""}`}
                     style={{ width: "46%", borderRight: "1px solid var(--border-2)", background: "var(--bg-canvas)" }}
                   >
-                    {/* 메타 */}
-                    <div style={fmWeeklyFirst ? { order: 20 } : undefined}>
-                      <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
-                        메타
-                      </p>
-                      <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                        {META_ROWS.filter(r => r.value).map((row, i) => (
-                          <div
-                            key={row.label}
-                            className="flex items-center gap-2 px-3 py-2 text-xs"
-                            style={{ borderTop: i > 0 ? "1px solid var(--border)" : undefined, background: "var(--bg-overlay)" }}
-                          >
-                            <span className="w-16 shrink-0 font-medium" style={{ color: "var(--text-muted)" }}>{row.label}</span>
-                            <span className="flex-1" style={{ color: "var(--text-primary)" }}>{row.value}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-
                     {/* 요청사항 출처 (Source) — Focus Mode */}
                     <div data-fm-section="etr" style={fmWeeklyFirst ? { order: 21 } : undefined}>
                       <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
@@ -9112,19 +9124,19 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   {/* ── RIGHT: Execution 컬럼 ── */}
                   <div
                     ref={focusRightColRef}
-                    className="ticket-board-focus-right overflow-y-auto flex flex-col gap-4 p-4"
-                    style={{ flex: 1, background: "var(--bg-overlay)" }}
+                    className={`ticket-board-focus-right overflow-y-auto flex flex-col gap-4 ${editMode ? "ticket-board-focus-right--editing p-5" : "p-4"}`}
+                    style={{ flex: 1, background: editMode ? "var(--bg-canvas)" : "var(--bg-overlay)" }}
                   >
-                    <div data-fm-section="workstreams">
+                    {!editMode && <div data-fm-section="workstreams">
                       <TeamWorkstreamSummary
                         view={fmWorkstreamView}
                         planningNotes={fmNotes}
                         compact
                       />
-                    </div>
+                    </div>}
 
                     {/* 플래닝 상태 */}
-                    {fmWorkstreamView.lifecycle === "planning" && !fmWorkstreamView.isPlanningDerivedComplete && (
+                    {!editMode && fmWorkstreamView.lifecycle === "planning" && !fmWorkstreamView.isPlanningDerivedComplete && (
                     <details
                       data-fm-section="planning"
                       className="rounded-lg p-3 transition-all"
@@ -9257,27 +9269,37 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     {/* 플래닝 단계는 실제 작업 일정이 있을 때만 일정 영역을 노출한다. */}
                     {(fmWorkstreamView.lifecycle !== "planning" || fmRoles.some(role => !MILESTONE_ROLES.includes(role.role))) && <div
                       data-fm-section="schedule"
-                      className="rounded-lg transition-all"
+                      className={`rounded-lg transition-all ${editMode ? "ticket-board-schedule-edit-workspace" : ""}`}
                       style={{
                         boxShadow: (sectionHighlight === "schedule" || sectionHighlight === "no-schedule" || sectionHighlight === "no-launch")
                           ? "0 0 0 2px rgba(251,191,36,0.5), 0 0 14px rgba(251,191,36,0.10)"
                           : undefined,
+                        ...(editMode ? {
+                          width: "100%",
+                          maxWidth: "1180px",
+                          margin: "0 auto",
+                          padding: "20px",
+                          background: "var(--bg-overlay)",
+                          border: "1px solid var(--border)",
+                        } : {}),
                       }}
                     >
                       <div className="mb-2 flex items-start justify-between gap-3">
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
                             <p className="text-[13px] font-semibold" style={{ color: "var(--text-primary)" }}>
-                              세부 일정
+                              {editMode ? "세부 일정 편집" : "세부 일정"}
                             </p>
-                            {fmConfirmationCount > 0 ? (
+                            {!editMode && fmConfirmationCount > 0 ? (
                               <span className="rounded px-1.5 py-0.5 text-[10.5px] font-medium" style={{ color: "#936520", background: "#fff5e5", border: "1px solid #e8ca98" }}>
                                 확인 필요 {fmConfirmationCount}건
                               </span>
                             ) : null}
                           </div>
                           <p className="mt-0.5 text-[10.5px] leading-relaxed" style={{ color: "var(--text-muted)" }}>
-                            실행 일정을 날짜순으로 확인합니다. 과거·중복 일정은 이력으로 정리됩니다.
+                            {editMode
+                              ? "작업별 팀·단계·담당자·기간을 수정합니다. 저장하기 전까지 운영 일정은 바뀌지 않습니다."
+                              : "실행 일정을 날짜순으로 확인합니다. 과거·중복 일정은 이력으로 정리됩니다."}
                           </p>
                         </div>
                         {!editMode && (
@@ -9299,7 +9321,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     </div>}
 
                     {/* 플래닝 노트 */}
-                    {fmNotes.length > 0 && (
+                    {!editMode && fmNotes.length > 0 && (
                       <div>
                         <p className="text-[11px] font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--text-muted)" }}>
                           플래닝 노트

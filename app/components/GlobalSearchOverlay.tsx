@@ -411,14 +411,37 @@ export default function GlobalSearchOverlay() {
           type="button"
           onClick={requestJiraSync}
           disabled={syncState.running}
-          className="h-9 inline-flex items-center gap-1.5 px-3 rounded-lg text-xs font-semibold disabled:opacity-50"
+          className="relative h-9 inline-flex items-center gap-1.5 px-3 rounded-lg text-xs font-semibold disabled:opacity-70 overflow-hidden"
           style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)", color: "var(--text-primary)" }}
-          title="현재 메뉴 정책에 맞는 Jira 티켓을 갱신합니다."
+          title={syncState.stage === "done"
+            ? `Jira Sync 완료 · 적용 ${syncState.applied ?? 0}건 · 스킵 ${syncState.skipped ?? 0}건 · 오류 ${syncState.errors ?? 0}건`
+            : "현재 메뉴 정책에 맞는 Jira 티켓을 갱신합니다."}
         >
           <svg className={`w-3.5 h-3.5 ${syncState.running ? "animate-spin" : ""}`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
             <path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/>
           </svg>
-          <span className="hidden md:inline">{syncState.running ? (syncState.label ?? "Sync 중…") : "Jira Sync"}</span>
+          <span className="hidden md:inline" aria-live="polite">
+            {syncState.running ? (syncState.label ?? "Sync 중…") : "Jira Sync"}
+          </span>
+          {syncState.stage === "done" && !syncState.running && (
+            <span
+              className="hidden lg:inline-flex items-center gap-1 pl-2 ml-0.5 text-[10px] font-semibold"
+              style={{ borderLeft: "1px solid var(--border-2)", color: (syncState.errors ?? 0) > 0 ? "#b7791f" : "#2f7d62" }}
+            >
+              적용 {syncState.applied ?? 0}
+              {(syncState.errors ?? 0) > 0 && ` · 오류 ${syncState.errors}`}
+            </span>
+          )}
+          {syncState.running && (syncState.total ?? 0) > 0 && (
+            <span
+              aria-hidden
+              className="absolute left-0 bottom-0 h-0.5 transition-[width] duration-300"
+              style={{
+                width: `${Math.min(100, Math.round(((syncState.processed ?? 0) / Math.max(syncState.total ?? 1, 1)) * 100))}%`,
+                background: "#2f7d86",
+              }}
+            />
+          )}
         </button>
 
         {searchOpen && (

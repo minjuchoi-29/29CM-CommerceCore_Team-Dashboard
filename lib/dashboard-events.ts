@@ -27,4 +27,10 @@ export type DashboardTicketsAddedDetail<T = unknown> = {
 export type DashboardJiraSyncStateDetail = {
   running: boolean;
   label?: string;
+  stage?: "jira" | "weekly" | "done";
+  processed?: number;
+  total?: number;
+  applied?: number;
+  skipped?: number;
+  errors?: number;
 };

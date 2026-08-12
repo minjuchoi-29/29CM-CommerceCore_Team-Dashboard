@@ -84,50 +84,58 @@ export default function ScheduleEditor({
   onCancel,
 }: ScheduleEditorProps) {
   return (
-    <div className="space-y-3 rounded-xl p-3" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
+    <div className="schedule-editor space-y-3 rounded-xl p-3" style={{ border: "1px solid var(--border)", background: "var(--bg-canvas)" }}>
       <datalist id="schedule-team-suggestions">
         {TEAM_SUGGESTIONS.map(team => <option key={team} value={team} />)}
       </datalist>
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={onAddWork}
-            className="rounded-md px-2.5 py-1.5 text-[12px] font-medium"
-            style={{ color: "#315b91", background: "#eaf1fa", border: "1px solid #bdd0e8" }}
-          >
-            + 작업 추가
-          </button>
-          <select
-            aria-label="마일스톤 추가"
-            defaultValue=""
-            onChange={(event) => {
-              const phase = event.target.value as "Kick-Off" | "Release" | "Launch";
-              if (phase) onAddMilestone(phase);
-              event.target.value = "";
-            }}
-            className="rounded-md px-2.5 py-1.5 text-[12px]"
-            style={{ color: "var(--text-secondary)", background: "var(--bg-item)", border: "1px solid var(--border-2)" }}
-          >
-            <option value="">+ 마일스톤 추가</option>
-            <option value="Kick-Off">Kick-Off</option>
-            <option value="Release">Release</option>
-            <option value="Launch">Launch</option>
-          </select>
+      <div
+        className="schedule-editor__toolbar sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 rounded-lg px-3 py-2.5"
+        style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)" }}
+      >
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[12px] font-semibold" style={{ color: "var(--text-primary)" }}>
+            일정 {rows.length}개
+          </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={onAddWork}
+              className="rounded-md px-2.5 py-1.5 text-[12px] font-medium"
+              style={{ color: "#315b91", background: "#eaf1fa", border: "1px solid #bdd0e8" }}
+            >
+              + 작업 추가
+            </button>
+            <select
+              aria-label="마일스톤 추가"
+              defaultValue=""
+              onChange={(event) => {
+                const phase = event.target.value as "Kick-Off" | "Release" | "Launch";
+                if (phase) onAddMilestone(phase);
+                event.target.value = "";
+              }}
+              className="rounded-md px-2.5 py-1.5 text-[12px]"
+              style={{ color: "var(--text-secondary)", background: "var(--bg-item)", border: "1px solid var(--border-2)" }}
+            >
+              <option value="">+ 마일스톤 추가</option>
+              <option value="Kick-Off">Kick-Off</option>
+              <option value="Release">Release</option>
+              <option value="Launch">Launch</option>
+            </select>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-1.5">
           <button type="button" onClick={() => onSort("oldest")} className="rounded px-2 py-1 text-[11px]" style={{ color: "var(--text-muted)" }}>오래된순</button>
           <button type="button" onClick={() => onSort("latest")} className="rounded px-2 py-1 text-[11px]" style={{ color: "var(--text-muted)" }}>최신순</button>
+          <button type="button" onClick={onCancel} disabled={saving} className="rounded px-2.5 py-1.5 text-[12px] disabled:opacity-50" style={{ color: "var(--text-muted)" }}>취소</button>
           <button
             type="button"
             onClick={onSave}
             disabled={saving}
-            className="rounded-md px-3 py-1.5 text-[12px] font-medium disabled:cursor-wait disabled:opacity-50"
+            className="rounded-md px-3.5 py-1.5 text-[12px] font-medium disabled:cursor-wait disabled:opacity-50"
             style={{ color: "#ffffff", background: "#245d67" }}
           >
-            {saving ? "저장 중…" : "저장"}
+            {saving ? "저장 중…" : "변경사항 저장"}
           </button>
-          <button type="button" onClick={onCancel} disabled={saving} className="rounded px-2 py-1.5 text-[12px] disabled:opacity-50" style={{ color: "var(--text-muted)" }}>취소</button>
         </div>
       </div>
 
@@ -165,108 +173,134 @@ export default function ScheduleEditor({
               className={`space-y-2 rounded-lg p-3 ${isFocused ? "ring-2 ring-[#2b7480]" : ""}`}
               style={{ border: "1px solid var(--border-2)", background: row.status === "완료" ? "var(--bg-canvas)" : "var(--bg-overlay)", opacity: row.status === "완료" ? 0.68 : 1 }}
             >
-              <div className="flex flex-wrap items-center gap-2">
-                <select
-                  aria-label={`${index + 1}번 일정 단계`}
-                  value={phase}
-                  onChange={(event) => {
-                    const nextPhase = event.target.value as SchedulePhase;
-                    const nextIsMilestone = MILESTONE_PHASES.has(nextPhase);
-                    const resourceTeam = nextIsMilestone ? null : row.resourceTeam;
-                    const nextRole = resourceTeam?.trim() || nextPhase;
-                    onChangeRow(index, { phase: nextPhase, resourceTeam, role: nextRole });
-                  }}
-                  className="rounded-md px-2 py-1.5 text-[12px]"
-                  style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+              <div className="flex items-center gap-2">
+                <span
+                  className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[10.5px] font-semibold"
+                  style={{ color: "#315b91", background: "#eaf1fa", border: "1px solid #bdd0e8" }}
                 >
-                  {PHASE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
-                </select>
-
-                {!isMilestone ? (
-                  <input
-                    aria-label={`${index + 1}번 일정 팀`}
-                    value={row.resourceTeam ?? ""}
-                    onChange={(event) => {
-                      const resourceTeam = event.target.value;
-                      onChangeRow(index, { resourceTeam: resourceTeam || null, role: resourceTeam.trim() || phase });
-                    }}
-                    list="schedule-team-suggestions"
-                    placeholder="팀 (직접 입력 가능)"
-                    className="min-w-40 flex-1 rounded-md px-2 py-1.5 text-[12px]"
-                    style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
-                  />
+                  {index + 1}
+                </span>
+                <span className="text-[11px] font-medium" style={{ color: "var(--text-muted)" }}>{sourceLabel}</span>
+                {row.manualLocked ? (
+                  <span className="rounded px-1.5 py-0.5 text-[10px]" style={{ color: "#24735d", background: "#eaf6f1" }}>자동 덮어쓰기 방지</span>
                 ) : null}
-
-                <select
-                  aria-label={`${index + 1}번 일정 상태`}
-                  value={row.status}
-                  onChange={(event) => onChangeRow(index, { status: event.target.value as EditableScheduleRow["status"] })}
-                  className="rounded-md px-2 py-1.5 text-[12px] font-medium"
-                  style={{ color: style.color, background: style.background, border: `1px solid ${style.border}` }}
-                >
-                  {STATUS_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
-                </select>
-
-                <span className="text-[10.5px]" style={{ color: "var(--text-muted)" }}>{sourceLabel}</span>
                 <button
                   type="button"
                   onClick={() => onRemoveRow(index)}
                   aria-label={`${index + 1}번 일정 삭제`}
-                  className="ml-auto rounded px-2 py-1 text-[12px]"
-                  style={{ color: "#9b4c3f" }}
+                  className="ml-auto rounded-md px-2 py-1 text-[11px] font-medium"
+                  style={{ color: "#9b4c3f", background: "#fff0ed" }}
                 >
                   삭제
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <input
-                  aria-label={`${index + 1}번 일정 상세 작업`}
-                  value={row.detail ?? ""}
-                  onChange={(event) => onChangeRow(index, { detail: event.target.value })}
-                  placeholder={isMilestone ? "마일스톤 설명 (선택)" : "상세 작업명"}
-                  className="min-w-52 flex-1 rounded-md px-2 py-1.5 text-[12px]"
-                  style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
-                />
+              <div className="schedule-editor__primary-grid">
+                <label className="schedule-editor__field">
+                  <span>단계</span>
+                  <select
+                    aria-label={`${index + 1}번 일정 단계`}
+                    value={phase}
+                    onChange={(event) => {
+                      const nextPhase = event.target.value as SchedulePhase;
+                      const nextIsMilestone = MILESTONE_PHASES.has(nextPhase);
+                      const resourceTeam = nextIsMilestone ? null : row.resourceTeam;
+                      const nextRole = resourceTeam?.trim() || nextPhase;
+                      onChangeRow(index, { phase: nextPhase, resourceTeam, role: nextRole });
+                    }}
+                    className="w-full rounded-md px-2 py-1.5 text-[12px]"
+                    style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+                  >
+                    {PHASE_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+
                 {!isMilestone ? (
+                  <label className="schedule-editor__field schedule-editor__field--team">
+                    <span>팀</span>
+                    <input
+                      aria-label={`${index + 1}번 일정 팀`}
+                      value={row.resourceTeam ?? ""}
+                      onChange={(event) => {
+                        const resourceTeam = event.target.value;
+                        onChangeRow(index, { resourceTeam: resourceTeam || null, role: resourceTeam.trim() || phase });
+                      }}
+                      list="schedule-team-suggestions"
+                      placeholder="공식 팀명 또는 직접 입력"
+                      className="w-full rounded-md px-2 py-1.5 text-[12px]"
+                      style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+                    />
+                  </label>
+                ) : null}
+
+                <label className="schedule-editor__field">
+                  <span>상태</span>
+                  <select
+                    aria-label={`${index + 1}번 일정 상태`}
+                    value={row.status}
+                    onChange={(event) => onChangeRow(index, { status: event.target.value as EditableScheduleRow["status"] })}
+                    className="w-full rounded-md px-2 py-1.5 text-[12px] font-medium"
+                    style={{ color: style.color, background: style.background, border: `1px solid ${style.border}` }}
+                  >
+                    {STATUS_OPTIONS.map(option => <option key={option} value={option}>{option}</option>)}
+                  </select>
+                </label>
+
+                <label className="schedule-editor__field schedule-editor__field--detail">
+                  <span>{isMilestone ? "마일스톤 설명" : "작업명"}</span>
                   <input
-                    aria-label={`${index + 1}번 일정 담당자`}
-                    value={row.person}
-                    onChange={(event) => onChangeRow(index, { person: event.target.value })}
-                    placeholder="담당자 (선택)"
-                    className="w-36 rounded-md px-2 py-1.5 text-[12px]"
+                    aria-label={`${index + 1}번 일정 상세 작업`}
+                    value={row.detail ?? ""}
+                    onChange={(event) => onChangeRow(index, { detail: event.target.value })}
+                    placeholder={isMilestone ? "설명 (선택)" : "구체적인 작업 내용"}
+                    className="w-full rounded-md px-2 py-1.5 text-[12px]"
                     style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
                   />
-                ) : null}
+                </label>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex min-w-44 flex-1 items-center gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  시작
+              <div className="schedule-editor__secondary-grid">
+                {!isMilestone ? (
+                  <label className="schedule-editor__field schedule-editor__field--person">
+                    <span>담당자</span>
+                    <input
+                      aria-label={`${index + 1}번 일정 담당자`}
+                      value={row.person}
+                      onChange={(event) => onChangeRow(index, { person: event.target.value })}
+                      placeholder="선택 입력"
+                      className="w-full rounded-md px-2 py-1.5 text-[12px]"
+                      style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
+                    />
+                  </label>
+                ) : null}
+                <label className="schedule-editor__field">
+                  <span>시작일</span>
                   <input
                     type="date"
+                    aria-label={`${index + 1}번 일정 시작일`}
                     value={row.start}
                     onChange={(event) => {
                       const start = event.target.value;
                       const end = !row.end || row.end < start ? start : row.end;
                       onChangeRow(index, { start, end });
                     }}
-                    className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-[12px]"
+                    className="w-full rounded-md px-2 py-1.5 text-[12px]"
                     style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
                   />
                 </label>
-                <label className="flex min-w-44 flex-1 items-center gap-2 text-[11px]" style={{ color: "var(--text-muted)" }}>
-                  종료
+                <label className="schedule-editor__field">
+                  <span>종료일</span>
                   <input
                     type="date"
+                    aria-label={`${index + 1}번 일정 종료일`}
                     value={row.end}
                     min={row.start || undefined}
                     onChange={(event) => onChangeRow(index, { end: event.target.value })}
-                    className="min-w-0 flex-1 rounded-md px-2 py-1.5 text-[12px]"
+                    className="w-full rounded-md px-2 py-1.5 text-[12px]"
                     style={{ color: "var(--text-primary)", background: "var(--bg-canvas)", border: "1px solid var(--border-2)" }}
                   />
                 </label>
-                <label className="flex items-center gap-1 text-[11px]" style={{ color: "var(--text-muted)" }}>
+                <label className="schedule-editor__same-day flex items-center gap-1.5 text-[11px]" style={{ color: "var(--text-muted)" }}>
                   <input
                     type="checkbox"
                     checked={!!row.start && row.end === row.start}
@@ -274,7 +308,7 @@ export default function ScheduleEditor({
                       if (event.target.checked && row.start) onChangeRow(index, { end: row.start });
                     }}
                   />
-                  같은 날
+                  하루 일정
                 </label>
               </div>
             </div>
