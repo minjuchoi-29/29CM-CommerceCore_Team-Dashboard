@@ -175,7 +175,7 @@ export type WeeklyReplayCandidate = {
   created?: string;
 };
 
-export const WEEKLY_SYNC_PARSER_VERSION = "schedule-v3";
+export const WEEKLY_SYNC_PARSER_VERSION = "schedule-v4";
 
 export function versionWeeklySourceId(sourceId: string): string {
   return `${WEEKLY_SYNC_PARSER_VERSION}:${sourceId}`;

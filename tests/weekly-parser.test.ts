@@ -205,6 +205,18 @@ describe("parseScheduleLinesWithCtx — 한 역할의 다중 기간", () => {
     );
   });
 
+  test("TM-3259 월을 생략한 종료일은 같은 달의 날짜 범위로 해석", () => {
+    const parsed = parseWeekly("📅 일정\n- 8/14~19: 품절 템플릿 테스트", "TM-3259");
+    const item = parsed.scheduleItems.find(schedule => schedule.phase === "QA");
+
+    assert.ok(item);
+    assert.equal(item.startDate, "2026-08-14");
+    assert.equal(item.endDate, "2026-08-19");
+    assert.equal(item.resourceTeam, null);
+    assert.match(item.taskLabel ?? "", /품절 템플릿/);
+    assert.doesNotMatch(item.taskLabel ?? "", /~19/);
+  });
+
   test("TM-2901 문장이 사이에 낀 8/10~8/11 기간을 하나의 일정으로 보존", () => {
     const line = "8/10 배포직후 ~ 8/11 EOD까지 모니터링 후 29CM RADAR s3 OPS 수기 작업 중단 (ETA : 예상 8/12)";
     const items = parseScheduleLinesWithCtx(line, undefined, 2026, "TM-2901");

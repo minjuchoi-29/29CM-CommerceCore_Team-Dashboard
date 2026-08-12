@@ -150,5 +150,5 @@ describe("buildWeeklyReplaySources — archived Weekly replay", () => {
 });
 
 it("source ID에 파서 버전을 포함해 정책 변경 시 한 번 재처리", () => {
-  assert.equal(versionWeeklySourceId("comment:1119512"), "schedule-v3:comment:1119512");
+  assert.equal(versionWeeklySourceId("comment:1119512"), "schedule-v4:comment:1119512");
 });

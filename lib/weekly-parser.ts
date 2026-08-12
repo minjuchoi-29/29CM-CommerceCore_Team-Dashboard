@@ -334,15 +334,37 @@ function parseDate(raw: string, fallbackYear?: number): string | null {
   return null;
 }
 
+function parseRangeEnd(startRaw: string, endRaw: string, fallbackYear?: number): string | null {
+  if (!/^\d{1,2}$/.test(endRaw.trim())) return parseDate(endRaw, fallbackYear);
+
+  const start = parseDate(startRaw, fallbackYear);
+  if (!start) return null;
+  const [yearRaw, monthRaw, startDayRaw] = start.split("-");
+  let year = Number(yearRaw);
+  let month = Number(monthRaw);
+  const startDay = Number(startDayRaw);
+  const endDay = Number(endRaw);
+
+  // `8/28~3`처럼 종료 일자가 더 작으면 다음 달로 해석한다.
+  if (endDay < startDay) {
+    month += 1;
+    if (month > 12) {
+      month = 1;
+      year += 1;
+    }
+  }
+  return `${year}-${String(month).padStart(2, "0")}-${String(endDay).padStart(2, "0")}`;
+}
+
 /** 라인 안에서 날짜/범위를 첫 매치만 추출. isRange=true면 명시적 범위(~) 표기. */
 function extractDateRange(text: string, fallbackYear?: number): {
   start: string | null; end: string | null; raw: string; isRange: boolean;
 } | null {
   // 범위: M/D(요일)? ~ M/D(요일)? 또는 YYYY-MM-DD ~ YYYY-MM-DD
-  const rangeRe = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/;
+  const rangeRe = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}|\d{1,2})(?:\s*\([일월화수목금토]\))?/;
   const r = text.match(rangeRe);
   if (r) {
-    return { start: parseDate(r[1], fallbackYear), end: parseDate(r[2], fallbackYear), raw: r[0], isRange: true };
+    return { start: parseDate(r[1], fallbackYear), end: parseRangeEnd(r[1], r[2], fallbackYear), raw: r[0], isRange: true };
   }
   // 단일: YYYY-MM-DD 또는 M/D(요일)?
   const singleRe = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/;
@@ -354,8 +376,8 @@ function extractDateRange(text: string, fallbackYear?: number): {
   return null;
 }
 
-const DATE_RANGE_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?/g;
-const DATE_TOKEN_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?(?:\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?)?/g;
+const DATE_RANGE_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}|\d{1,2})(?:\s*\([일월화수목금토]\))?/g;
+const DATE_TOKEN_GLOBAL_RE = /(\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2})(?:\s*\([일월화수목금토]\))?(?:\s*(?:\\?[~～]|[–—]|-(?!\d{2}\b))\s*(?:\d{4}-\d{1,2}-\d{1,2}|\d{1,2}\/\d{1,2}|\d{1,2})(?:\s*\([일월화수목금토]\))?)?/g;
 
 function isInlineEtaReferenceDate(line: string, matchIndex: number): boolean {
   const prefix = line.slice(Math.max(0, matchIndex - 40), matchIndex);
@@ -390,7 +412,7 @@ function normalizeTaskLabel(text: string, phase: SchedulePhase): string | null {
   const cleaned = text
     .replace(DATE_RANGE_GLOBAL_RE, " ")
     .replace(/진행\s*중|in\s*progress|예정|완료|done|completed|종료|마감/gi, " ")
-    .replace(/^[,;/·\s]+|[,;/·\s]+$/g, "")
+    .replace(/^[:,;/·\-–—\s]+|[:,;/·\-–—\s]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
   if (!cleaned) return null;
@@ -1002,7 +1024,15 @@ export function parseScheduleLineWithCtx(
   // datePart를 제거한 line으로 phase 추론 — 날짜 문자열이 resourceTeam에 섞이지 않도록 (Bug 1, 2)
   // "5/21~5/22 개발" → lineForPhase = "개발" → extractPhaseAndResource("개발") → { phase: "개발", resourceTeam: null }
   const lineForPhase = datePart ? line.replace(datePart, "").replace(/\s+/g, " ").trim() : line;
-  const resolvedBase = resolvePhaseWithContext(roleRaw, lineForPhase, ctx?.parentPhase);
+  const inferredBase = resolvePhaseWithContext(roleRaw, lineForPhase, ctx?.parentPhase);
+  // `8/14~19: 품절 템플릿 테스트`처럼 날짜 뒤 콜론에 오는 문구는
+  // 팀명이 아니라 작업 설명이다. phase 추론에는 사용하되 resourceTeam으로 저장하지 않는다.
+  const isDateFirstDescription = !!datePart
+    && !roleRaw
+    && line.trim().replace(datePart, "").trimStart().startsWith(":");
+  const resolvedBase = isDateFirstDescription
+    ? { ...inferredBase, resourceTeam: null }
+    : inferredBase;
   const parentResource = resolvedBase.phaseSource === "parentInheritance"
     && !resolvedBase.resourceTeam
     && ctx?.parentText
@@ -1016,6 +1046,9 @@ export function parseScheduleLineWithCtx(
     : null;
   const normalizedRole = deriveNormalizedRole(resolved.phase, resolved.resourceTeam);
   const status = normalizeStatus(statusRaw);
+  const taskLabel = isDateFirstDescription
+    ? normalizeTaskLabel(lineForPhase, resolved.phase)
+    : undefined;
 
   const dateMentioned = {
     start: !!datePart && (isRangeDate || status !== "완료"),
@@ -1024,9 +1057,10 @@ export function parseScheduleLineWithCtx(
 
   const stableTaskId = (ticketKey && resolved.phase !== "기타")
     ? buildStableTaskId(
-        ticketKey, resolved.phase, resolved.resourceTeam ?? null,
-        MILESTONE_PHASES.has(resolved.phase) ? startDate : null,
-      )
+      ticketKey, resolved.phase, resolved.resourceTeam ?? null,
+      MILESTONE_PHASES.has(resolved.phase) ? startDate : null,
+      taskLabel,
+    )
     : undefined;
 
   return {
@@ -1044,6 +1078,7 @@ export function parseScheduleLineWithCtx(
     inheritedFromParentText,
     dateMentioned,
     stableTaskId,
+    taskLabel,
   };
 }
 

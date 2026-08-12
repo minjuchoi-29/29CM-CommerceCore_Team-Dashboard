@@ -584,10 +584,10 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
 
   // ─────────────────────────────────────────────────────────────────────
   if (loading) {
-    return <div className="flex items-center justify-center min-h-[calc(100vh-3.5rem)] text-sm" style={{ color: "var(--text-muted)" }}>로딩 중…</div>;
+    return <div className="flex items-center justify-center min-h-[calc(100vh-7rem)] text-sm" style={{ color: "var(--text-muted)" }}>로딩 중…</div>;
   }
   if (error) {
-    return <div className="flex items-center justify-center min-h-[calc(100vh-3.5rem)] text-sm text-red-500">에러: {error}</div>;
+    return <div className="flex items-center justify-center min-h-[calc(100vh-7rem)] text-sm text-red-500">에러: {error}</div>;
   }
 
   // 정렬 가능 헤더 cell — click 시 toggleSort. align="left|center" 로 텍스트 정렬 보정.
@@ -609,7 +609,7 @@ ETR 상태를 최신 상태로 업데이트해주세요.`;
   }
 
   return (
-    <div className="flex h-[calc(100vh-3.5rem)] overflow-hidden" style={{ background: "var(--bg-canvas)" }}>
+    <div className="flex h-[calc(100vh-7rem)] overflow-hidden" style={{ background: "var(--bg-canvas)" }}>
       {/* ── 좌측: list column (독립 스크롤) ── */}
       <div className={`flex flex-col min-w-0 ${selected ? "flex-1" : "flex-1"}`}>
         {/* ── Header (sticky) ── */}

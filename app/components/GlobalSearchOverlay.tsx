@@ -378,7 +378,7 @@ export default function GlobalSearchOverlay() {
   return (
     <>
       <header
-        className="relative z-[120] h-14 shrink-0 flex items-center gap-3 px-4"
+        className="sticky top-14 z-[190] h-14 shrink-0 flex items-center gap-3 px-4"
         style={{ background: "var(--bg-canvas)", borderBottom: "1px solid var(--border)" }}
       >
         <div className="relative flex-1 max-w-[620px]">

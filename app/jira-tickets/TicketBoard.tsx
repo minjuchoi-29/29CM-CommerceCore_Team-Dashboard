@@ -1856,8 +1856,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   //   기존: max 700px 고정 → wide screen(1680+)에서 우측이 36% 이하로 좁아짐.
   //   변경: max 1000px + 마운트 시점 viewport*0.45로 초기화 (55:45 좌우 비율 목표).
   //   SSR 안전: 초기값 700 fallback 유지, useEffect로 viewport 반영.
-  const SIDEBAR_MIN = 280;
-  const SIDEBAR_MAX = 1000;
+  const SIDEBAR_MIN = 520;
+  const SIDEBAR_MAX = 1200;
   const [sidebarWidth, setSidebarWidth] = useState(700);
   const [isDetailExpanded, setIsDetailExpanded] = useState(false);
   const [showFullDoneSchedule, setShowFullDoneSchedule] = useState(false);
@@ -2086,10 +2086,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     window.addEventListener("mouseup", onUp);
   }, [sidebarWidth]);
 
-  // 마운트 시점에 viewport*0.45로 초기 너비 설정 (좌:우 ≈ 55:45)
+  // 빠른 미리보기는 상세 확인이 목적이므로 기본 폭을 더 넓게 배분한다.
+  // 1280px 기준 목록 약 40%, 미리보기 약 60%이며 필요하면 드래그로 조절한다.
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const targetWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(window.innerWidth * 0.45)));
+    const targetWidth = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, Math.round(window.innerWidth * 0.60)));
     setSidebarWidth(targetWidth);
   // 의도: 마운트 1회만 — viewport 동적 변화는 사용자가 드래그로 재조정.
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -6072,7 +6073,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
   if (fetching && tickets.length === 0) {
     return (
-      <div className="flex items-center justify-center min-h-[calc(100vh-3.5rem)]" style={{ background: "var(--bg-canvas)" }}>
+      <div className="flex items-center justify-center min-h-[calc(100vh-7rem)]" style={{ background: "var(--bg-canvas)" }}>
         <div className="text-center">
           <svg className="w-8 h-8 animate-spin text-indigo-400 mx-auto mb-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" strokeLinecap="round" strokeLinejoin="round"/>
@@ -6085,7 +6086,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-3.5rem)]" style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}>
+    <div className="flex min-h-[calc(100vh-7rem)]" style={{ background: "var(--bg-canvas)", color: "var(--text-primary)" }}>
       {/* ── 리스트 패널 ── */}
       <div onClick={handleBackgroundClick} className={`ticket-board-list-panel ${selected ? "ticket-board-list-panel--detail-open" : ""} ${isDetailExpanded ? "shrink-0 overflow-hidden" : "flex-1 min-w-0"} ${isDetailExpanded ? "px-0 pt-0 pb-0" : "px-3 py-8"} overflow-hidden`} style={{ background: "var(--bg-canvas)", ...(isDetailExpanded ? { width: "220px", borderRight: "1px solid var(--border-2)" } : {}) }}>
         {isDetailExpanded && (
@@ -7715,7 +7716,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                 <span className="flex-1 min-w-[260px]">티켓 · 제목 · 담당자</span>
                 <span className="w-28 shrink-0 text-center">Jira 상태</span>
                 <span className={`${selected ? "hidden" : "hidden 2xl:block"} w-44 shrink-0 text-left`}>팀 · 현재 단계</span>
-                <span className="w-28 shrink-0 text-center">시작 / ETA</span>
+                <span className="w-32 shrink-0 text-center">시작 / Jira 기한</span>
                 <span className={`${selected ? "hidden" : "hidden xl:block"} w-36 shrink-0 text-left`}>Weekly 갱신</span>
                 <span className="w-6 shrink-0" />
               </>
@@ -7887,6 +7888,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               const isEtaOverdue   = hasEta && t.eta! < todayStr && tracksEta;
               const isEtaImminent  = hasEta && t.eta! >= todayStr && t.eta! <= in7Days && tracksEta;
               const etaWarnLevel   = isEtaOverdue ? "overdue" : isEtaImminent ? "imminent" : null;
+              const etaDayDiff = hasEta
+                ? Math.round((new Date(`${t.eta}T00:00:00`).getTime() - new Date(`${todayStr}T00:00:00`).getTime()) / 86400000)
+                : null;
 
               // Operational attention: HOLD/Blocked 상태 감지
               const isHold    = ["HOLD", "Postponed", "Blocked"].includes(t.status);
@@ -7976,9 +7980,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                               <div className="flex items-center gap-x-2 gap-y-1 flex-wrap text-[10.5px]">
                                 {etaShort && (
                                   <span style={{ color: etaColor, fontWeight: etaWarnLevel ? 700 : undefined }} title={`Jira 기한 ${t.eta}`}>
-                                    ETA {etaShort}
-                                    {etaWarnLevel === "overdue"  && <span className="ml-0.5">!</span>}
-                                    {etaWarnLevel === "imminent" && <span className="ml-0.5">▲</span>}
+                                    기한 {etaShort}
+                                    {etaWarnLevel === "overdue" && etaDayDiff !== null && <span className="ml-1">· {Math.abs(etaDayDiff)}일 지남</span>}
+                                    {etaWarnLevel === "imminent" && etaDayDiff !== null && <span className="ml-1">· {etaDayDiff === 0 ? "오늘" : `D-${etaDayDiff}`}</span>}
                                   </span>
                                 )}
                                 {weeklyUpdate.hasData && (
@@ -8111,7 +8115,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
                             {/* Jira 시작일 / 기한 — 객관적 일정 정보 */}
                             <span
-                              className="w-28 shrink-0 pt-0.5 flex flex-col items-center text-[12px] font-medium text-center"
+                              className="w-32 shrink-0 pt-0.5 flex flex-col items-center text-[12px] font-medium text-center"
                               title={
                                 isEtaOverdue  ? `Jira 기한 ${t.eta} 경과` :
                                 isEtaImminent ? `Jira 기한 ${t.eta} · 7일 이내` :
@@ -8125,9 +8129,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                             >
                               <span style={{ color: "var(--text-muted)", fontWeight: 400 }}>{startShort ? `시작 ${startShort}` : "시작 —"}</span>
                               <span>
-                                {!etaShort ? "ETA —" : `ETA ${etaShort}`}
-                                {isEtaOverdue  && <span className="ml-1 text-[10px]">!</span>}
-                                {isEtaImminent && <span className="ml-1 text-[10px]">▲</span>}
+                                {!etaShort ? "기한 —" : `기한 ${etaShort}`}
+                                {isEtaOverdue && etaDayDiff !== null && <span className="ml-1 text-[10px]">· {Math.abs(etaDayDiff)}일 지남</span>}
+                                {isEtaImminent && etaDayDiff !== null && <span className="ml-1 text-[10px]">· {etaDayDiff === 0 ? "오늘" : `D-${etaDayDiff}`}</span>}
                               </span>
                             </span>
 
@@ -8246,7 +8250,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       {/* ── 우측 상세 패널 ── */}
       {selected && (
         <div
-          className={`ticket-board-detail-panel shrink-0 sticky top-0 h-screen relative flex flex-col ${isDetailExpanded ? "flex-1" : ""}`}
+          className={`ticket-board-detail-panel shrink-0 sticky top-[7rem] h-[calc(100vh-7rem)] flex flex-col ${isDetailExpanded ? "flex-1" : ""}`}
           style={{ borderLeft: "1px solid var(--border-2)", background: "var(--bg-overlay)", ...(isDetailExpanded ? {} : { width: sidebarWidth }) }}
         >
           {/* 드래그 핸들 (집중 보기 모드에서는 숨김) */}

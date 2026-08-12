@@ -84,6 +84,10 @@ body {
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
 
+html {
+  scroll-padding-top: 7rem;
+}
+
 /* Ticket 상세는 좁은 화면에서 목록과 폭을 나누지 않고 한 화면에 집중한다. */
 .ticket-board-detail-title {
   min-width: 0;
