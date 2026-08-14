@@ -34,8 +34,8 @@ type JiraIssueRaw = {
   fields: {
     summary: string;
     status: { name: string; statusCategory?: { key?: string } };
-    assignee?: { displayName?: string };
-    reporter?: { displayName?: string };
+    assignee?: { displayName?: string; accountId?: string };
+    reporter?: { displayName?: string; accountId?: string };
     duedate?: string;
     updated?: string;
     resolutiondate?: string;
@@ -192,8 +192,10 @@ export async function GET(request: Request) {
       status: f.status.name,
       statusCategory: f.status.statusCategory?.key,
       assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
+      assigneeAccountId: f.assignee?.accountId ?? undefined,
       requestMeta: {
         reporter: (f.reporter?.displayName ?? "").split("/")[0].trim() || undefined,
+        reporterAccountId: f.reporter?.accountId ?? undefined,
       },
       eta: f.duedate ?? "-",
       updatedAt: f.updated ?? undefined,

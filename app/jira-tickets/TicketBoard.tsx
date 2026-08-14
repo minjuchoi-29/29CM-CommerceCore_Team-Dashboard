@@ -34,6 +34,16 @@ import {
   countResolvedExecutionDuplicates,
 } from "@/lib/priorities";
 import type { TicketSourcesStore, JiraFiltersStore, FilterTicketsStore } from "@/lib/filter-types";
+import {
+  TICKET_PARTICIPATION_ROLES,
+  TICKET_PARTICIPATION_ROLE_LABELS,
+  TICKET_REVIEW_MODE_LABELS,
+  TICKET_REVIEW_MODES,
+  resolveTicketReviewMode,
+  type TicketParticipationRole,
+  type TicketReviewMode,
+  type TicketReviewOverrides,
+} from "@/lib/ticket-review";
 import { readSearchTarget, clearSearchTarget, setSearchTarget } from "@/lib/search-target";
 import {
   compactSchedulesForDisplay,
@@ -299,6 +309,7 @@ export type Ticket = {
   /** Jira의 안정적인 상태 분류 키: new | indeterminate | done */
   statusCategory?: string;
   assignee: string;
+  assigneeAccountId?: string;
   startDate?: string;
   resolutionDate?: string; // β-1: Jira resolutiondate (ISO) — Done 시점 자동 입력
   updatedAt?: string; // Jira updated (ISO) — 일반 메타데이터 최종 변경 시각
@@ -324,6 +335,8 @@ export type Ticket = {
   sourceFilters?: string[];
   /** TICKET_KEYS에 직접 등록된 수동 관리 티켓이면 true */
   isManual?: boolean;
+  /** 현재 데이터 소스에서 이 티켓이 포함된 이유. 여러 관계가 함께 존재할 수 있다. */
+  participationRoles?: TicketParticipationRole[];
   /**
    * 요청 메타 — ETR 등 외부 요청 티켓의 보조 정보.
    * 현재는 reporter 만, 추후 department 등 확장 예정.
@@ -331,6 +344,7 @@ export type Ticket = {
    */
   requestMeta?: {
     reporter?: string;
+    reporterAccountId?: string;
     department?: string;
   };
   /**
@@ -346,6 +360,48 @@ export type Ticket = {
     type?: string;
   }>;
 };
+
+const TICKET_REVIEW_MODE_COLORS: Record<TicketReviewMode, { color: string; background: string; border: string }> = {
+  weekly: { color: "#315b91", background: "#eaf1fa", border: "#bdd0e8" },
+  monitor: { color: "#0f766e", background: "rgba(15,118,110,0.10)", border: "rgba(15,118,110,0.28)" },
+  reference: { color: "#64748b", background: "rgba(100,116,139,0.10)", border: "rgba(100,116,139,0.25)" },
+};
+
+const TICKET_PARTICIPATION_FILTER_LABELS: Record<TicketParticipationRole, string> = {
+  assignee: "우리 팀이 담당",
+  reporter: "우리 팀이 요청",
+  watcher: "우리 팀이 참조",
+  manual: "직접 추가",
+};
+
+function TicketReviewModeBadge({ mode }: { mode: TicketReviewMode }) {
+  const meta = TICKET_REVIEW_MODE_COLORS[mode];
+  return (
+    <span
+      className="text-[10.5px] px-1.5 py-0.5 rounded font-medium whitespace-nowrap"
+      style={{ color: meta.color, background: meta.background, border: `1px solid ${meta.border}` }}
+    >
+      {TICKET_REVIEW_MODE_LABELS[mode]}
+    </span>
+  );
+}
+
+function TicketParticipationBadges({ roles }: { roles?: TicketParticipationRole[] }) {
+  if (!roles?.length) return null;
+  return (
+    <span className="inline-flex items-center gap-1 flex-wrap" title={`포함 이유: ${roles.map(role => TICKET_PARTICIPATION_ROLE_LABELS[role]).join(", ")}`}>
+      {roles.map(role => (
+        <span
+          key={role}
+          className="text-[10px] px-1.5 py-0.5 rounded whitespace-nowrap"
+          style={{ color: "var(--text-muted)", background: "var(--bg-overlay)", border: "1px solid var(--border-2)" }}
+        >
+          {TICKET_PARTICIPATION_ROLE_LABELS[role]}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 type PlanningTabId = "전체" | "진행 중" | "플래닝 대기·검토" | "완료";
 
@@ -416,7 +472,7 @@ function matchStatus(status: string, filter: string): boolean {
   return true;
 }
 
-function toggle(prev: Set<string>, value: string): Set<string> {
+function toggle<T>(prev: Set<T>, value: T): Set<T> {
   const next = new Set(prev);
   if (next.has(value)) next.delete(value); else next.add(value);
   return next;
@@ -1723,7 +1779,7 @@ function computeRebalance(
   return { newState, sheetUpdate };
 }
 
-function MultiSelectDropdown({
+function MultiSelectDropdown<T extends string>({
   label,
   items,
   selected,
@@ -1731,14 +1787,16 @@ function MultiSelectDropdown({
   onClear,
   accentColor = "#7c3aed",
   compact = false,
+  getItemLabel = value => value,
 }: {
   label: string;
-  items: string[];
-  selected: Set<string>;
-  onToggle: (v: string) => void;
+  items: readonly T[];
+  selected: ReadonlySet<T>;
+  onToggle: (v: T) => void;
   onClear: () => void;
   accentColor?: string;
   compact?: boolean;
+  getItemLabel?: (value: T) => string;
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -1761,7 +1819,7 @@ function MultiSelectDropdown({
           color: count > 0 ? accentColor : "var(--text-muted)",
         }}
       >
-        {label}{count > 0 ? compact ? ` ${count}` : `: ${[...selected].join(", ")}` : ": 전체"}
+        {label}{count > 0 ? compact ? ` ${count}` : `: ${[...selected].map(getItemLabel).join(", ")}` : ": 전체"}
         <span className="ml-0.5 text-[9px]">▾</span>
       </button>
       {open && (
@@ -1794,7 +1852,7 @@ function MultiSelectDropdown({
               >
                 {selected.has(v) && <span className="text-white text-[9px]">✓</span>}
               </span>
-              {v}
+              {getItemLabel(v)}
             </div>
           ))}
         </div>
@@ -1840,6 +1898,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [domainFilter, setDomainFilter] = useState<Set<string>>(new Set());
   const [targetFilter, setTargetFilter] = useState<Set<string>>(new Set());
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
+  const [participationRoleFilter, setParticipationRoleFilter] = useState<Set<TicketParticipationRole>>(new Set());
   const [search, setSearch]         = useState("");
 
   // localStorage 기반 일정 데이터
@@ -1880,6 +1939,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   //   getExecutionPriority() helper 가 execution → planning fallback 처리.
   const [priorities, setPriorities] = useState<Record<string, string>>({});
   const [executionPriorities, setExecutionPriorities] = useState<Record<string, string>>({});
+  const [ticketReviewOverrides, setTicketReviewOverrides] = useState<TicketReviewOverrides>({});
   // PR-C: Jira Remote Links (Web Links) lazy fetch — selected ticket 마다 1회. 같은 ticket 재open 은 in-memory cache 사용.
   type RemoteLink = { url: string; title: string };
   const [remoteLinksByKey, setRemoteLinksByKey] = useState<Record<string, RemoteLink[]>>({});
@@ -1897,7 +1957,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 플래닝 상태 (key → { design: TrackState, dev: TrackState, reviewNeeded?: boolean })
   const [planning, setPlanning]     = useState<Record<string, unknown>>({});
   const [reviewFilter, setReviewFilter] = useState(false); // 검토필요 티켓만 필터
-  const [attentionFilter, setAttentionFilter] = useState(false); // Weekly 정보 보완 신호가 있는 티켓만 모아보기
+  const [reviewModeFilter, setReviewModeFilter] = useState<"all" | TicketReviewMode>("all");
   const [newFilter, setNewFilter]       = useState(false); // 최근 2주 신규 티켓만 필터
   // status 가 undefined 면 "팀 전체" — 카드 wrapper 클릭으로 진입.
   const [planningKpiFilter, setPlanningKpiFilter] = useState<{ team: string; status?: TrackState } | null>(null); // 상단 KPI 카드 클릭 필터
@@ -2716,7 +2776,13 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const onTicketsAdded = (event: Event) => {
       const detail = (event as CustomEvent<DashboardTicketsAddedDetail<Ticket>>).detail;
       const added = Array.isArray(detail?.tickets)
-        ? detail.tickets.filter(ticket => !ticket.key.startsWith("ETR-"))
+        ? detail.tickets
+          .filter(ticket => !ticket.key.startsWith("ETR-"))
+          .map(ticket => ({
+            ...ticket,
+            isManual: true,
+            participationRoles: [...new Set([...(ticket.participationRoles ?? []), "manual" as const])],
+          }))
         : [];
       if (added.length === 0) return;
       mergeIntoTicketCache(added);
@@ -4045,6 +4111,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   /** Backward compat alias — Phase 7 의 savePrioritiesToKv 와 동등. */
   const savePrioritiesToKv = savePlanningPrioritiesToKv;
 
+  async function setTicketReviewMode(ticket: Ticket, mode: TicketReviewMode) {
+    const previous = ticketReviewOverrides;
+    const next = { ...previous };
+    const defaultMode = resolveTicketReviewMode(ticket.participationRoles);
+    const useAutomaticDefault = mode === defaultMode;
+    if (useAutomaticDefault) delete next[ticket.key];
+    else next[ticket.key] = mode;
+    setTicketReviewOverrides(next);
+    try {
+      const response = await fetch("/api/kv", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          key: "cc-ticket-review-modes",
+          subKey: ticket.key,
+          value: mode,
+          deleteSubKey: useAutomaticDefault,
+        }),
+      });
+      if (response.ok) return;
+    } catch {
+      // 아래 공통 rollback과 사용자 안내로 처리한다.
+    }
+    setTicketReviewOverrides(previous);
+    setSheetSyncMsg("확인 방식 저장 실패. 잠시 후 다시 시도해 주세요.");
+    setTimeout(() => setSheetSyncMsg(null), 4000);
+  }
+
   /**
    * 단일 ticket planning priority 변경 + KV 저장 + 정렬 sync.
    * 빈값/0/"0" → 항목 삭제. 실패 시 rollback + toast.
@@ -4806,7 +4900,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     // 공유 데이터: KV에서 로드 (두 요청으로 분리 — 메인 데이터 / 커스텀 티켓)
     // 1) 메인 메타데이터 (상대적으로 작은 데이터)
-    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates,cc-weekly-notes,cc-update-candidates,cc-weekly-source-text,cc-weekly-sync-meta")
+    const mainFetch = fetch("/api/kv?keys=cc-planning,cc-schedules,cc-memos,cc-memos-v2,cc-planning-notes,cc-ticket-notes,cc-etr,cc-hidden-keys,cc-hidden-meta,cc-ticket-added-dates,cc-weekly-notes,cc-update-candidates,cc-weekly-source-text,cc-weekly-sync-meta,cc-ticket-review-modes")
       .then((r) => r.json())
       .then((data) => {
         if (data["cc-planning"])   setPlanning(data["cc-planning"]);
@@ -4825,6 +4919,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         // PR #39 — Weekly Sync Visibility
         if (data["cc-weekly-sync-meta"] && typeof data["cc-weekly-sync-meta"] === "object" && !Array.isArray(data["cc-weekly-sync-meta"]))
           setWeeklySyncMeta(data["cc-weekly-sync-meta"] as Record<string, WeeklySyncMeta>);
+        if (data["cc-ticket-review-modes"] && typeof data["cc-ticket-review-modes"] === "object" && !Array.isArray(data["cc-ticket-review-modes"]))
+          setTicketReviewOverrides(data["cc-ticket-review-modes"] as TicketReviewOverrides);
 
         // hidden keys: KV에서만 로드
         const kvHidden: string[] = Array.isArray(data["cc-hidden-keys"]) ? data["cc-hidden-keys"] : [];
@@ -5329,6 +5425,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       if (levels.size > 0 && !levels.has(t.type)) return false;
       if (assigneeFilter.size > 0 && !assigneeFilter.has(t.assignee)) return false;
+      if (
+        participationRoleFilter.size > 0
+        && !(t.participationRoles ?? []).some(role => participationRoleFilter.has(role))
+      ) return false;
       if (domainFilter.size > 0 && !domainFilter.has(extractDomain(t.summary))) return false;
       if (targetFilter.size > 0 && !targetFilter.has(extractTarget(t.summary) ?? "")) return false;
       if (projects.size > 0 && !projects.has(t.project)) return false;
@@ -5339,7 +5439,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       }
       return true;
     });
-  }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, domainFilter, targetFilter, search]);
+  }, [dedupedTickets, planningTab, quarters, projects, statuses, levels, assigneeFilter, participationRoleFilter, domainFilter, targetFilter, search]);
 
   /**
    * preFiltered — 하단 ticket 목록용. planningTabBase 위에 KPI 카드 클릭 필터만 추가 적용.
@@ -5506,6 +5606,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     };
   }, [kvLoaded, schedules, planning, etrMap, weeklyNotes, weeklySourceTexts]);
 
+  const getTicketReviewMode = useCallback((ticket: Ticket): TicketReviewMode => (
+    resolveTicketReviewMode(ticket.participationRoles, ticketReviewOverrides[ticket.key])
+  ), [ticketReviewOverrides]);
+
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
     let result = statusTab === "전체"   ? [...preFiltered]
@@ -5521,8 +5625,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     if (reviewFilter && planningTab === "플래닝 대기·검토") {
       result = result.filter(t => getTicketAttention(t, "planning") !== null);
     }
-    if (attentionFilter && planningTab !== "플래닝 대기·검토") {
-      result = result.filter(t => getTicketAttention(t, "weekly") !== null);
+    if (reviewModeFilter !== "all" && planningTab !== "플래닝 대기·검토") {
+      result = result.filter(t => getTicketReviewMode(t) === reviewModeFilter);
     }
     // 신규 필터
     if (newFilter) result = result.filter(t => isRecentTicket(t.key));
@@ -5577,7 +5681,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       result.sort((a: Ticket, b: Ticket) => ticketNum(a.key) - ticketNum(b.key));
     }
     return result;
-  }, [preFiltered, statusTab, sortBy, priorities, executionPriorities, reviewFilter, attentionFilter, newFilter, planningTab, getTicketAttention, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [preFiltered, statusTab, sortBy, priorities, executionPriorities, reviewFilter, reviewModeFilter, newFilter, planningTab, getTicketAttention, getTicketReviewMode, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const statusLabel = statusTab === "전체" ? "" : ` · ${statusTab}`;
@@ -7352,9 +7456,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
           const reviewCount = isPlanningWorkspace
             ? preFiltered.filter(t => getTicketAttention(t, "planning") !== null).length
             : 0;
-          const attentionCount = !isPlanningWorkspace
-            ? preFiltered.filter(t => getTicketAttention(t, "weekly") !== null).length
-            : 0;
+          const reviewModeCounts = TICKET_REVIEW_MODES.reduce((counts, mode) => {
+            counts[mode] = preFiltered.filter(ticket => getTicketReviewMode(ticket) === mode).length;
+            return counts;
+          }, {} as Record<TicketReviewMode, number>);
           const newCount = preFiltered.filter(t => isRecentTicket(t.key)).length;
           const changedCount = transitionMap.size + transitionNewlyAdded.size;
           return (
@@ -7377,25 +7482,35 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                   </span>
                 </button>
               )}
-              {!isPlanningWorkspace && (attentionCount > 0 || attentionFilter) && (
-                <button
-                  onClick={() => setAttentionFilter(v => !v)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
-                  style={{
-                    background: attentionFilter ? "var(--accent-workspace-soft)" : "var(--bg-overlay)",
-                    border: `1px solid ${attentionFilter ? "var(--accent-workspace-border)" : "var(--border-2)"}`,
-                    color: attentionFilter ? "var(--accent-workspace)" : "var(--text-muted)",
-                  }}
-                  aria-pressed={attentionFilter}
-                  title="Weekly 원문·일정 데이터에 보완 신호가 있는 티켓만 모아봅니다. 담당자나 과제 상태에 대한 평가가 아닙니다."
-                >
-                  정보 상태
-                  <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
-                    style={{ background: attentionFilter ? "var(--accent-workspace-soft)" : "var(--border)", color: attentionFilter ? "var(--accent-workspace)" : "var(--text-subtle)" }}>
-                    {attentionCount}
-                  </span>
-                </button>
-              )}
+              {!isPlanningWorkspace && ([
+                { mode: "all" as const, label: "전체", count: preFiltered.length, color: "var(--text-primary)", background: "var(--bg-item)", title: "현재 상태의 모든 관리 티켓" },
+                { mode: "weekly" as const, label: "위클리 체크", count: reviewModeCounts.weekly, color: "#315b91", background: "#eaf1fa", title: "위클리에서 진행 상태·일정·다음 행동을 확인할 티켓" },
+                { mode: "monitor" as const, label: "모니터링", count: reviewModeCounts.monitor, color: "#0f766e", background: "rgba(15,118,110,0.10)", title: "회의마다 다룰 필요는 없지만 주기적으로 변화를 살펴볼 티켓" },
+                { mode: "reference" as const, label: "필요 시 확인", count: reviewModeCounts.reference, color: "#64748b", background: "rgba(100,116,139,0.10)", title: "업데이트나 이슈가 생길 때 확인할 참조 티켓" },
+              ]).map(item => {
+                const active = reviewModeFilter === item.mode;
+                return (
+                  <button
+                    key={item.mode}
+                    type="button"
+                    onClick={() => setReviewModeFilter(item.mode)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all"
+                    style={{
+                      background: active ? item.background : "var(--bg-overlay)",
+                      border: `1px solid ${active ? item.color : "var(--border-2)"}`,
+                      color: active ? item.color : "var(--text-muted)",
+                    }}
+                    aria-pressed={active}
+                    title={item.title}
+                  >
+                    {item.label}
+                    <span className="ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-bold"
+                      style={{ background: active ? item.background : "var(--border)", color: active ? item.color : "var(--text-subtle)" }}>
+                      {item.count}
+                    </span>
+                  </button>
+                );
+              })}
               {(newCount > 0 || newFilter) && (
                 <button
                   onClick={() => setNewFilter(v => !v)}
@@ -7906,6 +8021,15 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
             <MultiSelectDropdown compact={isQuickPreview} label="프로젝트" items={ALL_PROJECTS} selected={projects} onToggle={v => setProjects(p => toggle(p, v))} onClear={() => setProjects(new Set())} />
             <MultiSelectDropdown compact={isQuickPreview} label="상태" items={ALL_STATUSES} selected={statuses} onToggle={v => setStatuses(p => toggle(p, v))} onClear={() => setStatuses(new Set())} />
             <MultiSelectDropdown compact={isQuickPreview} label="담당자" items={allAssignees} selected={assigneeFilter} onToggle={v => setAssigneeFilter(p => toggle(p, v))} onClear={() => setAssigneeFilter(new Set())} />
+            <MultiSelectDropdown
+              compact
+              label="포함 이유"
+              items={TICKET_PARTICIPATION_ROLES}
+              selected={participationRoleFilter}
+              onToggle={v => setParticipationRoleFilter(p => toggle(p, v))}
+              onClear={() => setParticipationRoleFilter(new Set())}
+              getItemLabel={value => TICKET_PARTICIPATION_FILTER_LABELS[value]}
+            />
             <MultiSelectDropdown compact={isQuickPreview} label="도메인" items={allDomains} selected={domainFilter} onToggle={v => setDomainFilter(p => toggle(p, v))} onClear={() => setDomainFilter(new Set())} />
             <MultiSelectDropdown compact={isQuickPreview} label="대상" items={allTargets} selected={targetFilter} onToggle={v => setTargetFilter(p => toggle(p, v))} onClear={() => setTargetFilter(new Set())} />
           </div>
@@ -8300,6 +8424,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                                 <span className="text-[12px]" style={{ color: "var(--text-muted)" }}>
                                   {t.assignee}
                                 </span>
+                                <TicketReviewModeBadge mode={getTicketReviewMode(t)} />
+                                <TicketParticipationBadges roles={t.participationRoles} />
                                 {lifecycle === "planning" && (
                                   <>
                                     <PreplanningBadge status={preplanningView.status} />
@@ -8546,6 +8672,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     <span className={`px-1.5 py-0.5 rounded-full text-[11px] font-medium shrink-0 ${TYPE_COLOR[selected.type] ?? "bg-gray-100 text-gray-500"}`}>
                       {selected.type}
                     </span>
+                    <TicketParticipationBadges roles={selected.participationRoles} />
                     {selected.assignee && selected.assignee !== "-" && (
                       <span className="text-[12px] shrink-0" style={{ color: "var(--text-secondary)" }}>
                         {selected.assignee}
@@ -8580,6 +8707,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
                     className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[12px]"
                     style={{ color: "var(--text-secondary)" }}
                   >
+                    <label className="inline-flex items-center gap-1 whitespace-nowrap">
+                      <span style={{ color: "var(--text-muted)" }}>확인 방식</span>
+                      <select
+                        value={getTicketReviewMode(selected)}
+                        onChange={event => void setTicketReviewMode(selected, event.target.value as TicketReviewMode)}
+                        className="rounded px-1.5 py-0.5 text-[11px] font-medium outline-none cursor-pointer"
+                        style={{
+                          color: TICKET_REVIEW_MODE_COLORS[getTicketReviewMode(selected)].color,
+                          background: TICKET_REVIEW_MODE_COLORS[getTicketReviewMode(selected)].background,
+                          border: `1px solid ${TICKET_REVIEW_MODE_COLORS[getTicketReviewMode(selected)].border}`,
+                        }}
+                        title="수동으로 변경한 확인 방식은 Jira Sync가 덮어쓰지 않습니다."
+                      >
+                        {TICKET_REVIEW_MODES.map(mode => (
+                          <option key={mode} value={mode}>{TICKET_REVIEW_MODE_LABELS[mode]}</option>
+                        ))}
+                      </select>
+                    </label>
                     <span className="inline-flex items-center gap-1 whitespace-nowrap">
                       <span style={{ color: "var(--text-muted)" }}>시작</span>
                       <strong className="font-medium" style={{ color: "var(--text-primary)" }}>

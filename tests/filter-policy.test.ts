@@ -3,6 +3,7 @@ import test from "node:test";
 import type { JiraFilter } from "../lib/filter-types";
 import {
   buildEffectiveFilterJql,
+  extractTeamParticipantAccountIds,
   inferJiraFilterKind,
   inferJiraFilterTargetArea,
 } from "../lib/filter-policy";
@@ -44,12 +45,29 @@ test("ETR은 ETR 검토, 나머지는 전체 과제 영역으로 기본 분류",
   assert.equal(inferJiraFilterTargetArea(filter()), "tickets");
 });
 
-test("담당자 소스는 최근 생성 조건 대신 미완료와 최근 완료를 수집", () => {
+test("팀 참여 소스는 담당·보고·참조 관계와 최근 완료를 수집", () => {
   const jql = buildEffectiveFilterJql(filter());
   assert.equal(jql.includes("created >= -30d"), false);
   assert.match(jql, /assignee IN \(currentUser\(\), account-1\)/);
+  assert.match(jql, /reporter IN \(currentUser\(\), account-1\)/);
+  assert.match(jql, /watcher IN \(currentUser\(\), account-1\)/);
   assert.match(jql, /statusCategory != Done OR resolved >= -14d/);
   assert.match(jql, /ORDER BY updated DESC$/);
+});
+
+test("팀 참여자 accountId는 currentUser 함수를 제외하고 추출", () => {
+  assert.deepEqual(extractTeamParticipantAccountIds(filter()), ["account-1"]);
+  assert.deepEqual(
+    extractTeamParticipantAccountIds(filter({ jql: 'assignee IN ("account-a", \'account-b\')' })),
+    ["account-a", "account-b"],
+  );
+});
+
+test("단일 담당자 조건도 보고자와 참조자로 확장", () => {
+  const jql = buildEffectiveFilterJql(filter({
+    jql: "assignee = account-1 ORDER BY updated DESC",
+  }));
+  assert.match(jql, /assignee = account-1 OR reporter = account-1 OR watcher = account-1/);
 });
 
 test("일반 소스와 명시한 syncJql은 임의 변경하지 않음", () => {

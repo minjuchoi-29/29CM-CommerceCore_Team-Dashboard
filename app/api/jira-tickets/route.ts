@@ -12,6 +12,7 @@ import {
   type LinkedTicketRegistry,
 } from "@/lib/linked-ticket-discovery";
 import { withRedisLock } from "@/lib/redis-lock";
+import { buildTicketParticipationMap } from "@/lib/ticket-review";
 
 export const dynamic = "force-dynamic";
 
@@ -49,8 +50,8 @@ type JiraSearchIssue = {
   fields: {
     summary: string;
     status: { name: string; statusCategory?: { key?: string } };
-    assignee?: { displayName?: string } | null;
-    reporter?: { displayName?: string } | null;
+    assignee?: { displayName?: string; accountId?: string } | null;
+    reporter?: { displayName?: string; accountId?: string } | null;
     duedate?: string | null;
     updated?: string;
     resolutiondate?: string | null;
@@ -179,8 +180,10 @@ async function fetchChunk(
         status: f.status.name,
         statusCategory: f.status.statusCategory?.key,
         assignee: (f.assignee?.displayName ?? "-").split("/")[0].trim() || "-",
+        assigneeAccountId: f.assignee?.accountId ?? undefined,
         requestMeta: {
           reporter: (f.reporter?.displayName ?? "").split("/")[0].trim() || undefined,
+          reporterAccountId: f.reporter?.accountId ?? undefined,
         },
         eta: f.duedate ?? "-",
         updatedAt: f.updated ?? undefined,
@@ -325,6 +328,21 @@ export async function GET(request: NextRequest) {
     if (manualKeySet.has(t.key)) (t as Ticket).isManual = true;
   }
 
+  const participationMap = buildTicketParticipationMap(
+    tickets.map(ticket => ({
+      key: ticket.key,
+      assigneeAccountId: ticket.assigneeAccountId,
+      reporterAccountId: ticket.requestMeta?.reporterAccountId,
+      isManual: ticket.isManual,
+    })),
+    filterTickets,
+    filtersStore,
+  );
+  for (const ticket of tickets) {
+    const roles = participationMap[ticket.key];
+    if (roles?.length) ticket.participationRoles = roles;
+  }
+
   // ── 정렬: 전체/부분 조회 모두 요청된 관리 순서 유지 ──
   const byKey = Object.fromEntries(tickets.map((t) => [t.key, t]));
   const responseOrderKeys = [...new Set([...requestedKeys, ...linkedDiscovery.keys])];
@@ -333,7 +351,18 @@ export async function GET(request: NextRequest) {
     // JIRA에서 못 가져온 키: TICKET_OVERRIDES fallback
     const ov = TICKET_OVERRIDES[k];
     if (manualKeySet.has(k) && ov && "summary" in ov && ov.summary) {
-      const fallback: Ticket = { key: k, assignee: "-", eta: "-", type: "-", project: k.split("-")[0], summary: "", status: "-", isManual: true, ...ov };
+      const fallback: Ticket = {
+        key: k,
+        assignee: "-",
+        eta: "-",
+        type: "-",
+        project: k.split("-")[0],
+        summary: "",
+        status: "-",
+        isManual: true,
+        participationRoles: ["manual"],
+        ...ov,
+      };
       const sf = sourceFiltersMap[k];
       if (sf && sf.length > 0) fallback.sourceFilters = sf;
       return fallback;

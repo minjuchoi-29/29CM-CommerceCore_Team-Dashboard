@@ -136,7 +136,7 @@ describe("P1-1 TeamWorkstreamView", () => {
         { role: "QA", resourceTeam: "PP", phase: "QA", status: "예정", start: "2026-08-12" },
       ],
     });
-    assert.deepEqual(getTeamWorkstreamSignals(view, 1), [
+    assert.deepEqual(getTeamWorkstreamSignals(view, 1, new Date("2026-08-11T12:00:00+09:00").getTime()), [
       { team: "BE - Purchase", phase: "QA", status: "예정" },
     ]);
   });

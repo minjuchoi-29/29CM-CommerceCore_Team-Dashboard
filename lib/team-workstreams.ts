@@ -458,6 +458,7 @@ function displayTeamLabel(team: TeamWorkstream): string {
 export function getTeamWorkstreamSignals(
   view: TeamWorkstreamView,
   limit = 2,
+  now = Date.now(),
 ): TeamWorkstreamSignal[] {
   if (limit <= 0) return [];
 
@@ -472,7 +473,7 @@ export function getTeamWorkstreamSignals(
         };
       }
 
-      const item = selectTeamCurrentStageItems(team.items, 1)[0]
+      const item = selectTeamCurrentStageItems(team.items, 1, now)[0]
         ?? [...team.items].sort((a, b) => {
           const statusDelta = (EXECUTION_STATUS_ORDER.get(a.status) ?? 50)
             - (EXECUTION_STATUS_ORDER.get(b.status) ?? 50);

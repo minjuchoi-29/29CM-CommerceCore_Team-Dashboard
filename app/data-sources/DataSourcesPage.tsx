@@ -125,7 +125,7 @@ function FilterCard({
   const sourceKind = inferJiraFilterKind(filter);
   const targetArea = inferJiraFilterTargetArea(filter);
   const kindLabel = {
-    assignee: "담당자 F/U",
+    assignee: "팀 참여 F/U",
     etr: "ETR 요청",
     initiative: "전체 과제",
     general: "일반 소스",
@@ -356,7 +356,7 @@ function FilterCard({
           className="rounded-lg px-3 py-2 text-[11px]"
           style={{ background: "rgba(14,116,144,0.07)", color: "#0e7490", border: "1px solid rgba(14,116,144,0.15)" }}
         >
-          대시보드 수집 정책 · 생성일 제한 없이 미완료 전체와 최근 14일 내 완료 티켓을 추적합니다.
+          대시보드 수집 정책 · 우리 팀이 담당·요청·참조한 미완료 티켓 전체와 최근 14일 내 완료 티켓을 추적합니다.
         </div>
       )}
 
