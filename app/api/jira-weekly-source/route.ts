@@ -106,6 +106,7 @@ type JiraComment = {
 // ─── 메인 ─────────────────────────────────────────────────────
 export async function GET(req: NextRequest) {
   const key = (req.nextUrl.searchParams.get("key") ?? "").trim().toUpperCase();
+  const compact = req.nextUrl.searchParams.get("compact") === "1";
   if (!key || !/^[A-Z][A-Z0-9]*-\d+$/.test(key)) {
     return NextResponse.json(
       { error: "유효한 티켓 키가 필요합니다. 예: TM-1234" },
@@ -454,14 +455,14 @@ export async function GET(req: NextRequest) {
       sourceUpdatedAt: pick?.sourceUpdatedAt ?? null,
       foundMarker: pick !== null,
       markers: pick?.markers ?? [],
-      parsed,
+      parsed: compact ? undefined : parsed,
       parseSummary,
       // detection 단계의 모든 source 후보 (current field + legacy description + archived comments).
       // 단일 pick 정책은 무변경 — 본 필드는 UI 의 "Detected Sources" 노출 전용.
       sources: detectedSources,
       // schedule history 복원용: archived comments(oldest → newest), current live Weekly(last).
       syncSources,
-      debug: {
+      debug: compact ? undefined : {
         // ─── customfield_10625 = "Weekly 공유사항" (현재 Weekly SoT) ───
         weeklyCustomFieldId: WEEKLY_CUSTOM_FIELD_ID,
         weeklyCustomFieldName: WEEKLY_CUSTOM_FIELD_NAME,

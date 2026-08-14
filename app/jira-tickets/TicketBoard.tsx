@@ -2212,6 +2212,10 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     partial?: boolean;
     managedCount?: number;
     refreshedCount?: number;
+    checkedCount?: number;
+    changedCount?: number;
+    unavailableCount?: number;
+    durationMs?: number;
   };
 
   type TicketCachePayload = {
@@ -2292,6 +2296,53 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return data as TicketListApiData;
   }
 
+  async function fetchTicketChanges(
+    keys: string[],
+    currentTickets: Ticket[],
+  ): Promise<TicketListApiData> {
+    if (keys.length === 0) return { tickets: [], fetchedAt: new Date().toISOString(), partial: true };
+    const currentByKey = new Map(currentTickets.map(ticket => [ticket.key, ticket]));
+    const response = await apiFetch("/api/jira-tickets", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tickets: keys.map(key => ({
+          key,
+          updatedAt: currentByKey.get(key)?.updatedAt,
+        })),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || data.error || !Array.isArray(data.tickets)) {
+      throw new Error(data.error ?? "Jira 변경 티켓을 확인할 수 없습니다.");
+    }
+    return data as TicketListApiData;
+  }
+
+  async function fetchSharedCachedChanges(currentTickets: Ticket[]): Promise<{
+    tickets: Ticket[];
+    cacheUpdatedAt?: string;
+  }> {
+    if (currentTickets.length === 0) return { tickets: [] };
+    const response = await apiFetch("/api/jira-ticket-cache", {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        tickets: currentTickets.map(ticket => ({ key: ticket.key, updatedAt: ticket.updatedAt })),
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok || data.error || !Array.isArray(data.tickets)) {
+      throw new Error(data.error ?? "공용 Jira 캐시를 확인할 수 없습니다.");
+    }
+    return {
+      tickets: data.tickets as Ticket[],
+      cacheUpdatedAt: typeof data.cacheUpdatedAt === "string" ? data.cacheUpdatedAt : undefined,
+    };
+  }
+
   /**
    * 12시간 티켓 캐시는 즉시 보여주되 현재 서버 관리 범위를 가볍게 재검증한다.
    * 다른 브라우저에서 추가된 티켓은 Jira 부분 조회로 합치고,
@@ -2307,23 +2358,34 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       const registry = await fetchSharedTicketRegistry();
       sharedCustomKeysRef.current = registry.customKeys;
       const retainedTickets = retainManagedTickets(baseTickets, registry.managedKeys);
-      const missingKeys = findMissingManagedTicketKeys(retainedTickets, registry.managedKeys, hidden);
+      const sharedChanges = await fetchSharedCachedChanges(retainedTickets);
+      const cacheReconciledTickets = mergeRefreshedTickets(retainedTickets, sharedChanges.tickets);
+      const sharedCacheDate = sharedChanges.cacheUpdatedAt ? new Date(sharedChanges.cacheUpdatedAt) : null;
+      const sharedCacheIsNewer = sharedCacheDate !== null
+        && Number.isFinite(sharedCacheDate.getTime())
+        && sharedCacheDate.getTime() > cachedAt.getTime();
+      const nextCachedAt = sharedCacheIsNewer ? sharedCacheDate : cachedAt;
+      const nextFullFetchedAt = sharedCacheIsNewer ? sharedCacheDate : fullFetchedAt;
+      const missingKeys = findMissingManagedTicketKeys(cacheReconciledTickets, registry.managedKeys, hidden);
       if (missingKeys.length === 0) {
-        const visible = filterVisibleTickets(retainedTickets, hidden);
-        if (retainedTickets.length !== baseTickets.length) {
+        const visible = filterVisibleTickets(cacheReconciledTickets, hidden);
+        if (cacheReconciledTickets.length !== baseTickets.length || sharedChanges.tickets.length > 0) {
           ticketsRef.current = visible;
           setTickets(visible);
         }
-        writeTicketCache(retainedTickets, cachedAt, hidden, registry.customKeys, fullFetchedAt);
+        if (sharedCacheIsNewer) setSyncedAt(nextCachedAt);
+        writeTicketCache(cacheReconciledTickets, nextCachedAt, hidden, registry.customKeys, nextFullFetchedAt);
         return;
       }
 
       const refreshed = await fetchTicketSubset(missingKeys);
-      const merged = mergeRefreshedTickets(retainedTickets, refreshed.tickets);
+      const merged = mergeRefreshedTickets(cacheReconciledTickets, refreshed.tickets);
       const visible = filterVisibleTickets(merged, hidden);
       ticketsRef.current = visible;
       setTickets(visible);
-      writeTicketCache(merged, cachedAt, hidden, registry.customKeys, fullFetchedAt);
+      const refreshedAt = refreshed.fetchedAt ? new Date(refreshed.fetchedAt) : nextCachedAt;
+      setSyncedAt(refreshedAt);
+      writeTicketCache(merged, refreshedAt, hidden, registry.customKeys, nextFullFetchedAt);
     } catch (error) {
       // 캐시 화면은 계속 사용할 수 있어야 하므로 관리 범위 보정 실패는 비차단 처리한다.
       console.warn("[ticket-cache] shared managed ticket reconcile failed", error);
@@ -2484,7 +2546,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }
         data = body as TicketListApiData;
       } else {
-        data = await fetchTicketSubset(refreshPlan.keys);
+        data = await fetchTicketChanges(refreshPlan.keys, cachedTickets);
       }
 
       const at = data.fetchedAt ? new Date(data.fetchedAt) : new Date();
@@ -2559,7 +2621,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         const changedSelection = selectChangedWeeklyTargets(
           allTargets,
           cachedTickets,
-          data.tickets,
+          allNewTickets,
           buildCurrentWeeklyAttemptedKeys(weeklySyncMetaRef.current, WEEKLY_SYNC_PARSER_VERSION),
         );
         const targets = changedSelection.targets;
@@ -2904,7 +2966,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
 
       const planningKeys = buildPlanningRefreshKeys(cachedTickets, hidden);
       if (planningKeys.length > 0) {
-        const data = await fetchTicketSubset(planningKeys);
+        const data = await fetchTicketChanges(planningKeys, cachedTickets);
         const merged = mergeRefreshedTickets(cachedTickets, data.tickets);
         const visible = filterVisibleTickets(merged, hidden);
         ticketsRef.current = visible;

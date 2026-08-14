@@ -15,6 +15,7 @@ import {
   saveSyncRun,
   startSyncRun,
 } from "@/lib/sync-runs";
+import type { SyncRunTrigger } from "@/lib/sync-run-types";
 
 export const dynamic = "force-dynamic";
 const WEEKLY_SYNC_LOCK_KEY = "lock:cc-weekly-sync";
@@ -150,6 +151,7 @@ type WeeklyBatchRequest = {
   items: WeeklyBatchItem[];
   attempts?: WeeklyBatchAttempt[];
   sourceTexts?: Record<string, WeeklySourceText>;
+  trigger?: SyncRunTrigger;
   timings?: {
     metadataMs?: number;
     sourceCollectionMs?: number;
@@ -160,7 +162,7 @@ type WeeklyBatchRequest = {
 
 async function persistWeeklySyncBatch(body: WeeklyBatchRequest) {
   const mergeStartedAt = Date.now();
-  const syncRun = createSyncRun("jira", "dashboard", {
+  const syncRun = createSyncRun("jira", body.trigger ?? "dashboard", {
     targets: String(body.timings?.targetCount ?? 0),
     changed: String(new Set(body.items.map(item => item.ticketKey)).size),
   });
@@ -395,6 +397,7 @@ export async function POST(request: Request) {
       attempts?: WeeklyBatchAttempt[];
       sourceTexts?: Record<string, WeeklySourceText>;
       timings?: WeeklyBatchRequest["timings"];
+      trigger?: SyncRunTrigger;
     };
     if (Array.isArray(body.items)) {
       if (body.items.length > 500) {
@@ -409,6 +412,7 @@ export async function POST(request: Request) {
         attempts: body.attempts,
         sourceTexts: body.sourceTexts,
         timings: body.timings,
+        trigger: body.trigger,
       });
       return NextResponse.json(result);
     }

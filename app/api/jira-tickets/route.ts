@@ -13,12 +13,19 @@ import {
 } from "@/lib/linked-ticket-discovery";
 import { withRedisLock } from "@/lib/redis-lock";
 import { buildTicketParticipationMap } from "@/lib/ticket-review";
+import {
+  mergeAndSaveJiraTicketCache,
+  readJiraTicketCache,
+  selectChangedJiraTicketKeys,
+  type JiraTicketVersion,
+} from "@/lib/jira-ticket-cache";
 
 export const dynamic = "force-dynamic";
 
 const JIRA_HOST = "https://musinsa-oneteam.atlassian.net";
 const LINKED_TICKET_REGISTRY_KEY = "cc-linked-ticket-registry";
 const LINKED_TICKET_REGISTRY_LOCK_KEY = "lock:cc-linked-ticket-registry";
+const SHARED_CACHE_MAX_AGE_MS = 36 * 60 * 60 * 1_000;
 
 /** Phase 4: Jira issuelinks 배열에서 우리가 필요한 정보만 추출 */
 type JiraLinkParsed = {
@@ -73,6 +80,17 @@ type JiraSearchResponse = {
   issues: JiraSearchIssue[];
   isLast?: boolean;
   total?: number;
+};
+
+type ManagedTicketContext = {
+  filterTickets: FilterTicketsStore;
+  filtersStore: JiraFiltersStore;
+  additionalKeys: string[];
+  manualKeys: string[];
+  manualKeySet: Set<string>;
+  allKeys: string[];
+  sourceFiltersMap: Record<string, string[]>;
+  linkedTicketRegistry: LinkedTicketRegistry;
 };
 
 function parseIssuelinks(raw: unknown): JiraLinkParsed[] {
@@ -211,6 +229,112 @@ async function fetchChunk(
   return results;
 }
 
+async function fetchVersionChunk(
+  chunkKeys: string[],
+  headers: Record<string, string>,
+): Promise<JiraTicketVersion[]> {
+  if (chunkKeys.length === 0) return [];
+  const url =
+    `${JIRA_HOST}/rest/api/3/search/jql?` +
+    new URLSearchParams({
+      jql: `key in (${chunkKeys.join(",")})`,
+      maxResults: "100",
+      fields: "updated",
+    });
+  const res = await fetchWithTimeout(url, { headers, cache: "no-store" });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Jira version API ${res.status}: ${body.slice(0, 300)}`);
+  }
+  const data = await res.json() as {
+    issues?: Array<{ key: string; fields?: { updated?: string } }>;
+  };
+  return (data.issues ?? []).map(issue => ({
+    key: issue.key,
+    updatedAt: issue.fields?.updated,
+  }));
+}
+
+async function fetchTicketVersions(
+  keys: string[],
+  headers: Record<string, string>,
+): Promise<JiraTicketVersion[]> {
+  const chunks = chunkArray(keys, 100);
+  const results = await Promise.all(chunks.map(chunk => fetchVersionChunk(chunk, headers)));
+  return results.flat();
+}
+
+async function loadManagedTicketContext(): Promise<ManagedTicketContext> {
+  let filterTickets: FilterTicketsStore = {};
+  let filtersStore: JiraFiltersStore = {};
+  let customKeysRaw: string[] = [];
+  let linkedTicketRegistry: LinkedTicketRegistry = {};
+
+  const [ft, fs, ck, lr] = await Promise.all([
+    redis.get<FilterTicketsStore>("cc-filter-tickets"),
+    redis.get<JiraFiltersStore>("cc-jira-filters"),
+    redis.get<unknown>("cc-custom-keys"),
+    redis.get<LinkedTicketRegistry>(LINKED_TICKET_REGISTRY_KEY),
+  ]);
+  filterTickets = ft ?? {};
+  filtersStore = fs ?? {};
+  if (Array.isArray(ck)) customKeysRaw = ck as string[];
+  else if (typeof ck === "string") {
+    try { customKeysRaw = JSON.parse(ck); } catch {}
+  }
+  linkedTicketRegistry = lr ?? {};
+
+  const manualKeySet = new Set<string>(TICKET_KEYS);
+  const additionalKeys = customKeysRaw.filter(key => !manualKeySet.has(key));
+  const manualKeys = [...TICKET_KEYS, ...additionalKeys];
+  for (const key of additionalKeys) manualKeySet.add(key);
+
+  const managedSeedKeys = [...manualKeys, ...Object.keys(linkedTicketRegistry)];
+  const { allKeys } = mergeTicketKeyLists(managedSeedKeys, filterTickets, filtersStore);
+
+  return {
+    filterTickets,
+    filtersStore,
+    additionalKeys,
+    manualKeys,
+    manualKeySet,
+    allKeys,
+    sourceFiltersMap: buildSourceFiltersMap(filterTickets, filtersStore),
+    linkedTicketRegistry,
+  };
+}
+
+function decorateTickets(
+  tickets: Ticket[],
+  context: Pick<ManagedTicketContext,
+    "sourceFiltersMap" | "linkedTicketRegistry" | "manualKeySet" | "filterTickets" | "filtersStore"
+  >,
+): void {
+  for (const ticket of tickets) {
+    const sourceFilters = context.sourceFiltersMap[ticket.key];
+    const linkedLabel = linkedTicketSourceLabel(context.linkedTicketRegistry[ticket.key]);
+    const sourceLabels = [...(sourceFilters ?? []), ...(linkedLabel ? [linkedLabel] : [])];
+    ticket.sourceFilters = sourceLabels.length > 0 ? [...new Set(sourceLabels)] : undefined;
+    ticket.isManual = context.manualKeySet.has(ticket.key) || undefined;
+    ticket.participationRoles = undefined;
+  }
+
+  const participationMap = buildTicketParticipationMap(
+    tickets.map(ticket => ({
+      key: ticket.key,
+      assigneeAccountId: ticket.assigneeAccountId,
+      reporterAccountId: ticket.requestMeta?.reporterAccountId,
+      isManual: ticket.isManual,
+    })),
+    context.filterTickets,
+    context.filtersStore,
+  );
+  for (const ticket of tickets) {
+    const roles = participationMap[ticket.key];
+    if (roles?.length) ticket.participationRoles = roles;
+  }
+}
+
 export async function GET(request: NextRequest) {
   const email = process.env.JIRA_EMAIL;
   const token = process.env.JIRA_API_TOKEN;
@@ -227,60 +351,63 @@ export async function GET(request: NextRequest) {
   // β-1: Jira FIELDS 공통 상수 (lib/jira-fields.ts) 사용 — 4 routes 간 drift 방지
   const FIELDS = JIRA_BATCH_FIELDS_STR;
 
-  // ── KV 로드: cc-filter-tickets + cc-jira-filters + cc-custom-keys ──
-  let filterTickets: FilterTicketsStore = {};
-  let filtersStore: JiraFiltersStore = {};
-  let customKeysRaw: string[] = [];
-  let linkedTicketRegistry: LinkedTicketRegistry = {};
+  // ── KV 로드: 활성 데이터 소스 + 수동/연결 티켓 ──
+  let context: ManagedTicketContext;
   try {
-    const [ft, fs, ck, lr] = await Promise.all([
-      redis.get<FilterTicketsStore>("cc-filter-tickets"),
-      redis.get<JiraFiltersStore>("cc-jira-filters"),
-      redis.get<unknown>("cc-custom-keys"),
-      redis.get<LinkedTicketRegistry>(LINKED_TICKET_REGISTRY_KEY),
-    ]);
-    filterTickets = ft ?? {};
-    filtersStore = fs ?? {};
-    // cc-custom-keys는 배열 또는 JSON 문자열로 저장될 수 있음
-    if (Array.isArray(ck)) customKeysRaw = ck as string[];
-    else if (typeof ck === "string") { try { customKeysRaw = JSON.parse(ck); } catch {} }
-    linkedTicketRegistry = lr ?? {};
+    context = await loadManagedTicketContext();
   } catch (e) {
     console.error("[jira-tickets GET] KV 로드 실패, TICKET_KEYS만 사용:", e);
+    const manualKeySet = new Set(TICKET_KEYS);
+    context = {
+      filterTickets: {},
+      filtersStore: {},
+      additionalKeys: [],
+      manualKeys: [...TICKET_KEYS],
+      manualKeySet,
+      allKeys: [...TICKET_KEYS],
+      sourceFiltersMap: {},
+      linkedTicketRegistry: {},
+    };
   }
-
-  // manualKeys = TICKET_KEYS(seed) + cc-custom-keys(KV 수동 추가), key 기준 dedupe
-  // 정렬: TICKET_KEYS 순서 우선 → cc-custom-keys 추가분 후미
-  const manualKeySet = new Set<string>(TICKET_KEYS);
-  const additionalKeys = customKeysRaw.filter(k => !manualKeySet.has(k));
-  const manualKeys = [...TICKET_KEYS, ...additionalKeys];
-  // manualKeySet 업데이트 (cc-custom-keys 포함)
-  for (const k of additionalKeys) manualKeySet.add(k);
-
-  // 수동 + 필터 + ETR 연결로 자동 발견한 키 병합. 연결 키는 수동 티켓으로 표시하지 않는다.
-  const managedSeedKeys = [...manualKeys, ...Object.keys(linkedTicketRegistry)];
-  const { allKeys } = mergeTicketKeyLists(managedSeedKeys, filterTickets, filtersStore);
-  // 어떤 티켓이 어떤 필터에 속하는지 맵 빌드
-  const sourceFiltersMap = buildSourceFiltersMap(filterTickets, filtersStore);
 
   // keys 쿼리가 있으면 현재 회의 운영에 필요한 티켓만 부분 갱신한다.
   // 허용 목록 밖의 키는 Jira 조회에 전달하지 않는다.
   const requestedParam = request.nextUrl.searchParams.get("keys");
-  const allowedKeys = new Set(allKeys);
+  const allowedKeys = new Set(context.allKeys);
   const requestedKeys = requestedParam === null
-    ? allKeys
+    ? context.allKeys
     : [...new Set(requestedParam.split(",").map(key => key.trim().toUpperCase()).filter(key => allowedKeys.has(key)))];
+
+  // 첫 화면은 공용 자동 캐시를 즉시 사용하고, 누락 키만 Jira에서 조회한다.
+  // 명시적인 keys 요청(Jira Sync/개별 갱신)은 항상 Jira 원본을 확인한다.
+  const storedSharedCache = requestedParam === null ? await readJiraTicketCache() : null;
+  const sharedCacheAgeMs = storedSharedCache?.updatedAt
+    ? Date.now() - new Date(storedSharedCache.updatedAt).getTime()
+    : Number.POSITIVE_INFINITY;
+  const sharedCache = storedSharedCache
+    && Number.isFinite(sharedCacheAgeMs)
+    && sharedCacheAgeMs >= 0
+    && sharedCacheAgeMs <= SHARED_CACHE_MAX_AGE_MS
+    ? storedSharedCache
+    : null;
+  const cachedTickets = sharedCache
+    ? requestedKeys.map(key => sharedCache.tickets[key]).filter((ticket): ticket is Ticket => Boolean(ticket))
+    : [];
+  const cachedKeySet = new Set(cachedTickets.map(ticket => ticket.key));
+  const keysToFetch = requestedParam === null
+    ? requestedKeys.filter(key => !cachedKeySet.has(key))
+    : requestedKeys;
 
   // JIRA key in (...) 제한 회피를 위해 50개씩 청크로 나눠 병렬 조회
   const CHUNK_SIZE = 50;
-  const chunks = chunkArray(requestedKeys, CHUNK_SIZE);
+  const chunks = chunkArray(keysToFetch, CHUNK_SIZE);
 
-  let tickets: Ticket[] = [];
+  let tickets: Ticket[] = [...cachedTickets];
   try {
     const chunkResults = await Promise.all(
       chunks.map(chunk => fetchChunk(chunk, headers, FIELDS))
     );
-    tickets = chunkResults.flat();
+    tickets = [...tickets, ...chunkResults.flat()];
   } catch (err) {
     const message = err instanceof Error ? err.message : "알 수 없는 오류";
     return NextResponse.json({ error: `요청 실패: ${message}` }, { status: 504 });
@@ -288,7 +415,7 @@ export async function GET(request: NextRequest) {
 
   // Jira 이슈 링크 중 ETR↔실행 티켓 관계만 한 단계 확장한다.
   // 일반 티켓끼리의 관계는 대시보드 관리 범위를 넓히지 않는다.
-  const linkedDiscovery = discoverEtrLinkedTicketKeys(tickets, new Set(allKeys));
+  const linkedDiscovery = discoverEtrLinkedTicketKeys(tickets, new Set(context.allKeys));
   if (linkedDiscovery.keys.length > 0) {
     try {
       const linkedChunks = chunkArray(linkedDiscovery.keys, CHUNK_SIZE);
@@ -304,7 +431,7 @@ export async function GET(request: NextRequest) {
 
   if (Object.keys(linkedDiscovery.linkedFromByKey).length > 0) {
     try {
-      linkedTicketRegistry = await withRedisLock(redis, LINKED_TICKET_REGISTRY_LOCK_KEY, async () => {
+      context.linkedTicketRegistry = await withRedisLock(redis, LINKED_TICKET_REGISTRY_LOCK_KEY, async () => {
         const current = (await redis.get<LinkedTicketRegistry>(LINKED_TICKET_REGISTRY_KEY)) ?? {};
         const merged = mergeLinkedTicketRegistry(
           current,
@@ -319,29 +446,7 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // sourceFilters 부착 (필터에 속한 티켓만 — 수동 전용은 undefined 유지)
-  for (const t of tickets) {
-    const sf = sourceFiltersMap[t.key];
-    const linkedLabel = linkedTicketSourceLabel(linkedTicketRegistry[t.key]);
-    const sourceLabels = [...(sf ?? []), ...(linkedLabel ? [linkedLabel] : [])];
-    if (sourceLabels.length > 0) (t as Ticket).sourceFilters = [...new Set(sourceLabels)];
-    if (manualKeySet.has(t.key)) (t as Ticket).isManual = true;
-  }
-
-  const participationMap = buildTicketParticipationMap(
-    tickets.map(ticket => ({
-      key: ticket.key,
-      assigneeAccountId: ticket.assigneeAccountId,
-      reporterAccountId: ticket.requestMeta?.reporterAccountId,
-      isManual: ticket.isManual,
-    })),
-    filterTickets,
-    filtersStore,
-  );
-  for (const ticket of tickets) {
-    const roles = participationMap[ticket.key];
-    if (roles?.length) ticket.participationRoles = roles;
-  }
+  decorateTickets(tickets, context);
 
   // ── 정렬: 전체/부분 조회 모두 요청된 관리 순서 유지 ──
   const byKey = Object.fromEntries(tickets.map((t) => [t.key, t]));
@@ -350,7 +455,7 @@ export async function GET(request: NextRequest) {
     if (byKey[k]) return byKey[k];
     // JIRA에서 못 가져온 키: TICKET_OVERRIDES fallback
     const ov = TICKET_OVERRIDES[k];
-    if (manualKeySet.has(k) && ov && "summary" in ov && ov.summary) {
+    if (context.manualKeySet.has(k) && ov && "summary" in ov && ov.summary) {
       const fallback: Ticket = {
         key: k,
         assignee: "-",
@@ -363,7 +468,7 @@ export async function GET(request: NextRequest) {
         participationRoles: ["manual"],
         ...ov,
       };
-      const sf = sourceFiltersMap[k];
+      const sf = context.sourceFiltersMap[k];
       if (sf && sf.length > 0) fallback.sourceFilters = sf;
       return fallback;
     }
@@ -378,13 +483,123 @@ export async function GET(request: NextRequest) {
     return true;
   });
 
+  const responseAt = new Date().toISOString();
+  const managedKeys = [...new Set([...context.allKeys, ...linkedDiscovery.keys])];
+  try {
+    await mergeAndSaveJiraTicketCache(deduped, managedKeys, responseAt);
+  } catch (error) {
+    // 공용 캐시 실패가 Jira 원본 응답을 막지 않게 한다.
+    console.warn("[jira-tickets GET] 공용 메타 캐시 저장 실패:", error);
+  }
+
   return NextResponse.json({
     tickets: deduped,
-    fetchedAt: new Date().toISOString(),
-    customKeys: additionalKeys,
+    fetchedAt: requestedParam === null && keysToFetch.length === 0 && sharedCache?.updatedAt
+      ? sharedCache.updatedAt
+      : responseAt,
+    customKeys: context.additionalKeys,
     partial: requestedParam !== null,
-    managedCount: new Set([...allKeys, ...linkedDiscovery.keys]).size,
+    managedCount: managedKeys.length,
     refreshedCount: deduped.length,
+    cacheHitCount: cachedTickets.length,
+    jiraFetchedCount: keysToFetch.length + linkedDiscovery.keys.length,
     linkedDiscoveredCount: linkedDiscovery.keys.length,
   });
+}
+
+/**
+ * POST /api/jira-tickets
+ *
+ * Jira Sync 속도 최적화용 2단계 조회:
+ * 1) key + updated만 가볍게 확인
+ * 2) updated가 달라진 티켓만 기존 GET 경로로 상세 조회
+ */
+export async function POST(request: NextRequest) {
+  const startedAt = Date.now();
+  try {
+    const body = await request.json() as {
+      tickets?: Array<{ key: string; updatedAt?: string }>;
+    };
+    const candidates = Array.isArray(body.tickets) ? body.tickets : [];
+    if (candidates.length === 0) {
+      return NextResponse.json({
+        tickets: [],
+        fetchedAt: new Date().toISOString(),
+        partial: true,
+        checkedCount: 0,
+        changedCount: 0,
+        unavailableCount: 0,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+    if (candidates.length > 1_000) {
+      return NextResponse.json({ error: "한 번에 확인할 수 있는 티켓은 최대 1,000개입니다." }, { status: 400 });
+    }
+
+    const email = process.env.JIRA_EMAIL;
+    const token = process.env.JIRA_API_TOKEN;
+    if (!email || !token) {
+      return NextResponse.json(
+        { error: "JIRA_EMAIL 또는 JIRA_API_TOKEN 환경변수가 없습니다." },
+        { status: 500 },
+      );
+    }
+
+    const context = await loadManagedTicketContext();
+    const allowedKeys = new Set(context.allKeys);
+    const normalized = [...new Map(candidates
+      .map(ticket => ({ ...ticket, key: ticket.key.trim().toUpperCase() }))
+      .filter(ticket => allowedKeys.has(ticket.key))
+      .map(ticket => [ticket.key, ticket])).values()];
+    const headers = {
+      Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString("base64")}`,
+      Accept: "application/json",
+    };
+    const versions = await fetchTicketVersions(normalized.map(ticket => ticket.key), headers);
+    const cachedTickets = Object.fromEntries(normalized.map(ticket => [ticket.key, ticket]));
+    const { changedKeys, unavailableKeys } = selectChangedJiraTicketKeys(
+      normalized.map(ticket => ticket.key),
+      cachedTickets,
+      versions,
+    );
+
+    if (changedKeys.length === 0) {
+      return NextResponse.json({
+        tickets: [],
+        fetchedAt: new Date().toISOString(),
+        partial: true,
+        checkedCount: normalized.length,
+        changedCount: 0,
+        unavailableCount: unavailableKeys.length,
+        durationMs: Date.now() - startedAt,
+      });
+    }
+
+    const detailUrl = new URL(request.url);
+    detailUrl.search = new URLSearchParams({ keys: changedKeys.join(",") }).toString();
+    const detailResponse = await GET(new NextRequest(detailUrl, {
+      method: "GET",
+      headers: request.headers,
+    }));
+    const detailBody = await detailResponse.json() as Record<string, unknown>;
+    if (!detailResponse.ok) {
+      return NextResponse.json(detailBody, { status: detailResponse.status });
+    }
+
+    console.log(
+      `[jira-tickets incremental] checked=${normalized.length} changed=${changedKeys.length} ` +
+      `unavailable=${unavailableKeys.length} durationMs=${Date.now() - startedAt}`,
+    );
+    return NextResponse.json({
+      ...detailBody,
+      checkedCount: normalized.length,
+      changedCount: changedKeys.length,
+      unavailableCount: unavailableKeys.length,
+      durationMs: Date.now() - startedAt,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[jira-tickets incremental] 실패:", error);
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 }
