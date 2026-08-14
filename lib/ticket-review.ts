@@ -12,6 +12,11 @@ export type TicketParticipationRole = (typeof TICKET_PARTICIPATION_ROLES)[number
 
 export type TicketReviewOverrides = Record<string, TicketReviewMode>;
 
+type TicketReviewCandidate = {
+  key: string;
+  participationRoles?: TicketParticipationRole[];
+};
+
 export const TICKET_REVIEW_MODE_LABELS: Record<TicketReviewMode, string> = {
   weekly: "위클리 체크",
   monitor: "모니터링",
@@ -98,4 +103,16 @@ export function resolveTicketReviewMode(
   if (roles.includes("watcher")) return "reference";
   // OKR/공식 필터 등 참여 관계가 없는 기존 관리 티켓은 누락 방지를 위해 모니터링으로 둔다.
   return "monitor";
+}
+
+/** 상위 확인 방식 선택을 Jira 단계와 티켓 목록에 동일하게 적용한다. */
+export function filterTicketsByReviewMode<T extends TicketReviewCandidate>(
+  tickets: T[],
+  mode: "all" | TicketReviewMode,
+  overrides: TicketReviewOverrides = {},
+): T[] {
+  if (mode === "all") return tickets;
+  return tickets.filter(ticket => (
+    resolveTicketReviewMode(ticket.participationRoles, overrides[ticket.key]) === mode
+  ));
 }

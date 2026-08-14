@@ -259,7 +259,7 @@ export async function GET(request: NextRequest) {
 
   // 수동 + 필터 + ETR 연결로 자동 발견한 키 병합. 연결 키는 수동 티켓으로 표시하지 않는다.
   const managedSeedKeys = [...manualKeys, ...Object.keys(linkedTicketRegistry)];
-  const { allKeys } = mergeTicketKeyLists(managedSeedKeys, filterTickets);
+  const { allKeys } = mergeTicketKeyLists(managedSeedKeys, filterTickets, filtersStore);
   // 어떤 티켓이 어떤 필터에 속하는지 맵 빌드
   const sourceFiltersMap = buildSourceFiltersMap(filterTickets, filtersStore);
 

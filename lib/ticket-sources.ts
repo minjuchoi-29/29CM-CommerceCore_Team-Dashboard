@@ -22,11 +22,17 @@ import type { FilterTicketsStore, JiraFiltersStore } from "@/lib/filter-types";
 export function mergeTicketKeyLists(
   manualKeys: string[],
   filterTickets: FilterTicketsStore,
+  filtersStore?: JiraFiltersStore,
 ): { allKeys: string[]; filterOnlyKeys: string[] } {
   const seen = new Set<string>(manualKeys);
   const filterOnlyKeys: string[] = [];
 
-  for (const keys of Object.values(filterTickets)) {
+  for (const [filterId, keys] of Object.entries(filterTickets)) {
+    // filtersStore가 전달된 운영 경로에서는 중지·삭제된 소스의 과거 멤버십을 제외한다.
+    if (filtersStore) {
+      const filter = filtersStore[filterId];
+      if (!filter || filter.enabled === false) continue;
+    }
     for (const key of keys) {
       if (!seen.has(key)) {
         seen.add(key);
@@ -57,7 +63,7 @@ export function buildSourceFiltersMap(
 
   for (const [filterId, keys] of Object.entries(filterTickets)) {
     const filter = filtersStore[filterId];
-    if (!filter) continue; // 삭제된 필터 건너뜀
+    if (!filter || filter.enabled === false) continue; // 삭제·중지된 필터 건너뜀
     const label = filter.label ?? filter.name;
 
     for (const key of keys) {

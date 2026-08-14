@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import type {
   JiraFilter,
   FilterPreview,
@@ -8,16 +8,23 @@ import type {
   TicketSourcesStore,
 } from "@/lib/filter-types";
 import {
+  buildEffectiveFilterJql,
+  inferJiraFilterKind,
+  inferJiraFilterTargetArea,
+} from "@/lib/filter-policy";
+import {
   getDataSourceHealth,
   getFilterLastSuccessAt,
   type SyncRunRecord,
 } from "@/lib/sync-run-types";
-import { inferJiraFilterKind, inferJiraFilterTargetArea } from "@/lib/filter-policy";
 
 // ── 운영 지표 계산 ─────────────────────────────────────────────────────────────
 
 interface FilterStats {
   ticketCount: number;
+  contributionCount: number;
+  overlapCount: number;
+  redundant: boolean;
   hiddenCount: number;
   removedCount: number;
   delta: number | null;
@@ -26,6 +33,7 @@ interface FilterStats {
 
 function computeFilterStats(
   filter: JiraFilter,
+  filters: JiraFilter[],
   filterTickets: FilterTicketsStore,
   hiddenKeys: Set<string>,
   ticketSources: TicketSourcesStore,
@@ -33,6 +41,14 @@ function computeFilterStats(
   const currentKeys = new Set(filterTickets[filter.id] ?? []);
   const ticketCount = currentKeys.size;
   const hiddenCount = [...currentKeys].filter(k => hiddenKeys.has(k)).length;
+  const otherActiveKeys = new Set(
+    filters
+      .filter(other => other.id !== filter.id && other.enabled !== false)
+      .flatMap(other => filterTickets[other.id] ?? []),
+  );
+  const contributionCount = [...currentKeys].filter(key => !otherActiveKeys.has(key)).length;
+  const overlapCount = ticketCount - contributionCount;
+  const redundant = ticketCount > 0 && contributionCount === 0;
 
   // 제거된 티켓: cc-ticket-sources에 이 filterId 엔트리가 있는데 현재 filter에 없는 것
   const removedKeys: string[] = [];
@@ -48,7 +64,16 @@ function computeFilterStats(
       ? filter.lastSyncCount - filter.prevSyncCount
       : null;
 
-  return { ticketCount, hiddenCount, removedCount: removedKeys.length, delta, removedKeys };
+  return {
+    ticketCount,
+    contributionCount,
+    overlapCount,
+    redundant,
+    hiddenCount,
+    removedCount: removedKeys.length,
+    delta,
+    removedKeys,
+  };
 }
 
 // ── 유틸 ──────────────────────────────────────────────────────────────────────
@@ -84,6 +109,38 @@ function formatDuration(durationMs: number | null | undefined): string {
   return `${minutes}분 ${Math.round(seconds % 60)}초`;
 }
 
+type SourceGroupId = "core" | "coverage" | "cleanup";
+
+const SOURCE_GROUP_META: Record<SourceGroupId, { title: string; description: string }> = {
+  core: {
+    title: "필수 관리 소스",
+    description: "우리 팀의 직접 F/U와 ETR 접수 흐름을 구성합니다.",
+  },
+  coverage: {
+    title: "범위 보완 소스",
+    description: "팀 참여 관계만으로 놓칠 수 있는 Commerce Core 과제를 보완합니다.",
+  },
+  cleanup: {
+    title: "중지·정리 검토",
+    description: "고유 기여가 없거나 현재 사용을 중지한 소스입니다.",
+  },
+};
+
+function getSourceGroup(filter: JiraFilter, stats: FilterStats | null): SourceGroupId {
+  if (filter.enabled === false || stats?.redundant) return "cleanup";
+  const kind = inferJiraFilterKind(filter);
+  if (kind === "assignee" || kind === "etr") return "core";
+  return "coverage";
+}
+
+function getSourcePurpose(filter: JiraFilter): string {
+  const kind = inferJiraFilterKind(filter);
+  if (kind === "assignee") return "우리 팀이 담당·요청·참조한 티켓을 추적";
+  if (kind === "etr") return "접수된 ETR 요청을 검토 목록에 반영";
+  if (kind === "initiative") return "Commerce Core 전체 Initiative 범위를 보완";
+  return "등록한 Jira Filter 결과를 관리 목록에 반영";
+}
+
 // ── 하위 컴포넌트: 상태 배지 ──────────────────────────────────────────────────
 
 function SyncStatusBadge({ filter }: { filter: JiraFilter }) {
@@ -96,7 +153,7 @@ function SyncStatusBadge({ filter }: { filter: JiraFilter }) {
   }[health.status];
   return (
     <span
-      className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+      className="text-[11px] px-1.5 py-0.5 rounded font-medium"
       style={colorByStatus}
     >
       {health.label}
@@ -109,14 +166,18 @@ function SyncStatusBadge({ filter }: { filter: JiraFilter }) {
 function FilterCard({
   filter,
   onSync,
+  onToggle,
   onDelete,
   syncing,
+  toggling,
   stats,
 }: {
   filter: JiraFilter;
   onSync: (id: string) => void;
+  onToggle: (filter: JiraFilter) => void;
   onDelete: (id: string) => void;
   syncing: boolean;
+  toggling: boolean;
   stats: FilterStats | null;
 }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -124,6 +185,11 @@ function FilterCard({
   const displayName = filter.label ?? filter.name;
   const sourceKind = inferJiraFilterKind(filter);
   const targetArea = inferJiraFilterTargetArea(filter);
+  const enabled = filter.enabled !== false;
+  const sourceGroup = getSourceGroup(filter, stats);
+  const effectiveJql = buildEffectiveFilterJql(filter);
+  const sourceGroupLabel = sourceGroup === "core" ? "필수" : sourceGroup === "coverage" ? "보완" : enabled ? "중복" : "중지됨";
+  const sourceGroupColor = sourceGroup === "core" ? "#0f766e" : sourceGroup === "coverage" ? "#315b91" : "#b45309";
   const kindLabel = {
     assignee: "팀 참여 F/U",
     etr: "ETR 요청",
@@ -136,7 +202,8 @@ function FilterCard({
       className="rounded-xl p-4 flex flex-col gap-3"
       style={{
         background: "var(--bg-card)",
-        border: "1px solid var(--border)",
+        border: `1px solid ${sourceGroup === "cleanup" ? "rgba(180,83,9,0.28)" : "var(--border)"}`,
+        opacity: enabled ? 1 : 0.72,
       }}
     >
       {/* 헤더 */}
@@ -144,9 +211,9 @@ function FilterCard({
         {/* 필터 아이콘 */}
         <div
           className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0 mt-0.5"
-          style={{ background: "rgba(99,102,241,0.12)" }}
+          style={{ background: `${sourceGroupColor}14` }}
         >
-          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="2">
+          <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke={sourceGroupColor} strokeWidth="2">
             <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
           </svg>
         </div>
@@ -157,13 +224,19 @@ function FilterCard({
               {displayName}
             </h3>
             {filter.label && filter.label !== filter.name && (
-              <span className="text-[10px]" style={{ color: "var(--text-subtle)" }}>
+              <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
                 {filter.name}
               </span>
             )}
-            <SyncStatusBadge filter={filter} />
+            {enabled && <SyncStatusBadge filter={filter} />}
             <span
-              className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+              className="text-[11px] px-1.5 py-0.5 rounded font-semibold"
+              style={{ background: `${sourceGroupColor}14`, color: sourceGroupColor }}
+            >
+              {sourceGroupLabel}
+            </span>
+            <span
+              className="text-[11px] px-1.5 py-0.5 rounded font-medium"
               style={{ background: "var(--bg-item)", color: "var(--text-muted)" }}
             >
               {kindLabel} · {targetArea === "etr" ? "ETR 검토" : targetArea === "tickets" ? "전체 과제" : "자동 분류"}
@@ -174,28 +247,47 @@ function FilterCard({
               href={`https://musinsa-oneteam.atlassian.net/issues/?filter=${filter.jiraFilterId}`}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[11px] hover:underline"
-              style={{ color: "#818cf8" }}
+              className="text-xs hover:underline"
+              style={{ color: "#315b91" }}
             >
               Filter #{filter.jiraFilterId}
             </a>
             <span style={{ color: "var(--text-subtle)" }}>·</span>
-            <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+            <span className="text-xs" style={{ color: "var(--text-subtle)" }}>
               등록 {formatDate(filter.createdAt)}
             </span>
           </div>
+          <p className="text-xs mt-1.5" style={{ color: "var(--text-muted)" }}>
+            {getSourcePurpose(filter)}
+          </p>
         </div>
 
         {/* 액션 버튼 */}
         <div className="flex items-center gap-1.5 shrink-0">
           <button
+            type="button"
+            onClick={() => onToggle(filter)}
+            disabled={toggling || syncing}
+            aria-pressed={enabled}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-all disabled:opacity-50"
+            style={{
+              background: enabled ? "rgba(15,118,110,0.09)" : "var(--bg-item)",
+              color: enabled ? "#0f766e" : "var(--text-muted)",
+              border: `1px solid ${enabled ? "rgba(15,118,110,0.22)" : "var(--border-2)"}`,
+            }}
+            title={enabled ? "수집을 중지하되 설정과 기존 이력은 보존합니다." : "수집을 다시 시작하고 즉시 동기화합니다."}
+          >
+            <span className="w-1.5 h-1.5 rounded-full" style={{ background: enabled ? "#0f766e" : "var(--text-subtle)" }} />
+            {toggling ? "변경 중" : enabled ? "수집 중지" : "다시 사용"}
+          </button>
+          <button
             onClick={() => onSync(filter.id)}
-            disabled={syncing}
+            disabled={syncing || toggling || !enabled}
             className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-50 disabled:cursor-not-allowed"
             style={{
-              background: syncing ? "rgba(99,102,241,0.08)" : "rgba(99,102,241,0.12)",
-              color: "#818cf8",
-              border: "1px solid rgba(99,102,241,0.2)",
+              background: syncing ? "rgba(49,91,145,0.08)" : "rgba(49,91,145,0.1)",
+              color: "#315b91",
+              border: "1px solid rgba(49,91,145,0.22)",
             }}
             title="Jira에서 티켓 목록 새로고침"
           >
@@ -213,61 +305,37 @@ function FilterCard({
             </svg>
             {syncing ? "동기화 중..." : "동기화"}
           </button>
-
-          {!confirmDelete ? (
-            <button
-              onClick={() => setConfirmDelete(true)}
-              className="w-7 h-7 flex items-center justify-center rounded-lg transition-all"
-              style={{ color: "var(--text-subtle)" }}
-              onMouseEnter={e => {
-                (e.currentTarget as HTMLElement).style.background = "rgba(239,68,68,0.1)";
-                (e.currentTarget as HTMLElement).style.color = "#f87171";
-              }}
-              onMouseLeave={e => {
-                (e.currentTarget as HTMLElement).style.background = "transparent";
-                (e.currentTarget as HTMLElement).style.color = "var(--text-subtle)";
-              }}
-              title="필터 삭제"
-            >
-              <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
-              </svg>
-            </button>
-          ) : (
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => onDelete(filter.id)}
-                className="px-2 py-1 rounded text-[10px] font-medium transition-all"
-                style={{ background: "rgba(239,68,68,0.15)", color: "#f87171" }}
-              >
-                삭제
-              </button>
-              <button
-                onClick={() => setConfirmDelete(false)}
-                className="px-2 py-1 rounded text-[10px] font-medium transition-all"
-                style={{ background: "var(--bg-item)", color: "var(--text-muted)" }}
-              >
-                취소
-              </button>
-            </div>
-          )}
         </div>
       </div>
 
       {/* 운영 지표 stats row */}
       {stats !== null && (
         <div
-          className="flex items-center gap-3 pt-2 text-[11px] flex-wrap"
+          className="flex items-center gap-3 pt-2 text-xs flex-wrap"
           style={{ borderTop: "1px solid var(--border-2)", color: "var(--text-subtle)" }}
         >
           <span>
-            티켓{" "}
+            {enabled ? "현재" : "보관된 결과"}{" "}
             <span className="font-semibold" style={{ color: "var(--text-primary)" }}>
               {stats.ticketCount.toLocaleString()}
             </span>
             개
           </span>
+          <span style={{ color: "var(--border-2)" }}>·</span>
+          <span>
+            {enabled ? "이 소스만 추가" : "재개 시 추가"}{" "}
+            <span className="font-semibold" style={{ color: stats.contributionCount > 0 ? "#0f766e" : "#b45309" }}>
+              {stats.contributionCount.toLocaleString()}
+            </span>
+          </span>
+          {stats.overlapCount > 0 && (
+            <>
+              <span style={{ color: "var(--border-2)" }}>·</span>
+              <span>
+                다른 소스와 중복 <strong style={{ color: "var(--text-muted)" }}>{stats.overlapCount.toLocaleString()}</strong>
+              </span>
+            </>
+          )}
           {stats.hiddenCount > 0 && (
             <>
               <span style={{ color: "var(--border-2)" }}>·</span>
@@ -287,9 +355,9 @@ function FilterCard({
                 className="flex items-center gap-1 font-semibold transition-all"
                 style={{ color: "#fb923c" }}
               >
-                제거 후보{" "}
+                최근 필터에서 빠짐{" "}
                 <span
-                  className="px-1 py-0.5 rounded text-[10px]"
+                  className="px-1 py-0.5 rounded text-[11px]"
                   style={{ background: "rgba(251,146,60,0.12)", border: "1px solid rgba(251,146,60,0.2)" }}
                 >
                   {stats.removedCount}
@@ -317,14 +385,14 @@ function FilterCard({
         </div>
       )}
 
-      {/* 제거 후보 패널 */}
+      {/* 이전 소속 이력 패널 */}
       {showRemoved && stats !== null && stats.removedKeys.length > 0 && (
         <div
           className="rounded-lg px-3 py-2.5 flex flex-col gap-1.5"
           style={{ background: "rgba(251,146,60,0.06)", border: "1px solid rgba(251,146,60,0.18)" }}
         >
-          <p className="text-[10px] font-semibold uppercase tracking-wide mb-1" style={{ color: "#fb923c" }}>
-            제거 후보 — 현재 필터 결과에 없는 티켓
+          <p className="text-[11px] font-semibold mb-1" style={{ color: "#b45309" }}>
+            이전에는 포함됐지만 현재 필터 결과에는 없는 티켓
           </p>
           <div className="flex flex-col gap-1">
             {stats.removedKeys.map(key => (
@@ -333,7 +401,7 @@ function FilterCard({
                   href={`https://musinsa-oneteam.atlassian.net/browse/${key}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-[11px] font-mono hover:underline"
+                  className="text-xs font-mono hover:underline"
                   style={{ color: "#fb923c" }}
                 >
                   {key} ↗
@@ -344,24 +412,56 @@ function FilterCard({
         </div>
       )}
 
-      {/* JQL */}
-      <div
-        className="rounded-lg px-3 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto"
-        style={{ background: "var(--bg-item)", color: "var(--text-muted)" }}
-      >
-        {filter.jql}
-      </div>
       {sourceKind === "assignee" && !filter.syncJql && (
         <div
-          className="rounded-lg px-3 py-2 text-[11px]"
+          className="rounded-lg px-3 py-2 text-xs"
           style={{ background: "rgba(14,116,144,0.07)", color: "#0e7490", border: "1px solid rgba(14,116,144,0.15)" }}
         >
           대시보드 수집 정책 · 우리 팀이 담당·요청·참조한 미완료 티켓 전체와 최근 14일 내 완료 티켓을 추적합니다.
         </div>
       )}
 
+      <details className="group rounded-lg" style={{ background: "var(--bg-item)", border: "1px solid var(--border-2)" }}>
+        <summary className="cursor-pointer list-none px-3 py-2 text-xs font-medium flex items-center justify-between" style={{ color: "var(--text-muted)" }}>
+          <span>실제 수집 조건과 관리 기능</span>
+          <span className="group-open:rotate-180 transition-transform">⌄</span>
+        </summary>
+        <div className="px-3 pb-3 flex flex-col gap-2">
+          <div>
+            <p className="text-[11px] mb-1" style={{ color: "var(--text-subtle)" }}>대시보드에 실제 적용되는 JQL</p>
+            <div className="rounded px-2.5 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto" style={{ background: "var(--bg-canvas)", color: "var(--text-muted)" }}>
+              {effectiveJql}
+            </div>
+          </div>
+          {effectiveJql !== filter.jql && (
+            <div>
+              <p className="text-[11px] mb-1" style={{ color: "var(--text-subtle)" }}>Jira에 저장된 원본 JQL</p>
+              <div className="rounded px-2.5 py-2 text-[11px] font-mono leading-relaxed overflow-x-auto" style={{ background: "var(--bg-canvas)", color: "var(--text-subtle)" }}>
+                {filter.jql}
+              </div>
+            </div>
+          )}
+          {!confirmDelete ? (
+            <button
+              type="button"
+              onClick={() => setConfirmDelete(true)}
+              className="self-start text-[11px] px-2 py-1 rounded"
+              style={{ color: "#b91c1c", border: "1px solid rgba(185,28,28,0.2)" }}
+            >
+              데이터 소스 삭제
+            </button>
+          ) : (
+            <div className="flex items-center gap-2 text-[11px]">
+              <span style={{ color: "#b91c1c" }}>설정과 소속 이력을 삭제할까요?</span>
+              <button onClick={() => onDelete(filter.id)} className="px-2 py-1 rounded" style={{ background: "#b91c1c", color: "white" }}>삭제</button>
+              <button onClick={() => setConfirmDelete(false)} className="px-2 py-1 rounded" style={{ border: "1px solid var(--border-2)" }}>취소</button>
+            </div>
+          )}
+        </div>
+      </details>
+
       {/* 동기화 메타 */}
-      <div className="flex items-center justify-between text-[11px]" style={{ color: "var(--text-subtle)" }}>
+      <div className="flex items-center justify-between text-xs" style={{ color: "var(--text-subtle)" }}>
         <span>
           마지막 성공: <span style={{ color: "var(--text-muted)" }}>{relativeTime(getFilterLastSuccessAt(filter))}</span>
         </span>
@@ -459,7 +559,7 @@ function AddFilterForm({ onAdded }: { onAdded: (initialSyncOk: boolean) => void 
     <form onSubmit={handleSubmit} className="flex flex-col gap-3">
       <div className="flex gap-2">
         <div className="flex-1">
-          <label className="block text-[11px] font-medium mb-1" style={{ color: "var(--text-muted)" }}>
+          <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-muted)" }}>
             Jira Filter ID 또는 URL
           </label>
           <input
@@ -473,12 +573,12 @@ function AddFilterForm({ onAdded }: { onAdded: (initialSyncOk: boolean) => void 
               border: "1px solid var(--border-2)",
               color: "var(--text-primary)",
             }}
-            onFocus={e => { (e.target as HTMLElement).style.borderColor = "#6366f1"; }}
+            onFocus={e => { (e.target as HTMLElement).style.borderColor = "#315b91"; }}
             onBlur={e => { (e.target as HTMLElement).style.borderColor = "var(--border-2)"; }}
           />
         </div>
         <div style={{ width: 180 }}>
-          <label className="block text-[11px] font-medium mb-1" style={{ color: "var(--text-muted)" }}>
+          <label className="block text-xs font-medium mb-1" style={{ color: "var(--text-muted)" }}>
             레이블 <span style={{ color: "var(--text-subtle)" }}>(선택)</span>
           </label>
           <input
@@ -492,7 +592,7 @@ function AddFilterForm({ onAdded }: { onAdded: (initialSyncOk: boolean) => void 
               border: "1px solid var(--border-2)",
               color: "var(--text-primary)",
             }}
-            onFocus={e => { (e.target as HTMLElement).style.borderColor = "#6366f1"; }}
+            onFocus={e => { (e.target as HTMLElement).style.borderColor = "#315b91"; }}
             onBlur={e => { (e.target as HTMLElement).style.borderColor = "var(--border-2)"; }}
           />
         </div>
@@ -500,7 +600,7 @@ function AddFilterForm({ onAdded }: { onAdded: (initialSyncOk: boolean) => void 
 
       {/* 미리보기 */}
       {previewLoading && (
-        <div className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+        <div className="text-xs" style={{ color: "var(--text-subtle)" }}>
           Jira 필터 조회 중...
         </div>
       )}
@@ -515,18 +615,18 @@ function AddFilterForm({ onAdded }: { onAdded: (initialSyncOk: boolean) => void 
       {preview && (
         <div
           className="rounded-lg px-3 py-2.5 flex flex-col gap-1.5"
-          style={{ background: "rgba(99,102,241,0.07)", border: "1px solid rgba(99,102,241,0.18)" }}
+          style={{ background: "rgba(49,91,145,0.06)", border: "1px solid rgba(49,91,145,0.18)" }}
         >
           <div className="flex items-center gap-2">
-            <span className="text-xs font-semibold" style={{ color: "#a5b4fc" }}>{preview.name}</span>
+            <span className="text-xs font-semibold" style={{ color: "#315b91" }}>{preview.name}</span>
             <span
-              className="text-[10px] px-1.5 py-0.5 rounded font-medium"
-              style={{ background: "rgba(99,102,241,0.15)", color: "#818cf8" }}
+              className="text-[11px] px-1.5 py-0.5 rounded font-medium"
+              style={{ background: "rgba(49,91,145,0.12)", color: "#315b91" }}
             >
               {preview.estimatedCount.toLocaleString()}개
             </span>
           </div>
-          <div className="text-[11px] font-mono" style={{ color: "var(--text-subtle)" }}>{preview.jql}</div>
+          <div className="text-xs font-mono" style={{ color: "var(--text-subtle)" }}>{preview.jql}</div>
         </div>
       )}
 
@@ -545,7 +645,7 @@ function AddFilterForm({ onAdded }: { onAdded: (initialSyncOk: boolean) => void 
           disabled={submitting || !preview || !!previewError}
           className="flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-semibold transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           style={{
-            background: "rgba(99,102,241,0.85)",
+            background: "#17324d",
             color: "white",
           }}
         >
@@ -571,6 +671,7 @@ export default function DataSourcesPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
 
@@ -655,8 +756,60 @@ export default function DataSourcesPage() {
     }
   }
 
+  async function handleToggle(filter: JiraFilter) {
+    const nextEnabled = filter.enabled === false;
+    setTogglingId(filter.id);
+    try {
+      const updateResponse = await fetch(`/api/jira-filters/${filter.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: nextEnabled }),
+      });
+      const updateData = await updateResponse.json();
+      if (!updateResponse.ok) {
+        showToast(updateData.error ?? "데이터 소스 상태 변경 실패", "error");
+        return;
+      }
+
+      if (nextEnabled) {
+        const syncResponse = await fetch(`/api/jira-filters/${filter.id}/sync`, { method: "POST" });
+        const syncData = await syncResponse.json();
+        if (!syncResponse.ok) {
+          showToast(`사용은 재개했지만 동기화에 실패했습니다: ${syncData.error ?? "알 수 없는 오류"}`, "error");
+        } else {
+          showToast(`사용 재개 · 티켓 ${(syncData.ticketKeys as string[]).length.toLocaleString()}개 확인`);
+        }
+      } else {
+        showToast("수집을 중지했습니다. 설정과 기존 이력은 보존됩니다.");
+      }
+      await Promise.all([loadFilters(), loadStats(), loadSyncRuns()]);
+    } catch {
+      showToast("네트워크 오류", "error");
+    } finally {
+      setTogglingId(null);
+    }
+  }
+
+  const statsByFilterId = useMemo(() => {
+    if (!statsLoaded) return {} as Record<string, FilterStats>;
+    return Object.fromEntries(filters.map(filter => [
+      filter.id,
+      computeFilterStats(filter, filters, filterTickets, hiddenKeys, ticketSources),
+    ]));
+  }, [filters, filterTickets, hiddenKeys, ticketSources, statsLoaded]);
+
+  const activeFilters = filters.filter(filter => filter.enabled !== false);
+  const activeSourceKeys = new Set(activeFilters.flatMap(filter => filterTickets[filter.id] ?? []));
+  const activeSourceRawCount = activeFilters.reduce((sum, filter) => sum + (filterTickets[filter.id]?.length ?? 0), 0);
+  const duplicateMembershipCount = Math.max(0, activeSourceRawCount - activeSourceKeys.size);
+  const cleanupCandidateCount = filters.filter(filter => getSourceGroup(filter, statsByFilterId[filter.id] ?? null) === "cleanup").length;
+  const groupedFilters = (["core", "coverage", "cleanup"] as SourceGroupId[]).map(group => ({
+    group,
+    filters: filters.filter(filter => getSourceGroup(filter, statsByFilterId[filter.id] ?? null) === group),
+  })).filter(entry => entry.filters.length > 0);
+
   const latestDailyRun = syncRuns.find(run => run.kind === "daily-refresh");
-  const sourceHealthCounts = filters.reduce(
+  const sourceHealthCounts = activeFilters.reduce(
     (counts, filter) => {
       counts[getDataSourceHealth(filter).status]++;
       return counts;
@@ -716,7 +869,7 @@ export default function DataSourcesPage() {
         </div>
       )}
 
-      <div className="max-w-3xl mx-auto px-6 py-8">
+      <div className="max-w-5xl mx-auto px-6 py-8">
         {/* 페이지 헤더 */}
         <div className="flex items-start justify-between mb-8">
           <div>
@@ -724,14 +877,14 @@ export default function DataSourcesPage() {
               데이터 소스
             </h1>
             <p className="text-sm" style={{ color: "var(--text-muted)" }}>
-              Jira Filter를 등록하고 동기화하면, 해당 필터의 티켓이 대시보드에 자동으로 반영됩니다.
+              어떤 Jira 티켓이 왜 관리 목록에 포함되는지 확인하고 수집 범위를 안전하게 조정합니다.
             </p>
           </div>
           <button
             onClick={() => setShowAddForm(prev => !prev)}
             className="flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-semibold transition-all shrink-0"
             style={{
-              background: showAddForm ? "var(--bg-item)" : "rgba(99,102,241,0.85)",
+              background: showAddForm ? "var(--bg-item)" : "#17324d",
               color: showAddForm ? "var(--text-muted)" : "white",
               border: showAddForm ? "1px solid var(--border-2)" : "none",
             }}
@@ -754,6 +907,23 @@ export default function DataSourcesPage() {
           </button>
         </div>
 
+        {filters.length > 0 && statsLoaded && (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-4">
+            {[
+              { label: "사용 중인 소스", value: `${activeFilters.length}개`, note: `전체 설정 ${filters.length}개` },
+              { label: "소스 기준 고유 티켓", value: `${activeSourceKeys.size.toLocaleString()}개`, note: "수동·연결 티켓 제외" },
+              { label: "중복 소속", value: `${duplicateMembershipCount.toLocaleString()}건`, note: "합집합에서 자동 제거" },
+              { label: "정리 검토", value: `${cleanupCandidateCount}개`, note: "고유 기여 없음 또는 중지" },
+            ].map(item => (
+              <div key={item.label} className="rounded-xl px-3.5 py-3" style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}>
+                <p className="text-[11px] font-semibold mb-1" style={{ color: "var(--text-subtle)" }}>{item.label}</p>
+                <p className="text-xl font-bold" style={{ color: "var(--text-primary)" }}>{item.value}</p>
+                <p className="text-[11px] mt-1" style={{ color: "var(--text-muted)" }}>{item.note}</p>
+              </div>
+            ))}
+          </div>
+        )}
+
         <div
           className="rounded-xl px-4 py-3 mb-5 flex items-center justify-between gap-4"
           style={{ background: "var(--bg-card)", border: "1px solid var(--border)" }}
@@ -764,7 +934,7 @@ export default function DataSourcesPage() {
                 자동 갱신 상태
               </span>
               <span
-                className="text-[10px] px-1.5 py-0.5 rounded font-medium"
+                className="text-[11px] px-1.5 py-0.5 rounded font-medium"
                 style={{
                   background: automaticStatus.healthy ? "rgba(52,211,153,0.12)" : "rgba(245,158,11,0.12)",
                   color: automaticStatus.healthy ? "#059669" : "#d97706",
@@ -844,9 +1014,9 @@ export default function DataSourcesPage() {
           >
             <div
               className="w-10 h-10 rounded-xl flex items-center justify-center mx-auto mb-3"
-              style={{ background: "rgba(99,102,241,0.1)" }}
+              style={{ background: "rgba(49,91,145,0.1)" }}
             >
-              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="#818cf8" strokeWidth="1.8">
+              <svg className="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="#315b91" strokeWidth="1.8">
                 <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
               </svg>
             </div>
@@ -858,29 +1028,47 @@ export default function DataSourcesPage() {
             </p>
           </div>
         ) : (
-          <div className="flex flex-col gap-3">
-            {filters.map(filter => (
-              <FilterCard
-                key={filter.id}
-                filter={filter}
-                onSync={handleSync}
-                onDelete={handleDelete}
-                syncing={syncingId === filter.id}
-                stats={statsLoaded ? computeFilterStats(filter, filterTickets, hiddenKeys, ticketSources) : null}
-              />
-            ))}
+          <div className="flex flex-col gap-7">
+            {groupedFilters.map(({ group, filters: groupFilters }) => {
+              const meta = SOURCE_GROUP_META[group];
+              return (
+                <section key={group}>
+                  <div className="flex items-end justify-between gap-3 mb-2.5">
+                    <div>
+                      <h2 className="text-sm font-bold" style={{ color: "var(--text-primary)" }}>{meta.title}</h2>
+                      <p className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{meta.description}</p>
+                    </div>
+                    <span className="text-[11px]" style={{ color: "var(--text-subtle)" }}>{groupFilters.length}개</span>
+                  </div>
+                  <div className="flex flex-col gap-3">
+                    {groupFilters.map(filter => (
+                      <FilterCard
+                        key={filter.id}
+                        filter={filter}
+                        onSync={handleSync}
+                        onToggle={handleToggle}
+                        onDelete={handleDelete}
+                        syncing={syncingId === filter.id}
+                        toggling={togglingId === filter.id}
+                        stats={statsByFilterId[filter.id] ?? null}
+                      />
+                    ))}
+                  </div>
+                </section>
+              );
+            })}
           </div>
         )}
 
         {/* 안내 노트 */}
         {filters.length > 0 && (
           <div
-            className="mt-6 rounded-xl px-4 py-3 text-[11px] leading-relaxed"
+            className="mt-6 rounded-xl px-4 py-3 text-xs leading-relaxed"
             style={{ background: "var(--bg-item)", color: "var(--text-subtle)" }}
           >
             <p>
               <span className="font-semibold" style={{ color: "var(--text-muted)" }}>동기화</span>란 Jira에서 해당 필터의 최신 이슈 목록을 가져와 KV에 저장하는 작업입니다.
-              동기화한 티켓은 <span className="font-semibold">대시보드 티켓 보드에 자동 표시</span>됩니다.
+              사용 중인 소스의 티켓은 key 기준으로 합쳐져 대시보드에 표시됩니다. 수집 중지는 설정과 이력을 보존하며, 삭제는 펼침 영역에서만 실행할 수 있습니다.
             </p>
           </div>
         )}

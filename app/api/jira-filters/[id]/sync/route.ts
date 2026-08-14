@@ -38,6 +38,12 @@ export async function POST(
   if (!filter) {
     return NextResponse.json({ error: "필터를 찾을 수 없습니다." }, { status: 404 });
   }
+  if (filter.enabled === false) {
+    return NextResponse.json(
+      { error: "중지된 데이터 소스입니다. 다시 사용한 뒤 동기화해주세요." },
+      { status: 409 },
+    );
+  }
 
   const filterLabel = filter.label ?? filter.name;
   const syncRun = createSyncRun("filter", "manual", {

@@ -4,8 +4,9 @@ import {
   buildPlanningRefreshKeys,
   buildCurrentWeeklyAttemptedKeys,
   buildTicketRefreshPlan,
-  findMissingSharedTicketKeys,
+  findMissingManagedTicketKeys,
   mergeRefreshedTickets,
+  retainManagedTickets,
   selectChangedWeeklyTargets,
 } from "../lib/ticket-sync";
 
@@ -29,7 +30,7 @@ describe("buildTicketRefreshPlan", () => {
 
     assert.deepEqual(result.keys, ["TM-ACTIVE", "TM-RECENT", "M29CMOD-7120"]);
     assert.equal(result.activeOrRecentCount, 2);
-    assert.equal(result.missingCustomCount, 1);
+    assert.equal(result.missingManagedCount, 1);
   });
 
   it("숨긴 티켓은 공용 신규 키여도 제외", () => {
@@ -100,16 +101,32 @@ describe("mergeRefreshedTickets", () => {
   });
 });
 
-describe("findMissingSharedTicketKeys", () => {
+describe("findMissingManagedTicketKeys", () => {
   it("현재 브라우저에 없고 숨김도 아닌 공용 티켓만 반환", () => {
     assert.deepEqual(
-      findMissingSharedTicketKeys(
+      findMissingManagedTicketKeys(
         [{ key: "TM-1" }],
         ["TM-1", "TM-2", "TM-3"],
         new Set(["TM-3"]),
       ),
       ["TM-2"],
     );
+  });
+});
+
+describe("retainManagedTickets", () => {
+  it("현재 관리 대상에 남은 티켓만 기존 순서대로 유지", () => {
+    assert.deepEqual(
+      retainManagedTickets(
+        [{ key: "TM-1" }, { key: "TM-2" }, { key: "TM-3" }],
+        ["TM-3", "TM-1"],
+      ),
+      [{ key: "TM-1" }, { key: "TM-3" }],
+    );
+  });
+
+  it("관리 대상이 비어 있으면 화면 캐시만 비움", () => {
+    assert.deepEqual(retainManagedTickets([{ key: "TM-1" }], []), []);
   });
 });
 

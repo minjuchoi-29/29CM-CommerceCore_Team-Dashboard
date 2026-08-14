@@ -3,6 +3,7 @@ import test from "node:test";
 import type { JiraFilter } from "../lib/filter-types";
 import {
   buildTicketParticipationMap,
+  filterTicketsByReviewMode,
   resolveTicketReviewMode,
 } from "../lib/ticket-review";
 
@@ -59,4 +60,22 @@ test("확인 방식은 위클리 체크, 모니터링, 필요 시 확인 순으�
 test("사용자가 저장한 확인 방식은 자동 기본값보다 우선", () => {
   assert.equal(resolveTicketReviewMode(["assignee"], "reference"), "reference");
   assert.equal(resolveTicketReviewMode(["watcher"], "weekly"), "weekly");
+});
+
+test("확인 방식 필터는 Jira 단계 집계와 목록이 공유할 동일한 티켓 집합을 반환", () => {
+  const tickets = [
+    { key: "TM-1", participationRoles: ["assignee" as const] },
+    { key: "TM-2", participationRoles: ["reporter" as const] },
+    { key: "TM-3", participationRoles: ["watcher" as const] },
+  ];
+
+  assert.deepEqual(
+    filterTicketsByReviewMode(tickets, "weekly").map(ticket => ticket.key),
+    ["TM-1"],
+  );
+  assert.deepEqual(
+    filterTicketsByReviewMode(tickets, "weekly", { "TM-2": "weekly" }).map(ticket => ticket.key),
+    ["TM-1", "TM-2"],
+  );
+  assert.equal(filterTicketsByReviewMode(tickets, "all"), tickets);
 });

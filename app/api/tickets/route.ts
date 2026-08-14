@@ -1,5 +1,5 @@
 /**
- * GET  /api/tickets  → 공용 수동 추가 티켓 key 목록
+ * GET  /api/tickets  → 공용 수동 추가 key + 현재 관리 대상 key 목록
  * POST /api/tickets  { action: "add", key: "TM-1234" }
  * POST /api/tickets  { action: "add", keys: ["TM-1234", "TM-5678"] }
  * POST /api/tickets  { action: "remove", key: "TM-1234" }
@@ -12,8 +12,12 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { TICKET_KEYS } from "@/app/jira-tickets/tickets-data";
+import type { FilterTicketsStore, JiraFiltersStore } from "@/lib/filter-types";
+import type { LinkedTicketRegistry } from "@/lib/linked-ticket-discovery";
 import { redis } from "@/lib/redis";
 import { withRedisLock } from "@/lib/redis-lock";
+import { mergeTicketKeyLists } from "@/lib/ticket-sources";
 
 export const dynamic = "force-dynamic";
 
@@ -33,9 +37,29 @@ async function getCustomKeys(): Promise<string[]> {
 
 export async function GET() {
   try {
-    const keys = await getCustomKeys();
+    const [keys, filterTickets, filtersStore, linkedTicketRegistry] = await Promise.all([
+      getCustomKeys(),
+      redis.get<FilterTicketsStore>("cc-filter-tickets"),
+      redis.get<JiraFiltersStore>("cc-jira-filters"),
+      redis.get<LinkedTicketRegistry>("cc-linked-ticket-registry"),
+    ]);
+    const seedKeys = [...new Set([
+      ...TICKET_KEYS,
+      ...keys,
+      ...Object.keys(linkedTicketRegistry ?? {}),
+    ])];
+    const { allKeys: managedKeys } = mergeTicketKeyLists(
+      seedKeys,
+      filterTickets ?? {},
+      filtersStore ?? {},
+    );
     return NextResponse.json(
-      { keys },
+      {
+        // keys는 기존 클라이언트 하위 호환용 공용 수동 추가 목록이다.
+        keys,
+        // managedKeys는 활성 데이터 소스까지 합친 현재 대시보드 관리 범위다.
+        managedKeys,
+      },
       { headers: { "Cache-Control": "no-store" } },
     );
   } catch (err) {

@@ -39,6 +39,7 @@ import {
   TICKET_PARTICIPATION_ROLE_LABELS,
   TICKET_REVIEW_MODE_LABELS,
   TICKET_REVIEW_MODES,
+  filterTicketsByReviewMode,
   resolveTicketReviewMode,
   type TicketParticipationRole,
   type TicketReviewMode,
@@ -70,13 +71,15 @@ import {
   resolveTeamIdentity,
 } from "@/lib/team-workstreams";
 import { getWeeklyUpdateDisplay } from "@/lib/weekly-update-display";
+import { countTicketsByJiraStage, getTicketJiraStage } from "@/lib/ticket-stages";
 import { WEEKLY_SYNC_PARSER_VERSION } from "@/lib/weekly-source";
 import {
   buildPlanningRefreshKeys,
   buildCurrentWeeklyAttemptedKeys,
   buildTicketRefreshPlan,
-  findMissingSharedTicketKeys,
+  findMissingManagedTicketKeys,
   mergeRefreshedTickets,
+  retainManagedTickets,
   selectChangedWeeklyTargets,
 } from "@/lib/ticket-sync";
 import {
@@ -2156,7 +2159,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     try { localStorage.setItem(SORT_BY_KEY, sortBy); } catch {}
   }, [sortBy]);
-  const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기" | "기획" | "디자인" | "준비중" | "개발" | "QA">("전체");
+  const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기" | "기획" | "디자인" | "준비중" | "개발" | "QA" | "기타">("전체");
 
   const [newlyAddedKeys, setNewlyAddedKeys] = useState<Set<string>>(new Set());
   // customKeys: 모든 티켓이 TICKET_KEYS(코드)로 관리되므로 더 이상 사용 안 함
@@ -2198,7 +2201,8 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, []);
 
   // localStorage 클라이언트 캐시 키 / 최대 보존 시간
-  const TICKET_CACHE_KEY = "cc-tickets-v2";
+  // v3: 담당/요청/참조 역할이 없는 구형 캐시를 한 번 무효화한다.
+  const TICKET_CACHE_KEY = "cc-tickets-v3";
   const CACHE_MAX_MS = 12 * 60 * 60 * 1000; // 12시간
 
   type TicketListApiData = {
@@ -2216,6 +2220,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     fullFetchedAt?: string;
     hiddenKeys?: string[];
     customKeys?: string[];
+  };
+
+  type SharedTicketRegistry = {
+    customKeys: string[];
+    managedKeys: string[];
   };
 
   function writeTicketCache(
@@ -2258,13 +2267,18 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     writeTicketCache(merged, syncedAt ?? new Date(), hidden, sharedCustomKeysRef.current, fullFetchedAt);
   }
 
-  async function fetchSharedCustomKeys(): Promise<string[]> {
+  async function fetchSharedTicketRegistry(): Promise<SharedTicketRegistry> {
     const response = await apiFetch("/api/tickets", { cache: "no-store" });
     const data = await response.json();
     if (!response.ok || !Array.isArray(data.keys)) {
       throw new Error(data.error ?? "공용 추가 티켓 목록을 확인할 수 없습니다.");
     }
-    return data.keys as string[];
+    const customKeys = data.keys as string[];
+    return {
+      customKeys,
+      // 이전 API 응답과도 호환하되, 최신 서버에서는 활성 데이터 소스 범위를 사용한다.
+      managedKeys: Array.isArray(data.managedKeys) ? data.managedKeys as string[] : customKeys,
+    };
   }
 
   async function fetchTicketSubset(keys: string[]): Promise<TicketListApiData> {
@@ -2279,8 +2293,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }
 
   /**
-   * 12시간 티켓 캐시는 즉시 보여주되 공용 추가 key만 가볍게 재검증한다.
-   * 다른 브라우저에서 추가된 티켓만 Jira 단건 묶음 조회로 합쳐 전체 Sync를 피한다.
+   * 12시간 티켓 캐시는 즉시 보여주되 현재 서버 관리 범위를 가볍게 재검증한다.
+   * 다른 브라우저에서 추가된 티켓은 Jira 부분 조회로 합치고,
+   * 중지한 데이터 소스에만 속한 티켓은 화면 캐시에서 제거한다.
    */
   async function reconcileSharedCustomTickets(
     baseTickets: Ticket[],
@@ -2289,23 +2304,29 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     fullFetchedAt: Date,
   ) {
     try {
-      const sharedKeys = await fetchSharedCustomKeys();
-      sharedCustomKeysRef.current = sharedKeys;
-      const missingKeys = findMissingSharedTicketKeys(baseTickets, sharedKeys, hidden);
+      const registry = await fetchSharedTicketRegistry();
+      sharedCustomKeysRef.current = registry.customKeys;
+      const retainedTickets = retainManagedTickets(baseTickets, registry.managedKeys);
+      const missingKeys = findMissingManagedTicketKeys(retainedTickets, registry.managedKeys, hidden);
       if (missingKeys.length === 0) {
-        writeTicketCache(baseTickets, cachedAt, hidden, sharedKeys, fullFetchedAt);
+        const visible = filterVisibleTickets(retainedTickets, hidden);
+        if (retainedTickets.length !== baseTickets.length) {
+          ticketsRef.current = visible;
+          setTickets(visible);
+        }
+        writeTicketCache(retainedTickets, cachedAt, hidden, registry.customKeys, fullFetchedAt);
         return;
       }
 
       const refreshed = await fetchTicketSubset(missingKeys);
-      const merged = mergeRefreshedTickets(baseTickets, refreshed.tickets);
+      const merged = mergeRefreshedTickets(retainedTickets, refreshed.tickets);
       const visible = filterVisibleTickets(merged, hidden);
       ticketsRef.current = visible;
       setTickets(visible);
-      writeTicketCache(merged, cachedAt, hidden, sharedKeys, fullFetchedAt);
+      writeTicketCache(merged, cachedAt, hidden, registry.customKeys, fullFetchedAt);
     } catch (error) {
-      // 캐시 화면은 계속 사용할 수 있어야 하므로 공용 key 보정 실패는 비차단 처리한다.
-      console.warn("[ticket-cache] shared custom ticket reconcile failed", error);
+      // 캐시 화면은 계속 사용할 수 있어야 하므로 관리 범위 보정 실패는 비차단 처리한다.
+      console.warn("[ticket-cache] shared managed ticket reconcile failed", error);
     }
   }
 
@@ -2432,12 +2453,24 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         }
       } catch {}
 
-      const sharedKeys = [...new Set([
-        ...await fetchSharedCustomKeys(),
-        ...sourceManagedKeys,
-      ])];
-      sharedCustomKeysRef.current = sharedKeys;
-      const refreshPlan = buildTicketRefreshPlan(cachedTickets, sharedKeys, hiddenSync, new Date());
+      let registry: SharedTicketRegistry;
+      try {
+        registry = await fetchSharedTicketRegistry();
+      } catch (registryError) {
+        // 데이터 소스 membership API가 실패하면 현재 화면과 이번 sync 결과를 보존해
+        // 정상 티켓을 잘못 제거하지 않는다.
+        console.warn("[JiraSync] 현재 관리 대상 확인 실패, 기존 목록 유지:", registryError);
+        registry = {
+          customKeys: sharedCustomKeysRef.current,
+          managedKeys: [...new Set([
+            ...cachedTickets.map(ticket => ticket.key),
+            ...sourceManagedKeys,
+          ])],
+        };
+      }
+      sharedCustomKeysRef.current = registry.customKeys;
+      cachedTickets = retainManagedTickets(cachedTickets, registry.managedKeys);
+      const refreshPlan = buildTicketRefreshPlan(cachedTickets, registry.managedKeys, hiddenSync, new Date());
       window.dispatchEvent(new CustomEvent(DASHBOARD_JIRA_SYNC_STATE_EVENT, {
         detail: { running: true, label: `Jira Sync 중 · ${refreshPlan.keys.length}개` },
       }));
@@ -2464,7 +2497,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       setSyncedAt(at);
       // Transition snapshot 저장 (오늘 1회, 비동기)
       saveTransitionSnapshot(allNewTickets, planning, hiddenSync);
-      writeTicketCache(allNewTickets, at, hiddenSync, sharedKeys, lastFullFetchedAt ?? at);
+      writeTicketCache(allNewTickets, at, hiddenSync, registry.customKeys, lastFullFetchedAt ?? at);
 
       // Phase 7: KV (cc-planning-priorities) 단일 진실. Sheet 폐기.
       // forceRefresh 후 완료 전환 재정렬 + KV 저장.
@@ -5475,17 +5508,6 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     return counts;
   }, [planningTabBase, planning]);
 
-  // 요약 카드 — 현재 planningTab 기준(preFiltered) 집계, statusTab 무관
-  const totalAll        = preFiltered.length;
-  const totalDone       = preFiltered.filter(isClosedTicket).length;
-
-  // 세분화 카운트
-  const totalPlan    = preFiltered.filter((t) => ["기획중", "기획완료"].includes(t.status)).length;
-  const totalDesign  = preFiltered.filter((t) => ["디자인중", "디자인완료"].includes(t.status)).length;
-  const totalReady   = preFiltered.filter((t) => t.status === "준비중").length;
-  const totalDev     = preFiltered.filter((t) => ["개발중", "개발완료", "배포완료", "In Progress"].includes(t.status)).length;
-  const totalQA      = preFiltered.filter((t) => t.status === "QA중").length;
-
   // 플래닝 대기·검토 탭 전용 — 팀별(Design / SP / PP / CFE / 기타) 상태 집계.
   //
   // ⚠ planningKpiFilter 미적용 base 사용 — KPI 카드가 자기 자신의 클릭으로
@@ -5610,26 +5632,45 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     resolveTicketReviewMode(ticket.participationRoles, ticketReviewOverrides[ticket.key])
   ), [ticketReviewOverrides]);
 
+  /**
+   * 확인 방식과 신규 여부는 Jira 단계보다 상위 필터다.
+   * 단계 카드와 실제 목록이 같은 티켓 집합에서 계산되도록 공통 base를 사용한다.
+   */
+  const jiraStageBase = useMemo(() => {
+    let result = planningTab === "플래닝 대기·검토"
+      ? preFiltered
+      : filterTicketsByReviewMode(preFiltered, reviewModeFilter, ticketReviewOverrides);
+    if (newFilter) result = result.filter(ticket => isRecentTicket(ticket.key));
+    return result;
+  }, [preFiltered, planningTab, reviewModeFilter, ticketReviewOverrides, newFilter, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Jira 단계 카드 — 상위 확인 방식/신규 필터 적용 후, statusTab 선택 전 집계.
+  const jiraStageCounts = useMemo(() => countTicketsByJiraStage(jiraStageBase), [jiraStageBase]);
+  const totalAll     = jiraStageBase.length;
+  const totalDone    = jiraStageCounts.완료;
+  const totalPlan    = jiraStageCounts.기획;
+  const totalDesign  = jiraStageCounts.디자인;
+  const totalReady   = jiraStageCounts.준비중;
+  const totalDev     = jiraStageCounts.개발;
+  const totalQA      = jiraStageCounts.QA;
+  const totalOther   = jiraStageCounts.기타;
+
   // statusTab + 정렬 적용 (렌더용)
   const filtered = useMemo(() => {
-    let result = statusTab === "전체"   ? [...preFiltered]
-      : statusTab === "완료"     ? preFiltered.filter(isClosedTicket)
-      : statusTab === "진행중"   ? preFiltered.filter((t) => getTicketViewLifecycle(t) === "active")
-      : statusTab === "기획"     ? preFiltered.filter((t) => ["기획중", "기획완료"].includes(t.status))
-      : statusTab === "디자인"   ? preFiltered.filter((t) => ["디자인중", "디자인완료"].includes(t.status))
-      : statusTab === "준비중"   ? preFiltered.filter((t) => t.status === "준비중")
-      : statusTab === "개발"     ? preFiltered.filter((t) => ["개발중", "개발완료", "배포완료", "In Progress"].includes(t.status))
-      : statusTab === "QA"       ? preFiltered.filter((t) => t.status === "QA중")
-      :                            preFiltered.filter((t) => getTicketViewLifecycle(t) === "planning");
+    let result = statusTab === "전체"   ? [...jiraStageBase]
+      : statusTab === "완료"     ? jiraStageBase.filter(isClosedTicket)
+      : statusTab === "진행중"   ? jiraStageBase.filter((t) => getTicketViewLifecycle(t) === "active")
+      : statusTab === "기획"     ? jiraStageBase.filter((t) => getTicketJiraStage(t) === "기획")
+      : statusTab === "디자인"   ? jiraStageBase.filter((t) => getTicketJiraStage(t) === "디자인")
+      : statusTab === "준비중"   ? jiraStageBase.filter((t) => getTicketJiraStage(t) === "준비중")
+      : statusTab === "개발"     ? jiraStageBase.filter((t) => getTicketJiraStage(t) === "개발")
+      : statusTab === "QA"       ? jiraStageBase.filter((t) => getTicketJiraStage(t) === "QA")
+      : statusTab === "기타"     ? jiraStageBase.filter((t) => getTicketJiraStage(t) === "기타")
+      :                            jiraStageBase.filter((t) => getTicketViewLifecycle(t) === "planning");
     // 프리플래닝의 논의 대상과 Weekly 운영의 주의 신호는 서로 섞지 않는다.
     if (reviewFilter && planningTab === "플래닝 대기·검토") {
       result = result.filter(t => getTicketAttention(t, "planning") !== null);
     }
-    if (reviewModeFilter !== "all" && planningTab !== "플래닝 대기·검토") {
-      result = result.filter(t => getTicketReviewMode(t) === reviewModeFilter);
-    }
-    // 신규 필터
-    if (newFilter) result = result.filter(t => isRecentTicket(t.key));
     const dateVal = (v: string | undefined) => (v && v !== "-" ? new Date(v).getTime() : Infinity);
     // Phase 7.1 + PR #33: numeric priority sort 안정화
     //  - "완료" / 빈값 / non-numeric → Infinity (항상 마지막)
@@ -5681,7 +5722,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
       result.sort((a: Ticket, b: Ticket) => ticketNum(a.key) - ticketNum(b.key));
     }
     return result;
-  }, [preFiltered, statusTab, sortBy, priorities, executionPriorities, reviewFilter, reviewModeFilter, newFilter, planningTab, getTicketAttention, getTicketReviewMode, ticketAddedDates]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [jiraStageBase, statusTab, sortBy, priorities, executionPriorities, reviewFilter, planningTab, getTicketAttention]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const statusLabel = statusTab === "전체" ? "" : ` · ${statusTab}`;
@@ -7951,7 +7992,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               <p className="text-xs font-semibold" style={{ color: "var(--text-secondary)" }}>Jira 단계</p>
               <p className="text-[10px] whitespace-nowrap" style={{ color: "var(--text-subtle)" }}>{planningTab} 기준 · {totalAll}개</p>
             </div>
-            <div className={`grid ${isQuickPreview ? "grid-cols-4 gap-1.5" : "grid-cols-7 gap-2"}`}>
+            <div className={`grid ${isQuickPreview ? "grid-cols-4 gap-1.5" : "grid-cols-8 gap-2"}`}>
               {([
               { label: "전체",   filterKey: "전체",   count: totalAll,        numColor: "var(--text-primary)", desc: "등록된 전체 티켓",            accentColor: undefined },
               { label: "준비중", filterKey: "준비중", count: totalReady,      numColor: "#fbbf24", desc: "준비중",                          accentColor: "#fbbf24" },
@@ -7960,6 +8001,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
               { label: "개발",   filterKey: "개발",   count: totalDev,        numColor: "#315b91", desc: "개발·배포 실행 단계",              accentColor: "#315b91" },
               { label: "QA",     filterKey: "QA",     count: totalQA,         numColor: "#f59e0b", desc: "QA중",                           accentColor: "#f59e0b" },
               { label: "완료",   filterKey: "완료",   count: totalDone,       numColor: "#34d399", desc: "Jira 완료·종료 상태",             accentColor: "#34d399" },
+              { label: "기타",   filterKey: "기타",   count: totalOther,      numColor: "#64748b", desc: "공통 단계로 분류되지 않은 Jira 상태", accentColor: "#64748b" },
             ] as { label: string; filterKey: typeof statusTab; count: number; numColor: string; desc: string; accentColor: string | undefined }[]).map((s) => {
               const active = statusTab === s.filterKey;
               return (

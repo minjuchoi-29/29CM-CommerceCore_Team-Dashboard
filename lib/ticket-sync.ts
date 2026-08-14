@@ -7,7 +7,7 @@ import {
 export type TicketRefreshPlan = {
   keys: string[];
   activeOrRecentCount: number;
-  missingCustomCount: number;
+  missingManagedCount: number;
 };
 
 export type WeeklyRefreshSelection<T> = {
@@ -71,7 +71,7 @@ export function selectChangedWeeklyTargets<
  */
 export function buildTicketRefreshPlan<T extends WeeklyTargetTicket>(
   tickets: T[],
-  sharedCustomKeys: string[],
+  managedKeys: string[],
   hiddenKeys: Set<string>,
   now: Date = new Date(),
 ): TicketRefreshPlan {
@@ -86,18 +86,18 @@ export function buildTicketRefreshPlan<T extends WeeklyTargetTicket>(
     keys.push(ticket.key);
   }
 
-  let missingCustomCount = 0;
-  for (const key of sharedCustomKeys) {
+  let missingManagedCount = 0;
+  for (const key of managedKeys) {
     if (hiddenKeys.has(key) || knownKeys.has(key) || seen.has(key)) continue;
     seen.add(key);
     keys.push(key);
-    missingCustomCount++;
+    missingManagedCount++;
   }
 
   return {
     keys,
     activeOrRecentCount: activeOrRecent.length,
-    missingCustomCount,
+    missingManagedCount,
   };
 }
 
@@ -128,11 +128,23 @@ export function mergeRefreshedTickets<T extends { key: string }>(
   return merged;
 }
 
-export function findMissingSharedTicketKeys<T extends { key: string }>(
+/**
+ * 브라우저 캐시에 남은 티켓 중 현재 서버 관리 범위에 없는 항목을 제거한다.
+ * 일정·메모 등의 공용 저장 데이터는 건드리지 않고 화면용 Jira 메타 캐시만 정리한다.
+ */
+export function retainManagedTickets<T extends { key: string }>(
   tickets: T[],
-  sharedCustomKeys: string[],
+  managedKeys: string[],
+): T[] {
+  const managedKeySet = new Set(managedKeys);
+  return tickets.filter(ticket => managedKeySet.has(ticket.key));
+}
+
+export function findMissingManagedTicketKeys<T extends { key: string }>(
+  tickets: T[],
+  managedKeys: string[],
   hiddenKeys: Set<string>,
 ): string[] {
   const knownKeys = new Set(tickets.map(ticket => ticket.key));
-  return sharedCustomKeys.filter(key => !knownKeys.has(key) && !hiddenKeys.has(key));
+  return managedKeys.filter(key => !knownKeys.has(key) && !hiddenKeys.has(key));
 }
