@@ -50,17 +50,17 @@ export async function fetchFilterIssueKeys(
   jql = `filter = ${jiraFilterId}`,
 ): Promise<string[]> {
   const keys: string[] = [];
-  let startAt = 0;
-  let total = Infinity;
+  let nextPageToken: string | undefined;
   let page = 0;
 
-  while (startAt < total && page < MAX_PAGES) {
-    const url =
-      `${JIRA_BASE}/rest/api/3/search/jql` +
-      `?jql=${encodeURIComponent(jql)}` +
-      `&fields=key` +
-      `&maxResults=${PAGE_SIZE}` +
-      `&startAt=${startAt}`;
+  while (page < MAX_PAGES) {
+    const params = new URLSearchParams({
+      jql,
+      fields: "key",
+      maxResults: String(PAGE_SIZE),
+    });
+    if (nextPageToken) params.set("nextPageToken", nextPageToken);
+    const url = `${JIRA_BASE}/rest/api/3/search/jql?${params}`;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), FILTER_FETCH_TIMEOUT_MS);
@@ -81,15 +81,18 @@ export async function fetchFilterIssueKeys(
 
     const data = (await res.json()) as {
       issues: { key: string }[];
-      total: number;
+      nextPageToken?: string;
+      isLast?: boolean;
     };
 
-    total = data.total;
     for (const issue of data.issues) keys.push(issue.key);
-    startAt += data.issues.length;
     page++;
 
-    if (data.issues.length === 0) break; // 빈 페이지 — 무한루프 방지
+    if (data.isLast || data.issues.length === 0 || !data.nextPageToken) break;
+    if (data.nextPageToken === nextPageToken) {
+      throw new Error("Jira search pagination token이 반복되어 동기화를 중단했습니다.");
+    }
+    nextPageToken = data.nextPageToken;
   }
 
   return keys;
