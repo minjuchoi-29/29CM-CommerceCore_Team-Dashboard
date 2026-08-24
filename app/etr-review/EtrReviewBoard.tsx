@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import type { Ticket } from "@/app/jira-tickets/TicketBoard";
 import { Tooltip } from "@/app/components/Tooltip";
@@ -34,6 +34,11 @@ import {
   type DashboardSearchChangeDetail,
   type DashboardTicketsAddedDetail,
 } from "@/lib/dashboard-events";
+import {
+  parseEtrDashboardUrl,
+  writeEtrDashboardUrl,
+  type EtrSortColumn,
+} from "@/lib/dashboard-filter-url";
 
 const JIRA_BASE = "https://jira.team.musinsa.com/browse/";
 
@@ -98,11 +103,12 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   }, [statusFilter]);
   const [search, setSearch]         = useState("");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [filterUrlHydrated, setFilterUrlHydrated] = useState(false);
 
   // Ctrl/Cmd+F 는 Global Search Overlay (app/components/GlobalSearchOverlay.tsx) 가 전역 처리.
 
   // 정렬
-  type SortCol = "key" | "summary" | "status" | "assignee" | "reporter" | "eta" | "priority" | "source" | "linkedWork" | "docs";
+  type SortCol = EtrSortColumn;
   const [sort, setSort] = useState<{ col: SortCol; dir: "asc" | "desc" } | null>(null);
   function toggleSort(col: SortCol) {
     setSort(prev => {
@@ -124,6 +130,29 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
   type RemoteLink = { url: string; title: string };
   const [remoteLinksByKey, setRemoteLinksByKey] = useState<Record<string, RemoteLink[]>>({});
 
+  const applyFilterUrlState = useCallback((params: URLSearchParams) => {
+    const parsed = parseEtrDashboardUrl(params);
+    const state = parsed.state;
+    if (parsed.canonical) {
+      setFilter(state.filter);
+      setStatusFilter(state.statusFilter);
+      setSearch(state.search);
+      setSort(state.sort);
+      setSelectedKey(state.selectedKey);
+      return;
+    }
+
+    // 이전 링크(?key= / ?q=)는 해당 티켓이 가려지지 않도록 기존처럼 전체 요청으로 연다.
+    if (state.selectedKey) {
+      setSelectedKey(state.selectedKey);
+      setFilter("all");
+    }
+    if (params.has("q")) {
+      setSearch(state.search);
+      setFilter("all");
+    }
+  }, []);
+
   // Phase 3: ?key= 딥링크 — URL 에 key 가 있으면 해당 ETR 자동 선택
   // Cross-screen: ?q= 가 있으면 검색어 seed
   // Global Search Target — sessionStorage 의 명시 target 이 URL 보다 우선.
@@ -141,6 +170,7 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
           ?.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 250);
       clearSearchTarget();
+      setFilterUrlHydrated(true);
       return;
     }
     if (target && target.kind === "ticket") {
@@ -149,25 +179,43 @@ export default function EtrReviewBoard({ userName: _userName }: { userName?: str
       return;
     }
 
-    // ── 1. URL param fallback ──────────────────
+    // ── 1. URL param fallback / 공유 필터 복원 ──────────────────
     const params = new URLSearchParams(window.location.search);
-    const k = params.get("key");
-    if (k && k.startsWith("ETR-")) {
-      setSelectedKey(k);
-      // 현재 필터 (default = needsAction) 에서 안 보일 수 있으므로 "전체 요청" 으로 강제 전환
-      setFilter("all");
+    const parsed = parseEtrDashboardUrl(params);
+    applyFilterUrlState(params);
+    const k = parsed.state.selectedKey;
+    if (k) {
       // ETR row 가 보이도록 스크롤 (목록 렌더 + 필터 변경 flush 후)
       setTimeout(() => {
         document.querySelector(`[data-etr-key="${k}"]`)
           ?.scrollIntoView({ behavior: "smooth", block: "center" });
       }, 250);
     }
-    const q = params.get("q");
-    if (q) {
-      setSearch(q);
-      setFilter("all");
-    }
-  }, []);
+    setFilterUrlHydrated(true);
+  }, [applyFilterUrlState]);
+
+  // ETR 단계·Jira 상태·검색·정렬·선택 티켓을 하나의 공유 가능한 URL로 유지한다.
+  useEffect(() => {
+    if (!filterUrlHydrated) return;
+    const params = writeEtrDashboardUrl(
+      new URLSearchParams(window.location.search),
+      { filter, statusFilter, search, sort, selectedKey },
+    );
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState(
+      { ...(window.history.state ?? {}), etrKey: selectedKey },
+      "",
+      nextUrl,
+    );
+  }, [filterUrlHydrated, filter, statusFilter, search, sort, selectedKey]);
+
+  // 브라우저 뒤로가기/앞으로가기도 URL에 기록된 필터와 선택 티켓을 그대로 복원한다.
+  useEffect(() => {
+    const onPopState = () => applyFilterUrlState(new URLSearchParams(window.location.search));
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [applyFilterUrlState]);
 
   // ── 초기 로드 ─────────────────────────────────────────────────────────
   useEffect(() => {

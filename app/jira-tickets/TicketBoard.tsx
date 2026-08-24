@@ -65,6 +65,13 @@ import {
 import { organizeLinkedDocs } from "@/lib/linked-doc-display";
 import { buildTicketListUrl } from "@/lib/ticket-navigation";
 import {
+  parseTicketDashboardUrl,
+  writeTicketDashboardUrl,
+  type TicketDashboardSort,
+  type TicketPlanningTab,
+  type TicketStatusTab,
+} from "@/lib/dashboard-filter-url";
+import {
   buildTeamWorkstreamView,
   getTeamWorkstreamSignals,
   isLikelyScheduleTeamLabel,
@@ -406,7 +413,7 @@ function TicketParticipationBadges({ roles }: { roles?: TicketParticipationRole[
   );
 }
 
-type PlanningTabId = "전체" | "진행 중" | "플래닝 대기·검토" | "완료";
+type PlanningTabId = TicketPlanningTab;
 
 function getPlanningTabForTicket(ticket: Ticket): PlanningTabId {
   const lifecycle = getTicketViewLifecycle(ticket);
@@ -1903,6 +1910,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [assigneeFilter, setAssigneeFilter] = useState<Set<string>>(new Set());
   const [participationRoleFilter, setParticipationRoleFilter] = useState<Set<TicketParticipationRole>>(new Set());
   const [search, setSearch]         = useState("");
+  const [filterUrlHydrated, setFilterUrlHydrated] = useState(false);
 
   // localStorage 기반 일정 데이터
   const [schedules, setSchedules]   = useState<Record<string, RoleSchedule[]>>({});
@@ -1968,11 +1976,11 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   const [ticketAddedDates, setTicketAddedDates] = useState<Record<string, string>>({}); // key → "YYYY-MM-DD"
   // Phase 3: 마지막 탭 / 선택 티켓 localStorage 복원
   // 최초 진입 = 기본 "진행 중", 이후 마지막 상태 복원. invalid 값은 fallback.
-  const [planningTab, setPlanningTab] = useState<string>(() => {
+  const [planningTab, setPlanningTab] = useState<TicketPlanningTab>(() => {
     if (typeof window === "undefined") return "진행 중";
-    const VALID = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
+    const VALID: readonly TicketPlanningTab[] = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
     const raw = localStorage.getItem("cc-planning-tab");
-    return raw && VALID.includes(raw) ? raw : "진행 중";
+    return raw && VALID.includes(raw as TicketPlanningTab) ? raw as TicketPlanningTab : "진행 중";
   });
   const [kvLoaded, setKvLoaded]     = useState(false);
   const [kvSaveStatus, setKvSaveStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
@@ -2048,7 +2056,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     source: string | null;         // "owner_dashboard" | null
     fromOwnerDashboard: boolean;   // source=owner_dashboard && mode=focus로 진입했는지
     entryFocus: string | null;     // 진입 시 focus= 파라미터
-    prevPtab: string | null;       // Focus 진입 전 planningTab (복귀 시 복원용)
+    prevPtab: TicketPlanningTab | null; // Focus 진입 전 planningTab (복귀 시 복원용)
     prevScrollY: number;           // Focus 진입 전 window.scrollY (복귀 시 복원용)
   }>({ source: null, fromOwnerDashboard: false, entryFocus: null, prevPtab: null, prevScrollY: 0 });
   // 플래닝 코멘트 (key → PlanningNote[])
@@ -2134,10 +2142,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   // 정렬 — Phase 7.1: localStorage persist
   // PR #33: priority sort 옵션을 planning/execution 두 축으로 분리.
   //  기존 "priority" / "priorityDesc" 는 localStorage 마이그레이션 (planning 으로 매핑).
-  type SortBy = "default"
-    | "planningPriority" | "planningPriorityDesc"
-    | "executionPriority" | "executionPriorityDesc"
-    | "startDate" | "eta" | "ticketNo";
+  type SortBy = TicketDashboardSort;
   const SORT_BY_KEY = "cc-sort-by";
   const VALID_SORT_VALUES: ReadonlySet<SortBy> = new Set<SortBy>([
     "default",
@@ -2159,7 +2164,96 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     try { localStorage.setItem(SORT_BY_KEY, sortBy); } catch {}
   }, [sortBy]);
-  const [statusTab, setStatusTab] = useState<"전체" | "완료" | "진행중" | "계획/대기" | "기획" | "디자인" | "준비중" | "개발" | "QA" | "기타">("전체");
+  const [statusTab, setStatusTab] = useState<TicketStatusTab>("전체");
+
+  /**
+   * URL이 현재 버전의 완전한 필터 링크(scope 포함)이면 URL을 source of truth로 사용한다.
+   * 예전 ptab/q 링크는 해당 값만 복원해 기존 딥링크와 localStorage 동작을 보존한다.
+   */
+  const applyFilterUrlState = useCallback((params: URLSearchParams) => {
+    const parsed = parseTicketDashboardUrl(params);
+    const state = parsed.state;
+    if (!parsed.canonical) {
+      if (params.has("ptab")) setPlanningTab(state.planningTab);
+      if (params.has("q")) setSearch(state.search);
+      return;
+    }
+
+    setPlanningTab(state.planningTab);
+    setStatusTab(state.statusTab);
+    setQuarters(new Set(state.quarters));
+    setProjects(new Set(state.projects));
+    setStatuses(new Set(state.statuses));
+    setLevels(new Set(state.levels));
+    setDomainFilter(new Set(state.domains));
+    setTargetFilter(new Set(state.targets));
+    setAssigneeFilter(new Set(state.assignees));
+    setParticipationRoleFilter(new Set(state.participationRoles));
+    setSearch(state.search);
+    setReviewFilter(state.reviewFilter);
+    setReviewModeFilter(state.reviewMode);
+    setNewFilter(state.newFilter);
+    setPlanningKpiFilter(state.planningTeam
+      ? { team: state.planningTeam, ...(state.planningTeamState ? { status: state.planningTeamState } : {}) }
+      : null);
+    setPreplanningFilter(state.preplanningStatus);
+    setSortBy(state.sortBy);
+    setChangesMode(state.changesMode);
+    setTransitionFilter(state.changesMode ? state.transitionFilter : "all");
+  }, []);
+
+  // 최초 진입: 공유받은 query를 React filter state에 한 번 적용한다.
+  useEffect(() => {
+    applyFilterUrlState(new URLSearchParams(window.location.search));
+    setFilterUrlHydrated(true);
+  }, [applyFilterUrlState]);
+
+  // 이후 모든 필터 변경을 현재 history entry의 query에 반영한다.
+  useEffect(() => {
+    if (!filterUrlHydrated) return;
+    const params = writeTicketDashboardUrl(
+      new URLSearchParams(window.location.search),
+      {
+        planningTab,
+        statusTab,
+        quarters: [...quarters],
+        projects: [...projects],
+        statuses: [...statuses],
+        levels: [...levels],
+        domains: [...domainFilter],
+        targets: [...targetFilter],
+        assignees: [...assigneeFilter],
+        participationRoles: [...participationRoleFilter],
+        search,
+        reviewFilter,
+        reviewMode: reviewModeFilter,
+        newFilter,
+        planningTeam: planningKpiFilter?.team ?? null,
+        planningTeamState: planningKpiFilter?.status ?? null,
+        preplanningStatus: preplanningFilter,
+        sortBy,
+        changesMode,
+        transitionFilter,
+      },
+    );
+    const query = params.toString();
+    const nextUrl = `${window.location.pathname}${query ? `?${query}` : ""}${window.location.hash}`;
+    window.history.replaceState(
+      {
+        ...(window.history.state ?? {}),
+        tab: planningTab,
+        ticket: selected?.key ?? params.get("ticket"),
+        expanded: isDetailExpanded,
+      },
+      "",
+      nextUrl,
+    );
+  }, [
+    filterUrlHydrated, planningTab, statusTab, quarters, projects, statuses, levels,
+    domainFilter, targetFilter, assigneeFilter, participationRoleFilter, search,
+    reviewFilter, reviewModeFilter, newFilter, planningKpiFilter, preplanningFilter,
+    sortBy, changesMode, transitionFilter, selected?.key, isDetailExpanded,
+  ]);
 
   const [newlyAddedKeys, setNewlyAddedKeys] = useState<Set<string>>(new Set());
   // customKeys: 모든 티켓이 TICKET_KEYS(코드)로 관리되므로 더 이상 사용 안 함
@@ -4610,6 +4704,9 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     const params      = new URLSearchParams(window.location.search);
     const ticketParam = params.get("ticket");
     const ptabParam   = params.get("ptab");   // lifecycle 탭 (planningTab)
+    const sharedFilterTab = params.has("scope")
+      ? parseTicketDashboardUrl(params).state.planningTab
+      : null;
     const tabParam    = params.get("tab");    // detail panel 탭
     const focusParam  = params.get("focus");
     const sourceParam = params.get("source");
@@ -4669,12 +4766,14 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     }
 
     // ── 1. lifecycle 탭 결정 ─────────────────────────────────────────────────
-    // priority: ?ptab= query > ticket.status 기반 자동 계산
-    const VALID_PTABS = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
+    // priority: 공유 필터의 ?scope= > 기존 ?ptab= > ticket.status 기반 자동 계산
+    const VALID_PTABS: readonly TicketPlanningTab[] = ["전체", "진행 중", "플래닝 대기·검토", "완료"];
 
-    const targetTab =
-      (ptabParam && VALID_PTABS.includes(ptabParam))
-        ? ptabParam
+    const targetTab: TicketPlanningTab =
+      sharedFilterTab
+        ? sharedFilterTab
+        : (ptabParam && VALID_PTABS.includes(ptabParam as TicketPlanningTab))
+        ? ptabParam as TicketPlanningTab
         : getPlanningTabForTicket(match);
 
     // lifecycle 탭 먼저 적용 (preFiltered 재계산이 setSelected보다 앞서야 함)
@@ -5078,7 +5177,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // 탭 전환 — 유저 액션 전용 래퍼 (pushState + localStorage 동기화)
-  function changeTab(newTab: string) {
+  function changeTab(newTab: TicketPlanningTab) {
     setPlanningTab(newTab);
     window.history.pushState({ tab: newTab, ticket: null, expanded: false }, "");
     try { localStorage.setItem("cc-planning-tab", newTab); } catch {}
@@ -5357,19 +5456,20 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
   useEffect(() => {
     const handler = (e: PopStateEvent) => {
       const s = e.state as { tab?: string; ticket?: string | null; expanded?: boolean } | null;
-      if (!s) return;
-      if (s.tab) setPlanningTab(s.tab);
-      if (s.ticket) {
+      const params = new URLSearchParams(window.location.search);
+      applyFilterUrlState(params);
+      const ticketKey = params.get("ticket") ?? s?.ticket ?? null;
+      if (ticketKey) {
         // ETR 은 /etr-review 페이지 전용 — popstate 복원 시에도 redirect.
-        if (s.ticket.startsWith("ETR-")) {
-          window.location.replace(`/etr-review?key=${encodeURIComponent(s.ticket)}`);
+        if (ticketKey.startsWith("ETR-")) {
+          window.location.replace(`/etr-review?key=${encodeURIComponent(ticketKey)}`);
           return;
         }
-        const t = dedupedTickets.find(t => t.key === s.ticket);
+        const t = dedupedTickets.find(t => t.key === ticketKey);
         if (t) {
           setSelected(t);
           setDetailTab(getTeamWorkstream(t).lifecycle === "planning" ? "ops" : "overview");
-          setIsDetailExpanded(s.expanded ?? false);
+          setIsDetailExpanded(s?.expanded ?? params.get("focus") === "1");
           setEditMode(false);
           setMemoEditMode(false);
           setMemoText(getCurrentMemo(t.key)?.text ?? "");
@@ -5379,7 +5479,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
         // 이유: deep-link 진입 직후 initial replaceState가 {ticket: null}로 기록되면
         //        popstate 발생 시 잘못 패널을 닫는 상황 방지.
         //        (initial replaceState는 이제 URL ticket을 보존하지만 이중 방어)
-        const currentTicket = new URLSearchParams(window.location.search).get("ticket");
+        const currentTicket = params.get("ticket");
         if (!currentTicket) {
           setSelected(null);
           setDetailTab("overview");
@@ -5392,7 +5492,7 @@ export default function TicketBoard({ userName = "알 수 없음" }: { userName?
     };
     window.addEventListener("popstate", handler);
     return () => window.removeEventListener("popstate", handler);
-  }, [dedupedTickets]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [dedupedTickets, applyFilterUrlState]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sidebar 홈 클릭 → ticket workspace 완전 reset.
   // SidebarNav가 dispatch한 "home-navigate" CustomEvent를 listen.
