@@ -1,505 +1,455 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import Link from "next/link";
+import { useEffect, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 type Props = {
   onClose: () => void;
 };
 
+type GuideCardProps = {
+  eyebrow: string;
+  title: string;
+  description: string;
+  children?: ReactNode;
+};
+
 const WIKI_URL =
   "https://wiki.team.musinsa.com/wiki/spaces/29PRODUCT/pages/413730348/29CM+Team+Dashboard";
-
 const TICKET_CACHE_KEY = "cc-tickets-v2";
+
+const LIFECYCLE_ITEMS = [
+  {
+    label: "플래닝 대기·검토",
+    description: "필요한 팀, 플래닝 상태, 예정 스프린트와 논의 메모를 확인합니다.",
+  },
+  {
+    label: "진행 중",
+    description: "최근 Weekly 공유사항, 팀별 현재 단계와 실제 작업 일정을 확인합니다.",
+  },
+  {
+    label: "최근 완료",
+    description: "완료 뒤 14일 동안 Weekly 보고와 남은 후속조치를 이어서 확인합니다.",
+  },
+];
+
+const REVIEW_MODE_ITEMS = [
+  {
+    label: "위클리 체크",
+    description: "이번 위클리 미팅에서 업데이트를 함께 확인할 티켓입니다.",
+  },
+  {
+    label: "모니터링",
+    description: "담당·요청 관계가 있어 진행 상황을 정기적으로 지켜볼 티켓입니다.",
+  },
+  {
+    label: "필요 시 확인",
+    description: "참조 관계 등으로 포함되며, 변화나 이슈가 있을 때 확인합니다.",
+  },
+];
 
 function getCachedSyncInfo(): { label: string; isStale: boolean } | null {
   try {
     const raw = localStorage.getItem(TICKET_CACHE_KEY);
     if (!raw) return null;
-    const { fetchedAt } = JSON.parse(raw) as { fetchedAt: string };
+
+    const { fetchedAt } = JSON.parse(raw) as { fetchedAt?: string };
     if (!fetchedAt) return null;
 
     const date = new Date(fetchedAt);
-    const diffMs = Date.now() - date.getTime();
-    const diffH = diffMs / (1000 * 60 * 60);
-    const isStale = diffH >= 12;
+    if (Number.isNaN(date.getTime())) return null;
 
+    const diffMs = Math.max(0, Date.now() - date.getTime());
+    const diffMinutes = Math.floor(diffMs / 60_000);
+    const isStale = diffMs >= 12 * 60 * 60 * 1_000;
     const isToday = date.toDateString() === new Date().toDateString();
-    const time = date.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
-    const dow = ["일","월","화","수","목","금","토"][date.getDay()];
-    const dateStr = isToday ? `오늘 ${time}` : `${date.getMonth()+1}/${date.getDate()}(${dow}) ${time}`;
-    const agoMin = Math.floor(diffMs / 60000);
-    const agoStr = agoMin < 60
-      ? `${agoMin}분 전`
-      : `${Math.floor(agoMin / 60)}시간 ${agoMin % 60 > 0 ? `${agoMin % 60}분 ` : ""}전`;
+    const time = date.toLocaleTimeString("ko-KR", {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    const day = ["일", "월", "화", "수", "목", "금", "토"][date.getDay()];
+    const dateLabel = isToday
+      ? `오늘 ${time}`
+      : `${date.getMonth() + 1}/${date.getDate()}(${day}) ${time}`;
+    const agoLabel =
+      diffMinutes < 60
+        ? `${diffMinutes}분 전`
+        : `${Math.floor(diffMinutes / 60)}시간 전`;
 
-    return { label: `${dateStr} (${agoStr})`, isStale };
+    return { label: `${dateLabel} · ${agoLabel}`, isStale };
   } catch {
     return null;
   }
 }
 
-// ─── Sub-components ──────────────────────────────────────────────────────────
-
-function SectionLabel({ children }: { children: React.ReactNode }) {
+function SectionLabel({ index, children }: { index: string; children: ReactNode }) {
   return (
-    <p className="text-[10px] font-bold uppercase tracking-widest mb-2.5" style={{ color: "var(--text-subtle)" }}>
-      {children}
-    </p>
+    <div className="mb-3 flex items-center gap-2">
+      <span
+        className="flex h-6 w-6 items-center justify-center rounded-full text-[11px] font-bold"
+        style={{ background: "#0f766e", color: "white" }}
+      >
+        {index}
+      </span>
+      <h3 className="text-[15px] font-bold" style={{ color: "var(--text-primary)" }}>
+        {children}
+      </h3>
+    </div>
   );
 }
 
-// ─── Main Component ───────────────────────────────────────────────────────────
+function GuideCard({ eyebrow, title, description, children }: GuideCardProps) {
+  return (
+    <div
+      className="rounded-xl p-4"
+      style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+    >
+      <p className="mb-1 text-[11px] font-bold" style={{ color: "#0f766e" }}>
+        {eyebrow}
+      </p>
+      <p className="text-[14px] font-semibold" style={{ color: "var(--text-primary)" }}>
+        {title}
+      </p>
+      <p className="mt-1 text-[12px] leading-5" style={{ color: "var(--text-muted)" }}>
+        {description}
+      </p>
+      {children}
+    </div>
+  );
+}
+
+function Path({ children }: { children: ReactNode }) {
+  return (
+    <div
+      className="mt-3 rounded-lg px-3 py-2 text-[11px] font-semibold leading-5"
+      style={{ background: "#ecfdf5", color: "#115e59", border: "1px solid #a7f3d0" }}
+    >
+      {children}
+    </div>
+  );
+}
 
 export default function GuideModal({ onClose }: Props) {
-  const syncInfo = typeof window !== "undefined" ? getCachedSyncInfo() : null;
   const [faqOpen, setFaqOpen] = useState(false);
+  const syncInfo = typeof window === "undefined" ? null : getCachedSyncInfo();
 
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
     };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
   }, [onClose]);
 
-  const modal = (
+  if (typeof window === "undefined") return null;
+
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.6)", backdropFilter: "blur(3px)" }}
+      className="fixed inset-0 z-[300] flex items-center justify-center p-4"
+      style={{ background: "rgba(15, 23, 42, 0.56)", backdropFilter: "blur(4px)" }}
       onClick={onClose}
     >
       <div
-        className="relative w-full rounded-xl shadow-2xl overflow-hidden flex flex-col"
-        style={{
-          background: "var(--bg-canvas)",
-          border: "1px solid var(--border)",
-          maxWidth: "780px",
-          maxHeight: "88vh",
-        }}
-        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dashboard-guide-title"
+        className="flex max-h-[90vh] w-full max-w-[860px] flex-col overflow-hidden rounded-2xl shadow-2xl"
+        style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)" }}
+        onClick={(event) => event.stopPropagation()}
       >
-        {/* ── Header ──────────────────────────────────────────────── */}
-        <div
-          className="flex items-center justify-between px-5 py-3.5 shrink-0"
+        <header
+          className="flex shrink-0 items-start justify-between gap-4 px-6 py-5"
           style={{ borderBottom: "1px solid var(--border)" }}
         >
-          <div className="flex items-center gap-2">
-            <span className="text-base leading-none">🗺</span>
-            <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
-              Operational Quick Guide
-            </span>
-            <span
-              className="text-[10px] font-medium px-1.5 py-0.5 rounded"
-              style={{ background: "rgba(96,165,250,0.12)", border: "1px solid rgba(96,165,250,0.25)", color: "#60a5fa" }}
-            >
-              Product OS
-            </span>
+          <div>
+            <div className="mb-1 flex flex-wrap items-center gap-2">
+              <h2
+                id="dashboard-guide-title"
+                className="text-[20px] font-bold"
+                style={{ color: "var(--text-primary)" }}
+              >
+                대시보드 사용 가이드
+              </h2>
+              <span
+                className="rounded-full px-2 py-1 text-[10px] font-bold"
+                style={{ background: "#ccfbf1", color: "#115e59" }}
+              >
+                2026.09 업데이트
+              </span>
+            </div>
+            <p className="text-[13px] leading-5" style={{ color: "var(--text-muted)" }}>
+              위클리 미팅, 스프린트 프리플래닝, ETR 요청 검토에 필요한 화면과 기능만 빠르게 찾을 수 있습니다.
+            </p>
           </div>
           <button
+            type="button"
+            aria-label="사용 가이드 닫기"
             onClick={onClose}
-            className="w-6 h-6 flex items-center justify-center rounded-md text-xs transition-colors"
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-lg transition-colors hover:bg-slate-100"
             style={{ color: "var(--text-muted)" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "var(--bg-item)"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
           >
-            ✕
+            ×
           </button>
-        </div>
+        </header>
 
-        {/* ── Scrollable Body ─────────────────────────────────────── */}
-        <div
-          className="px-5 py-4 space-y-5 text-xs overflow-y-auto"
-          style={{ color: "var(--text-muted)" }}
-        >
-
-          {/* ── SECTION 1: 시스템 이해 ────────────────────────────── */}
+        <div className="space-y-7 overflow-y-auto px-6 py-6">
           <section>
-            <SectionLabel>01 · 시스템 이해</SectionLabel>
-            <div className="grid grid-cols-3 gap-2.5">
-              {/* Card: 담당자 대시보드 */}
-              <div
-                className="rounded-lg p-3 flex flex-col gap-1.5"
-                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+            <SectionLabel index="1">회의 목적별 빠른 시작</SectionLabel>
+            <div className="grid gap-3 md:grid-cols-2">
+              <GuideCard
+                eyebrow="매주"
+                title="위클리 미팅"
+                description="진행 중 과제의 최신 공유 내용과 실제 일정을 티켓 순서대로 확인합니다."
               >
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <span className="text-sm leading-none">👤</span>
-                  <p className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>담당자 대시보드</p>
-                </div>
-                <p style={{ color: "var(--text-muted)", lineHeight: 1.6 }}>
-                  내 이름이 담당자인 티켓 중 <span style={{ color: "#f87171", fontWeight: 600 }}>현재 필요한 액션</span>이 있는 항목만 우선순위 순으로 표시됩니다.
-                </p>
-                <div
-                  className="mt-0.5 rounded px-2 py-1 text-[10px] font-medium"
-                  style={{ background: "rgba(239,68,68,0.07)", color: "#f87171", border: "1px solid rgba(239,68,68,0.2)" }}
-                >
-                  티켓 클릭 → 자동으로 Focus Mode 진입
-                </div>
-              </div>
-
-              {/* Card: Focus Workspace */}
-              <div
-                className="rounded-lg p-3 flex flex-col gap-1.5"
-                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+                <Path>전체 과제 → 진행 중 → 위클리 체크 → 티켓 선택 → 집중 보기</Path>
+              </GuideCard>
+              <GuideCard
+                eyebrow="격주"
+                title="스프린트 프리플래닝"
+                description="아직 시작하지 않은 과제의 필요 팀, 검토 상태, 예정 스프린트와 논의 메모를 관리합니다."
               >
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <span className="text-sm leading-none">🎯</span>
-                  <p className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>Focus Workspace</p>
-                </div>
-                <p style={{ color: "var(--text-muted)", lineHeight: 1.6 }}>
-                  티켓 1개에 집중하는 2-column 작업 공간.
-                  왼쪽은 <strong style={{ color: "var(--text-primary)" }}>컨텍스트</strong>, 오른쪽은 <strong style={{ color: "var(--text-primary)" }}>실행 패널</strong>.
-                </p>
-                <div
-                  className="mt-0.5 rounded px-2 py-1 text-[10px] font-medium"
-                  style={{ background: "rgba(96,165,250,0.07)", color: "#60a5fa", border: "1px solid rgba(96,165,250,0.2)" }}
-                >
-                  ESC → Split View로 복귀
-                </div>
-              </div>
-
-              {/* Card: 전체 과제 현황 */}
-              <div
-                className="rounded-lg p-3 flex flex-col gap-1.5"
-                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+                <Path>전체 과제 → 플래닝 대기·검토 → 검토할 티켓 선택</Path>
+              </GuideCard>
+              <GuideCard
+                eyebrow="요청 접수부터 종결까지"
+                title="ETR 검토"
+                description="요구사항을 이해하고 실제 실행 티켓과 연결한 뒤, 작업 완료 후 ETR 종결까지 이어서 확인합니다."
               >
-                <div className="flex items-center gap-1.5 mb-0.5">
-                  <span className="text-sm leading-none">📊</span>
-                  <p className="text-[11px] font-semibold" style={{ color: "var(--text-primary)" }}>전체 과제 현황</p>
-                </div>
-                <p style={{ color: "var(--text-muted)", lineHeight: 1.6 }}>
-                  팀 전체 <span style={{ color: "#a78bfa" }}>OKR · BAU · KTLO</span> 스프레드시트 뷰. 도메인·담당자·상태별 필터 지원.
-                </p>
-                <div
-                  className="mt-0.5 rounded px-2 py-1 text-[10px] font-medium"
-                  style={{ background: "rgba(167,139,250,0.07)", color: "#a78bfa", border: "1px solid rgba(167,139,250,0.2)" }}
-                >
-                  필수: OKR · BAU · KTLO 모두 등록
-                </div>
-              </div>
+                <Path>ETR 검토 → 처리 필요 → 요구사항 확인 → 실행 티켓 연결 → 완료 확인</Path>
+              </GuideCard>
+              <GuideCard
+                eyebrow="개인 업무"
+                title="내 후속조치 확인"
+                description="내가 담당하거나 확인해야 하는 티켓을 모아서 우선순위대로 살펴봅니다."
+              >
+                <Path>담당자 → 내 티켓 → 필요한 항목 확인</Path>
+              </GuideCard>
             </div>
           </section>
 
-          {/* ── SECTION 2: 주요 워크플로 ──────────────────────────── */}
           <section>
-            <SectionLabel>02 · 주요 워크플로</SectionLabel>
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                {
-                  emoji: "📅",
-                  label: "일정 입력",
-                  steps: ["담당자 대시보드 또는 티켓 클릭 → Focus Mode", "우측 Ops 탭 → Schedule 섹션", "시작일 / 완료 예정일 입력 후 저장"],
-                  accentColor: "#34d399",
-                  bgColor: "rgba(52,211,153,0.06)",
-                  borderColor: "rgba(52,211,153,0.2)",
-                },
-                {
-                  emoji: "⭐",
-                  label: "검토 필요 표시",
-                  steps: ["티켓 목록에서 ⭐ 아이콘 클릭 (토글)", "스프린트 플래닝 전 논의할 티켓 표시", "팀원 모두에게 즉시 반영"],
-                  accentColor: "#fbbf24",
-                  bgColor: "rgba(251,191,36,0.06)",
-                  borderColor: "rgba(251,191,36,0.2)",
-                },
-                {
-                  emoji: "🚀",
-                  label: "Launch 일정 설정",
-                  steps: ["Focus Mode → 우측 Ops 탭", "Launch Date 섹션에 목표 런치일 입력", "미입력 시 현재 필요한 액션(Warning) 발생"],
-                  accentColor: "#f97316",
-                  bgColor: "rgba(249,115,22,0.06)",
-                  borderColor: "rgba(249,115,22,0.2)",
-                },
-                {
-                  emoji: "📋",
-                  label: "플래닝 상태 업데이트",
-                  steps: ["Focus Mode → 우측 Planning 탭", "기획 / 디자인 / 개발 준비 상태 드롭다운 선택", "Reviewing 상태는 팀 알림 발생"],
-                  accentColor: "#818cf8",
-                  bgColor: "rgba(129,140,248,0.06)",
-                  borderColor: "rgba(129,140,248,0.2)",
-                },
-              ].map(({ emoji, label, steps, accentColor, bgColor, borderColor }) => (
-                <div
-                  key={label}
-                  className="rounded-lg p-3"
-                  style={{ background: bgColor, border: `1px solid ${borderColor}` }}
-                >
-                  <div className="flex items-center gap-1.5 mb-2">
-                    <span className="text-sm leading-none">{emoji}</span>
-                    <p className="text-[11px] font-semibold" style={{ color: accentColor }}>{label}</p>
-                  </div>
-                  <ol className="space-y-1">
-                    {steps.map((step, i) => (
-                      <li key={i} className="flex items-start gap-1.5">
-                        <span
-                          className="shrink-0 w-4 h-4 rounded-full text-[9px] font-bold flex items-center justify-center mt-0.5"
-                          style={{ background: `${accentColor}22`, color: accentColor }}
-                        >
-                          {i + 1}
-                        </span>
-                        <span style={{ color: "var(--text-muted)", lineHeight: 1.5 }}>{step}</span>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              ))}
+            <SectionLabel index="2">목록·빠른 미리보기·집중 보기</SectionLabel>
+            <div className="grid gap-3 md:grid-cols-3">
+              <GuideCard
+                eyebrow="넓게 찾기"
+                title="목록"
+                description="상태와 필터로 대상을 좁히고 핵심 정보만 비교합니다. 선택한 조건은 URL에 저장되어 그대로 공유할 수 있습니다."
+              />
+              <GuideCard
+                eyebrow="맥락 유지"
+                title="빠른 미리보기"
+                description="목록을 유지한 채 최근 Weekly와 주요 상태를 먼저 확인합니다. ‘목록으로’ 버튼으로 바로 닫을 수 있습니다."
+              />
+              <GuideCard
+                eyebrow="회의 진행"
+                title="집중 보기"
+                description="필터로 좁힌 티켓 목록을 왼쪽에 유지하고, 다른 티켓으로 연속 이동하며 Weekly와 세부 일정을 확인합니다."
+              />
             </div>
           </section>
 
-          {/* ── SECTION 3: 현재 필요한 액션 컬러 가이드 ────────────── */}
           <section>
-            <SectionLabel>03 · 현재 필요한 액션 컬러 가이드</SectionLabel>
-            <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+            <SectionLabel index="3">검색·추가·동기화 사용법</SectionLabel>
+            <div
+              className="overflow-hidden rounded-xl"
+              style={{ border: "1px solid var(--border)" }}
+            >
               {[
                 {
-                  color: "#ef4444",
-                  bg: "rgba(239,68,68,0.08)",
-                  level: "Critical",
-                  dot: "🔴",
-                  actions: ["일정 초과 (overdue)", "검토 필요 (review needed)"],
-                  hint: "즉시 조치 — 담당자 대시보드 상단에 노출",
+                  title: "검색",
+                  description: "대시보드에 등록된 티켓의 번호·제목·담당자를 검색합니다. 검색 결과를 선택하면 해당 목록에서도 선택 상태가 표시됩니다.",
                 },
                 {
-                  color: "#f59e0b",
-                  bg: "rgba(245,158,11,0.07)",
-                  level: "Warning",
-                  dot: "🟡",
-                  actions: ["일정 미입력", "Launch 일정 미입력", "플래닝 Reviewing 상태"],
-                  hint: "이번 주 내 해결 권장",
+                  title: "+ 티켓 추가",
+                  description: "Jira 티켓 번호를 입력하면 프로젝트와 현재 상태를 확인해 전체 과제 또는 ETR 검토에 자동으로 배치합니다. 저장 성공 후 다른 사용자도 새로고침하면 볼 수 있습니다.",
                 },
                 {
-                  color: "#60a5fa",
-                  bg: "rgba(96,165,250,0.07)",
-                  level: "Info",
-                  dot: "🔵",
-                  actions: ["ETR 미연결", "문서 미작성"],
-                  hint: "보완 권장 — 즉시 필수 아님",
+                  title: "Jira Sync",
+                  description: "데이터 소스의 포함 대상과 변경된 Jira 메타 정보를 갱신합니다. 변경된 진행 중·최근 완료 티켓의 Weekly 갱신은 백그라운드에서 이어집니다.",
                 },
-              ].map(({ color, bg, level, dot, actions, hint }, i) => (
+                {
+                  title: "Weekly 갱신",
+                  description: "상세 화면에서 현재 티켓 하나의 Weekly 공유사항만 빠르게 다시 가져옵니다. 회의 직전 특정 티켓 확인에 적합합니다.",
+                },
+                {
+                  title: "플래닝 티켓 갱신",
+                  description: "플래닝 대기·검토 티켓의 Jira 상태와 담당자 등 메타 정보만 갱신합니다. Weekly 공유사항은 조회하지 않습니다.",
+                },
+              ].map((item, index) => (
                 <div
-                  key={level}
-                  className="flex items-start gap-3 px-3.5 py-2.5"
+                  key={item.title}
+                  className="grid gap-1 px-4 py-3 md:grid-cols-[140px_1fr] md:gap-4"
                   style={{
-                    background: bg,
-                    borderTop: i > 0 ? "1px solid var(--border)" : "none",
+                    background: index % 2 === 0 ? "var(--bg-overlay)" : "var(--bg-canvas)",
+                    borderTop: index === 0 ? undefined : "1px solid var(--border)",
                   }}
                 >
-                  <div className="flex items-center gap-1.5 shrink-0 w-20 mt-0.5">
-                    <span className="text-xs">{dot}</span>
-                    <span className="text-[11px] font-bold" style={{ color }}>{level}</span>
-                  </div>
-                  <div className="flex-1">
-                    <div className="flex flex-wrap gap-1.5 mb-1">
-                      {actions.map(a => (
-                        <span
-                          key={a}
-                          className="text-[10px] px-1.5 py-0.5 rounded"
-                          style={{ background: `${color}18`, color, border: `1px solid ${color}30` }}
-                        >
-                          {a}
-                        </span>
-                      ))}
-                    </div>
-                    <p className="text-[10px]" style={{ color: "var(--text-subtle)" }}>{hint}</p>
-                  </div>
+                  <p className="text-[13px] font-bold" style={{ color: "var(--text-primary)" }}>
+                    {item.title}
+                  </p>
+                  <p className="text-[12px] leading-5" style={{ color: "var(--text-muted)" }}>
+                    {item.description}
+                  </p>
                 </div>
               ))}
             </div>
+            {syncInfo && (
+              <p
+                className="mt-2 text-right text-[11px]"
+                style={{ color: syncInfo.isStale ? "#b45309" : "var(--text-subtle)" }}
+              >
+                이 브라우저의 마지막 Jira 갱신: {syncInfo.label}
+                {syncInfo.isStale ? " · 최신 상태 확인 권장" : ""}
+              </p>
+            )}
           </section>
 
-          {/* ── SECTION 4: FAQ & 상세 (Collapsible) ──────────────── */}
+          <section>
+            <SectionLabel index="4">상태와 확인 방식의 의미</SectionLabel>
+            <div className="grid gap-3 md:grid-cols-2">
+              <div
+                className="rounded-xl p-4"
+                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+              >
+                <p className="mb-3 text-[13px] font-bold" style={{ color: "var(--text-primary)" }}>
+                  과제 진행 단계
+                </p>
+                <div className="space-y-3">
+                  {LIFECYCLE_ITEMS.map((item) => (
+                    <div key={item.label}>
+                      <p className="text-[12px] font-semibold" style={{ color: "#0f766e" }}>
+                        {item.label}
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-5" style={{ color: "var(--text-muted)" }}>
+                        {item.description}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div
+                className="rounded-xl p-4"
+                style={{ background: "var(--bg-overlay)", border: "1px solid var(--border)" }}
+              >
+                <p className="mb-3 text-[13px] font-bold" style={{ color: "var(--text-primary)" }}>
+                  확인 방식
+                </p>
+                <div className="space-y-3">
+                  {REVIEW_MODE_ITEMS.map((item) => (
+                    <div key={item.label}>
+                      <p className="text-[12px] font-semibold" style={{ color: "#0f766e" }}>
+                        {item.label}
+                      </p>
+                      <p className="mt-0.5 text-[11px] leading-5" style={{ color: "var(--text-muted)" }}>
+                        {item.description}
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <p
+              className="mt-3 rounded-lg px-3 py-2 text-[11px] leading-5"
+              style={{ background: "#fffbeb", color: "#92400e", border: "1px solid #fde68a" }}
+            >
+              일정 재확인이나 참고 표시는 담당자 또는 과제 품질에 대한 평가가 아닙니다. Jira와 Weekly에 기록된 날짜·상태 중 회의에서 확인할 사실을 알려주는 보조 정보입니다.
+            </p>
+          </section>
+
           <section>
             <button
-              className="w-full flex items-center justify-between mb-2 group"
-              onClick={() => setFaqOpen(v => !v)}
+              type="button"
+              className="flex w-full items-center justify-between gap-3 text-left"
+              aria-expanded={faqOpen}
+              onClick={() => setFaqOpen((open) => !open)}
             >
-              <SectionLabel>04 · FAQ &amp; 상세 규칙</SectionLabel>
+              <SectionLabel index="5">자주 묻는 질문</SectionLabel>
               <span
-                className="text-[10px] font-medium px-2 py-0.5 rounded transition-colors"
-                style={{
-                  color: faqOpen ? "#60a5fa" : "var(--text-subtle)",
-                  background: faqOpen ? "rgba(96,165,250,0.1)" : "var(--bg-overlay)",
-                  border: "1px solid var(--border)",
-                  marginTop: "-8px",
-                }}
+                className="mb-3 rounded-lg px-2.5 py-1 text-[11px] font-semibold"
+                style={{ background: "var(--bg-overlay)", color: "#0f766e", border: "1px solid var(--border)" }}
               >
                 {faqOpen ? "접기 ↑" : "펼치기 ↓"}
               </span>
             </button>
-
             {faqOpen && (
-              <div className="space-y-3">
-                {/* 데이터 동기화 */}
-                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                  <p
-                    className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider"
-                    style={{ background: "var(--bg-item)", borderBottom: "1px solid var(--border)", color: "var(--text-subtle)" }}
-                  >
-                    데이터 동기화
-                  </p>
-                  {[
-                    {
-                      badge: "F5",
-                      badgeColor: "#34d399",
-                      label: "플래닝 · 메모 · 일정 · 코멘트",
-                      desc: "변경 즉시 저장 → 페이지 새로고침으로 반영",
-                    },
-                    {
-                      badge: "Jira Sync",
-                      badgeColor: "#60a5fa",
-                      label: "티켓 상태 · 담당자 · ETA",
-                      desc: syncInfo
-                        ? syncInfo.isStale
-                          ? `마지막 동기화: ${syncInfo.label} — 갱신이 필요합니다`
-                          : `마지막 동기화: ${syncInfo.label}`
-                        : "12시간 캐시 → 최신 정보는 Jira Sync 버튼 클릭",
-                      stale: syncInfo?.isStale ?? false,
-                    },
-                  ].map(({ badge, badgeColor, label, desc, stale }, i) => (
-                    <div
-                      key={badge}
-                      className="flex items-start gap-3 px-3 py-2.5"
-                      style={{
-                        borderTop: i > 0 ? "1px solid var(--border)" : "none",
-                        background: "var(--bg-overlay)",
-                      }}
-                    >
-                      <span
-                        className="shrink-0 text-[10px] font-bold px-1.5 py-0.5 rounded mt-0.5"
-                        style={{ background: `${badgeColor}22`, color: badgeColor, border: `1px solid ${badgeColor}44` }}
-                      >
-                        {badge}
-                      </span>
-                      <div>
-                        <p className="font-medium mb-0.5" style={{ color: "var(--text-primary)" }}>{label}</p>
-                        <p style={{ color: (stale ?? false) ? "#f87171" : undefined }}>{desc}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-
-                {/* 티켓 제목 규칙 */}
-                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+              <div
+                className="overflow-hidden rounded-xl"
+                style={{ border: "1px solid var(--border)" }}
+              >
+                {[
+                  {
+                    question: "찾는 티켓이 목록에 없어요.",
+                    answer: "한 건만 관리하려면 ‘+ 티켓 추가’를 사용합니다. 팀원 담당·보고·참조 티켓을 자동으로 포함하려면 데이터 소스 조건을 확인합니다.",
+                  },
+                  {
+                    question: "같은 필터 화면을 동료에게 보내고 싶어요.",
+                    answer: "필터를 선택한 뒤 현재 URL을 그대로 복사해 공유합니다. 복수 선택, 플래닝 상태, 확인 방식과 정렬 조건도 함께 열립니다.",
+                  },
+                  {
+                    question: "어떤 동기화 버튼을 눌러야 하나요?",
+                    answer: "전체 포함 대상과 Jira 상태는 ‘Jira Sync’, 한 티켓의 최신 공유사항은 상세 화면의 ‘Weekly 갱신’, 플래닝 대상 메타만 확인할 때는 ‘플래닝 티켓 갱신’을 사용합니다.",
+                  },
+                  {
+                    question: "내가 입력한 메모나 일정은 언제 공유되나요?",
+                    answer: "공용 저장소에 저장되면 다른 사용자도 새로고침 후 확인할 수 있습니다. 자동 Weekly 파싱은 기존 수동 일정과 메모를 덮어쓰지 않습니다.",
+                  },
+                  {
+                    question: "Weekly 공유사항을 어떻게 작성해야 하나요?",
+                    answer: "날짜, 팀, 작업 단계가 분명할수록 세부 일정이 정확해집니다. 아래 ‘Weekly 작성 가이드’에서 권장 예시를 확인하세요.",
+                  },
+                ].map((item, index) => (
                   <div
-                    className="flex items-center gap-2 px-3 py-2"
-                    style={{ background: "var(--bg-item)", borderBottom: "1px solid var(--border)" }}
+                    key={item.question}
+                    className="px-4 py-3"
+                    style={{
+                      background: index % 2 === 0 ? "var(--bg-overlay)" : "var(--bg-canvas)",
+                      borderTop: index === 0 ? undefined : "1px solid var(--border)",
+                    }}
                   >
-                    <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: "var(--text-subtle)" }}>
-                      티켓 제목 규칙
+                    <p className="text-[12px] font-bold" style={{ color: "var(--text-primary)" }}>
+                      {item.question}
                     </p>
-                    <span
-                      className="text-[9px] font-medium px-1.5 py-0.5 rounded"
-                      style={{ background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.3)", color: "#fbbf24" }}
-                    >
-                      룰 정의 예정
-                    </span>
+                    <p className="mt-1 text-[11px] leading-5" style={{ color: "var(--text-muted)" }}>
+                      {item.answer}
+                    </p>
                   </div>
-                  <div className="px-3 py-3 space-y-2.5" style={{ background: "var(--bg-overlay)" }}>
-                    <p style={{ color: "var(--text-muted)" }}>도메인·대상 필터와 월별 현황이 제목 형식 기준으로 자동 분류됩니다.</p>
-                    <div className="rounded px-2.5 py-2 font-mono text-[11px] leading-relaxed" style={{ background: "var(--bg-item)", color: "var(--text-primary)" }}>
-                      [도메인][29CM] 제목<br />
-                      [도메인][29Connect] 제목
-                    </div>
-                    <div className="space-y-1.5 text-[11px]">
-                      {[
-                        { tag: "[결제], [카탈로그] …", desc: "첫 번째 태그 → 도메인 필터 및 월별 현황에 반영" },
-                        { tag: "[29CM]", desc: "두 번째 태그 → 대상 필터 \"29CM\" 으로 분류" },
-                        { tag: "[29Connect]", desc: "두 번째 태그 → 대상 필터 \"29Connect\" 로 분류" },
-                        { tag: "두 번째 태그 없음", desc: "대상 필터에서 미분류" },
-                        { tag: "첫 번째 태그 없음", desc: "도메인 → \"기타\" 로 분류됨" },
-                      ].map(({ tag, desc }) => (
-                        <div key={tag} className="flex items-start gap-2">
-                          <code
-                            className="shrink-0 px-1.5 py-0.5 rounded text-[10px]"
-                            style={{ background: "var(--bg-item)", color: "#60a5fa", border: "1px solid var(--border-2)" }}
-                          >
-                            {tag}
-                          </code>
-                          <span style={{ color: "var(--text-muted)" }}>{desc}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-
-                {/* FAQ */}
-                <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
-                  <p
-                    className="px-3 py-2 text-[10px] font-semibold uppercase tracking-wider"
-                    style={{ background: "var(--bg-item)", borderBottom: "1px solid var(--border)", color: "var(--text-subtle)" }}
-                  >
-                    자주 묻는 질문
-                  </p>
-                  <div style={{ background: "var(--bg-overlay)" }}>
-                    {[
-                      {
-                        q: "필터의 \"대상\" 은 무엇인가요?",
-                        a: "티켓 제목이 [29CM] 또는 [29Connect] 로 시작하는지 기준으로 구분합니다.",
-                      },
-                      {
-                        q: "도메인 필터에서 \"기타\" 로 뜨는 티켓이 있어요",
-                        a: "제목에 [도메인][29CM] 형식이 없으면 기타로 분류됩니다. 제목 수정 후 Jira Sync를 누르면 반영됩니다.",
-                      },
-                      {
-                        q: "내가 바꾼 플래닝 상태를 동료가 못 보는 경우",
-                        a: "동료가 F5로 새로고침하면 즉시 반영됩니다.",
-                      },
-                      {
-                        q: "완료된 티켓에 일정 정보가 없어요",
-                        a: "2026/5/12 기준, 완료 처리된 티켓은 상세 일정을 마이그레이션하지 않았습니다.",
-                      },
-                      {
-                        q: "JIRA에서 상태를 바꿨는데 대시보드에 반영 안 됨",
-                        a: "상단 Jira Sync 버튼을 눌러 12시간 캐시를 갱신하세요.",
-                      },
-                      {
-                        q: "티켓을 추가하고 싶어요",
-                        a: "상단 검색창에 티켓 번호(예: TM-1234)를 입력 후 Enter — 팀원 모두에게 영구 표시됩니다.",
-                      },
-                    ].map(({ q, a }, i) => (
-                      <div
-                        key={q}
-                        className="px-3 py-2.5"
-                        style={{ borderTop: i > 0 ? "1px solid var(--border)" : "none" }}
-                      >
-                        <p className="font-medium mb-0.5" style={{ color: "var(--text-primary)" }}>Q. {q}</p>
-                        <p style={{ color: "var(--text-muted)" }}>→ {a}</p>
-                      </div>
-                    ))}
-                  </div>
-                </div>
+                ))}
               </div>
             )}
           </section>
-
         </div>
 
-        {/* ── Footer ──────────────────────────────────────────────── */}
-        <div
-          className="flex items-center justify-between px-5 py-3 shrink-0"
+        <footer
+          className="flex shrink-0 flex-wrap items-center justify-between gap-3 px-6 py-4"
           style={{ borderTop: "1px solid var(--border)" }}
         >
-          <p className="text-[11px]" style={{ color: "var(--text-subtle)" }}>ESC 또는 바깥 클릭으로 닫기</p>
-          <a
-            href={WIKI_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
-            style={{ background: "#1d4ed833", border: "1px solid #3b82f644", color: "#60a5fa" }}
-            onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#1d4ed855"; }}
-            onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#1d4ed833"; }}
-          >
-            Wiki 상세보기
-            <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              <polyline points="15 3 21 3 21 9" />
-              <line x1="10" y1="14" x2="21" y2="3" />
-            </svg>
-          </a>
-        </div>
+          <p className="text-[11px]" style={{ color: "var(--text-subtle)" }}>
+            ESC 또는 바깥 영역을 누르면 닫힙니다.
+          </p>
+          <div className="flex items-center gap-2">
+            <Link
+              href="/weekly-guide"
+              onClick={onClose}
+              className="rounded-lg px-3 py-2 text-[12px] font-semibold"
+              style={{ color: "#0f766e", border: "1px solid #99f6e4", background: "#f0fdfa" }}
+            >
+              Weekly 작성 가이드
+            </Link>
+            <a
+              href={WIKI_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="rounded-lg px-3 py-2 text-[12px] font-semibold"
+              style={{ color: "white", background: "#0f766e" }}
+            >
+              Wiki 상세보기 ↗
+            </a>
+          </div>
+        </footer>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
-
-  if (typeof window === "undefined") return null;
-  return createPortal(modal, document.body);
 }

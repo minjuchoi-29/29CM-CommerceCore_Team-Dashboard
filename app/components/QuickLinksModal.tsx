@@ -9,6 +9,16 @@ type Props = {
 
 const LINKS = [
   {
+    category: "대시보드",
+    items: [
+      {
+        label: "Yeolmu 대시보드",
+        url: "https://yeolmu.lab.musinsa.io/d/1LOsuNZJk0modwACppWaWsWQnsvAcyIkY",
+        icon: "📊",
+      },
+    ],
+  },
+  {
     category: "전략",
     items: [
       {
@@ -71,6 +81,9 @@ export default function QuickLinksModal({ onClose }: Props) {
       onClick={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="quick-links-title"
         className="relative w-full max-w-md rounded-xl shadow-2xl overflow-hidden"
         style={{ background: "var(--bg-canvas)", border: "1px solid var(--border)" }}
         onClick={e => e.stopPropagation()}
@@ -85,11 +98,13 @@ export default function QuickLinksModal({ onClose }: Props) {
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>
-            <span className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
+            <span id="quick-links-title" className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
               퀵 링크
             </span>
           </div>
           <button
+            type="button"
+            aria-label="퀵 링크 닫기"
             onClick={onClose}
             className="w-6 h-6 flex items-center justify-center rounded-md text-xs transition-colors"
             style={{ color: "var(--text-muted)" }}
