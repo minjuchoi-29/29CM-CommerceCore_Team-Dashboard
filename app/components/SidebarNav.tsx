@@ -40,7 +40,7 @@ const PM_ITEMS = [
   { href: "/data-sources", label: "데이터 소스" },
 ] as const;
 
-const PRIORITY_SHEET_URL = "https://docs.google.com/spreadsheets/d/1uCR-MCNpXO9b8iXIFZMgQIG-z54rzbVi4AN_1TtiSMw/edit?gid=0#gid=0";
+const PRIORITY_DASHBOARD_URL = "https://yeolmu.lab.musinsa.io/d/15iiyJXxcDhrPS3t89lb12R5LIDUF48qD";
 
 export default function SidebarNav({ user, logoutAction }: Props) {
   const pathname = usePathname();
@@ -221,14 +221,20 @@ export default function SidebarNav({ user, logoutAction }: Props) {
           </div>
         </nav>
 
+        {/* 우측 상단 CTA — Yeolmu Q4 우선순위 대시보드. 새 탭. 강조 스타일. */}
         <a
-          href={PRIORITY_SHEET_URL}
+          href={PRIORITY_DASHBOARD_URL}
           target="_blank"
           rel="noopener noreferrer"
-          className="hidden shrink-0 rounded-md px-2.5 py-2 text-[11px] font-semibold lg:block"
-          style={{ color: "#315b67", border: "1px solid var(--border-2)" }}
+          title="Yeolmu 2026-Q4 과제 우선순위 대시보드 · 새 탭에서 열림"
+          className="hidden shrink-0 items-center gap-1.5 rounded-md px-3 py-2 text-[12px] font-bold shadow-sm transition-colors lg:inline-flex"
+          style={{ background: "#173f49", color: "#ffffff", border: "1px solid #173f49" }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.background = "#0f2d33"; }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = "#173f49"; }}
         >
-          우선순위 시트 ↗
+          <span aria-hidden style={{ color: "#78d6c6" }}>●</span>
+          Q4 우선순위
+          <span aria-hidden>↗</span>
         </a>
 
         {user && (
@@ -251,7 +257,7 @@ export default function SidebarNav({ user, logoutAction }: Props) {
                   <p className="truncate text-[12px] font-semibold" style={{ color: "var(--text-primary)" }}>{user.name}</p>
                   <p className="mt-0.5 truncate text-[10px]" style={{ color: "var(--text-subtle)" }}>{user.email}</p>
                 </div>
-                <a href={PRIORITY_SHEET_URL} target="_blank" rel="noopener noreferrer" className="block rounded-lg px-3 py-2.5 text-[12px] font-medium lg:hidden" style={{ color: "var(--text-secondary)" }}>우선순위 시트 ↗</a>
+                <a href={PRIORITY_DASHBOARD_URL} target="_blank" rel="noopener noreferrer" className="block rounded-lg px-3 py-2.5 text-[12px] font-semibold lg:hidden" style={{ color: "#173f49", background: "#e8f1f2", border: "1px solid #bfd2d6" }}>Q4 우선순위 ↗</a>
                 <form action={logoutAction}>
                   <button type="submit" className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-muted)" }}>로그아웃</button>
                 </form>
