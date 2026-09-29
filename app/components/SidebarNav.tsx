@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useTheme } from "@/app/components/ThemeProvider";
 import GuideModal from "@/app/components/GuideModal";
 import QuickLinksModal from "@/app/components/QuickLinksModal";
 
@@ -44,7 +43,6 @@ const PRIORITY_DASHBOARD_URL = "https://yeolmu.lab.musinsa.io/d/15iiyJXxcDhrPS3t
 
 export default function SidebarNav({ user, logoutAction }: Props) {
   const pathname = usePathname();
-  const { theme, toggle } = useTheme();
   const [openMenu, setOpenMenu] = useState<OpenMenu>(null);
   const [guideOpen, setGuideOpen] = useState(false);
   const [quickLinksOpen, setQuickLinksOpen] = useState(false);
@@ -211,10 +209,6 @@ export default function SidebarNav({ user, logoutAction }: Props) {
                 <button role="menuitem" type="button" onClick={() => { setOpenMenu(null); setGuideOpen(true); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>사용 가이드</button>
                 <Link role="menuitem" href="/weekly-guide" onClick={() => setOpenMenu(null)} className="block rounded-lg px-3 py-2.5 text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>위클리 작성 가이드</Link>
                 <button role="menuitem" type="button" onClick={() => { setOpenMenu(null); setQuickLinksOpen(true); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>퀵 링크</button>
-                <div className="my-1" style={{ borderTop: "1px solid var(--border)" }} />
-                <button role="menuitem" type="button" onClick={() => { toggle(); setOpenMenu(null); }} className="block w-full rounded-lg px-3 py-2.5 text-left text-[12px] font-medium" style={{ color: "var(--text-secondary)" }}>
-                  {theme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환"}
-                </button>
                 <div className="px-3 py-2 text-[10px]" style={{ color: "var(--text-subtle)" }}>캘린더 · 준비 중</div>
               </div>
             )}

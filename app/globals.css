@@ -1,41 +1,13 @@
 @import "tailwindcss";
 
-/* Tailwind dark: 클래스를 data-theme="dark" 속성과 연동 */
-@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+/* 다크 모드는 제거됨.
+   Tailwind `dark:` variant 는 코드베이스 곳곳에 잔존할 수 있으므로 selector 는
+   유지하되 절대 매치되지 않도록 존재하지 않는 attribute 값에 바인딩한다.
+   변수와 유틸 override 는 light 계열 하나만 남긴다. */
+@custom-variant dark (&:where([data-theme="dark"]));
 
-/* ── Theme Variables ── */
-:root,
-[data-theme="dark"] {
-  /* ── Surface ── */
-  --bg-canvas:   #0d1117;
-  --bg-overlay:  #161b22;
-  --bg-sidebar:  #111318;
-  --bg-item:     #1c2128;
-  --bg-item-alt: #2d333b;
-  /* ── Border ── */
-  --border:      #21262d;
-  --border-2:    #30363d;
-  /* ── Text ── */
-  --text-primary:   #e6edf3;
-  --text-secondary: #c9d1d9;
-  --text-muted:     #7d8590;
-  --text-subtle:    #484f58;
-  /* ── Attention (테마 무관 고정, 동일값) ── */
-  --accent-danger:   #f87171;
-  --accent-warning:  #f59e0b;
-  --accent-success:  #34d399;
-  --accent-info:     #60a5fa;
-  --accent-primary:  #818cf8;
-  --accent-workspace: #5eead4;
-  --accent-workspace-soft: rgba(20,184,166,0.12);
-  --accent-workspace-border: rgba(94,234,212,0.36);
-  /* ── Focus ring ── */
-  --ring-focus:  rgba(99,102,241,0.4);
-  /* ── Shadow ── */
-  --shadow-card: none;
-}
-
-[data-theme="light"] {
+/* ── Theme Variables (light only) ── */
+:root {
   /*
    * Surface Hierarchy (Linear / Stripe light 계열)
    *   canvas  → 페이지 배경 (light gray)
@@ -52,14 +24,14 @@
   /* ── Border ── */
   --border:      #e2e8f0;   /* 기본 구분선 — slate-200 */
   --border-2:    #c9d3de;   /* 강조 구분선 — slate-300 */
-  /* ── Shadow (light mode elevation) ── */
+  /* ── Shadow (light elevation) ── */
   --shadow-card: 0 1px 3px rgba(15,23,42,0.07), 0 1px 2px rgba(15,23,42,0.04);
   /* ── Text ── */
   --text-primary:   #0f172a;   /* slate-900 — 강한 제목/본문 */
   --text-secondary: #334155;   /* slate-700 — 서브 텍스트 */
   --text-muted:     #64748b;   /* slate-500 — 보조 텍스트 */
   --text-subtle:    #94a3b8;   /* slate-400 — 비활성/힌트 */
-  /* ── Attention (동일) ── */
+  /* ── Attention ── */
   --accent-danger:   #ef4444;
   --accent-warning:  #d97706;
   --accent-success:  #16a34a;
@@ -77,7 +49,6 @@
   --font-mono: var(--font-geist-mono);
 }
 
-/* body는 data-theme CSS variable에 따라 색상 변환 */
 body {
   background: var(--bg-canvas);
   color: var(--text-primary);
@@ -250,10 +221,10 @@ html {
   }
 }
 
-/* 라이트 모드에서 작은 보조 텍스트가 배경에 묻히지 않도록 대비도 함께 보정한다. */
-[data-theme="light"] .ticket-board-detail-panel--readable,
-[data-theme="light"] .ticket-board-list-panel--quick-preview,
-[data-theme="light"] .ticket-board-list-panel--focus-mode {
+/* Light 모드에서 작은 보조 텍스트가 배경에 묻히지 않도록 대비 보정. */
+.ticket-board-detail-panel--readable,
+.ticket-board-list-panel--quick-preview,
+.ticket-board-list-panel--focus-mode {
   --text-muted: #52677b;
   --text-subtle: #75869a;
 }
@@ -299,68 +270,22 @@ html {
   }
 }
 
-/* ── Light mode: Tailwind 유틸리티 클래스 대비 보정 ── */
-[data-theme="light"] .text-gray-300 { color: #64748b; }
-[data-theme="light"] .text-gray-400 { color: #64748b; }
-[data-theme="light"] .text-gray-500 { color: #64748b; }
-[data-theme="light"] .text-gray-800 { color: #0f172a; }
-[data-theme="light"] .hover\:text-gray-300:hover { color: #64748b; }
-[data-theme="light"] .border-gray-800 { border-color: #e2e8f0; }
-[data-theme="light"] .bg-gray-900 { background-color: #0f172a; } /* tooltip은 유지 */
+/* ── Tailwind 유틸리티 클래스 대비 보정 (light 톤) ── */
+.text-gray-300 { color: #64748b; }
+.text-gray-400 { color: #64748b; }
+.text-gray-500 { color: #64748b; }
+.text-gray-800 { color: #0f172a; }
+.hover\:text-gray-300:hover { color: #64748b; }
+.border-gray-800 { border-color: #e2e8f0; }
+.bg-gray-900 { background-color: #0f172a; } /* tooltip 어두운 배경은 유지 */
 
-/* ── Light mode: 카드 elevation shadow 유틸 ── */
-[data-theme="light"] .shadow-card {
+/* ── 카드 elevation shadow 유틸 ── */
+.shadow-card {
   box-shadow: var(--shadow-card);
 }
 
-/* ── Dark mode: 라이트 계열 배경/텍스트 보정 ── */
-[data-theme="dark"] .bg-white { background-color: var(--bg-item); }
-[data-theme="dark"] .text-gray-800 { color: var(--text-primary); }
-[data-theme="dark"] .border-gray-200 { border-color: var(--border-2); }
-[data-theme="dark"] .hover\:border-gray-400:hover { border-color: var(--text-muted); }
-[data-theme="dark"] .bg-orange-50 { background-color: rgba(249,115,22,0.08); }
-[data-theme="dark"] .border-orange-200 { border-color: rgba(249,115,22,0.25); }
-[data-theme="dark"] .text-orange-600 { color: #fb923c; }
-[data-theme="dark"] .hover\:bg-orange-50:hover { background-color: rgba(249,115,22,0.15); }
-[data-theme="dark"] .bg-red-50 { background-color: rgba(239,68,68,0.08); }
-[data-theme="dark"] .border-red-200 { border-color: rgba(239,68,68,0.25); }
-[data-theme="dark"] .text-red-700 { color: #f87171; }
-[data-theme="dark"] .hover\:bg-red-50:hover { background-color: rgba(239,68,68,0.12); }
-[data-theme="dark"] .bg-green-100 { background-color: rgba(34,197,94,0.1); }
-[data-theme="dark"] .border-green-200 { border-color: rgba(34,197,94,0.25); }
-[data-theme="dark"] .text-green-700 { color: #34d399; }
-[data-theme="dark"] .text-green-800 { color: #34d399; }
-[data-theme="dark"] .bg-yellow-50 { background-color: rgba(234,179,8,0.08); }
-[data-theme="dark"] .border-yellow-200 { border-color: rgba(234,179,8,0.2); }
-[data-theme="dark"] .text-yellow-700 { color: #fbbf24; }
-[data-theme="dark"] .bg-indigo-50 { background-color: rgba(99,102,241,0.1); }
-[data-theme="dark"] .border-indigo-200 { border-color: rgba(99,102,241,0.3); }
-[data-theme="dark"] .text-indigo-600 { color: #818cf8; }
-[data-theme="dark"] .hover\:bg-indigo-50:hover { background-color: rgba(99,102,241,0.15); }
-
-/* 날짜 input 캘린더 아이콘 — 크기·색상 강화 */
-/* 다크모드: 아이콘 밝게 */
-[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator {
-  width: 18px;
-  height: 18px;
-  padding: 2px;
-  border-radius: 4px;
-  cursor: pointer;
-  filter: invert(60%) sepia(20%) saturate(500%) hue-rotate(190deg) brightness(120%);
-  opacity: 0.7;
-  transition: opacity 0.15s, filter 0.15s;
-}
-[data-theme="dark"] input[type="date"]::-webkit-calendar-picker-indicator:hover {
-  opacity: 1;
-  filter: invert(70%) sepia(40%) saturate(800%) hue-rotate(200deg) brightness(140%);
-}
-[data-theme="dark"] input[type="date"]:focus::-webkit-calendar-picker-indicator {
-  opacity: 1;
-  filter: invert(65%) sepia(60%) saturate(1000%) hue-rotate(210deg) brightness(160%);
-}
-
-/* 라이트모드: 아이콘 자연색 */
-[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator {
+/* 날짜 input 캘린더 아이콘 — 크기·색상 강화 (light 톤) */
+input[type="date"]::-webkit-calendar-picker-indicator {
   width: 18px;
   height: 18px;
   padding: 2px;
@@ -370,7 +295,7 @@ html {
   opacity: 0.6;
   transition: opacity 0.15s, filter 0.15s;
 }
-[data-theme="light"] input[type="date"]::-webkit-calendar-picker-indicator:hover {
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
   filter: invert(30%) sepia(40%) saturate(600%) hue-rotate(210deg) brightness(80%);
 }
